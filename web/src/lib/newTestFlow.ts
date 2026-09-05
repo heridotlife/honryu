@@ -25,21 +25,25 @@ export function concurrencyEnginesWarning(concurrency: number, engines: number):
   return null;
 }
 
-/** The fragment the flow writes via G3 (PUT /scenarios/{id}/requests). */
+/**
+ * The fragment the flow writes via G3 (PUT /scenarios/{id}/requests): a
+ * bare taurus.Scenario with root-level default-address/requests — NOT
+ * wrapped in a scenarios: map. G3 unmarshals one Scenario; the wrapped
+ * shape leaves Requests empty and 400s with "at least one request is
+ * required" (phase 22 finding 1, verified live).
+ */
 export function buildFragment(form: NewTestForm): string {
   const lines: string[] = [];
-  lines.push('scenarios:');
-  lines.push(`    ${form.name}:`);
-  lines.push(`        default-address: ${form.targetUrl.replace(/\/$/, '')}`);
+  lines.push(`default-address: ${form.targetUrl.replace(/\/$/, '')}`);
   if (form.headers.length > 0) {
-    lines.push('        headers:');
+    lines.push('headers:');
     for (const h of form.headers) {
-      lines.push(`            ${h.name}: ${h.value}`);
+      lines.push(`    ${h.name}: ${h.value}`);
     }
   }
-  lines.push('        requests:');
-  lines.push('            - method: ' + form.method);
-  lines.push('              url: /');
+  lines.push('requests:');
+  lines.push('    - method: ' + form.method);
+  lines.push('      url: /');
   return lines.join('\n') + '\n';
 }
 

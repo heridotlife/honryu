@@ -128,6 +128,15 @@ func (s *Service) Reserve(ctx context.Context, tenantID int64, cluster string, e
 			used -= freed
 		}
 		if used+engineCount > ceiling {
+			// A ceiling of 0 means no quota was ever configured for this
+			// tenant+cluster (absent reads as 0 -- migrations/0028), not that
+			// one was configured and exhausted: say so, so an operator knows
+			// the remediation is to set a ceiling, not to free capacity.
+			if ceiling == 0 {
+				return fmt.Errorf(
+					"%w: tenant %d cluster %q wants %d engines, %d already reserved in this window, ceiling %d — no quota configured for this tenant+cluster; set one via PUT /api/tenants/{tenant_id}/quota",
+					ErrOverQuota, tenantID, cluster, engineCount, used, ceiling)
+			}
 			return fmt.Errorf(
 				"%w: tenant %d cluster %q wants %d engines, %d already reserved in this window, ceiling %d",
 				ErrOverQuota, tenantID, cluster, engineCount, used, ceiling)

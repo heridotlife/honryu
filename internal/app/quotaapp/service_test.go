@@ -3,6 +3,7 @@ package quotaapp_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,16 +70,22 @@ func TestReserve_RejectsWhenOverCeiling(t *testing.T) {
 
 	if _, err := svc.Reserve(ctx, 1, "default", 5, at(0), at(60), 101); !errors.Is(err, quotaapp.ErrOverQuota) {
 		t.Fatalf("Reserve (second, 8+5=13 > 10) = %v, want ErrOverQuota", err)
+	} else if strings.Contains(err.Error(), "no quota configured") {
+		t.Fatalf("Reserve (exhausted ceiling) error = %q, must not claim quota is unconfigured", err)
 	}
 }
 
 // An unconfigured ceiling reads as 0, so any positive reservation is
-// rejected -- unconfigured means nothing runs, not unlimited.
+// rejected -- unconfigured means nothing runs, not unlimited. The error
+// must carry the remediation (set a ceiling via the quota endpoint), since
+// "ceiling 0" alone reads like a configured limit of zero.
 func TestReserve_ZeroCeilingRejectsEverything(t *testing.T) {
 	t.Parallel()
 	svc, _ := newQuotaService(t)
 	if _, err := svc.Reserve(context.Background(), 1, "default", 1, at(0), at(60), 100); !errors.Is(err, quotaapp.ErrOverQuota) {
 		t.Fatalf("Reserve(unconfigured ceiling) = %v, want ErrOverQuota", err)
+	} else if !strings.Contains(err.Error(), "no quota configured for this tenant+cluster; set one via PUT /api/tenants/{tenant_id}/quota") {
+		t.Fatalf("Reserve(unconfigured ceiling) error = %q, want remediation naming the quota endpoint", err)
 	}
 }
 

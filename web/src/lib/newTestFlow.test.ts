@@ -43,11 +43,13 @@ describe('concurrencyEnginesWarning (shard.Plan clamp guard)', () => {
 });
 
 describe('buildFragment (G3 body)', () => {
-  it('emits default-address, headers (cookie IS a header), and the request', () => {
+  it('emits a bare taurus.Scenario — no scenarios: wrapper, no name line', () => {
     const y = buildFragment(form);
-    expect(y).toContain('scenarios:');
-    expect(y).toContain('    checkout-smoke:');
-    expect(y).toContain('default-address: http://checkout.svc'); // trailing slash stripped
+    // G3 unmarshals a bare taurus.Scenario; the wrapped shape 400s with
+    // "at least one request is required" (verified live, phase 22 finding 1).
+    expect(y).not.toContain('scenarios:');
+    expect(y).not.toContain('checkout-smoke');
+    expect(y.startsWith('default-address: http://checkout.svc')).toBe(true); // root-level, trailing slash stripped
     expect(y).toContain('X-Auth: tok');
     expect(y).toContain('Cookie: session=abc'); // no dedicated cookie field
     expect(y).toContain('- method: GET');
