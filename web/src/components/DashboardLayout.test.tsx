@@ -247,7 +247,15 @@ describe('DashboardLayout (mounted)', () => {
       bannerButton.click();
     });
 
-    expect(calls).toEqual(['GET /api/me', 'DELETE /api/session', 'GET /api/me', 'GET /api/session/profiles']);
+    // The nav's project switcher (phase 32) fetches its list once on
+    // mount, right after the session resolves.
+    expect(calls).toEqual([
+      'GET /api/me',
+      'GET /api/projects',
+      'DELETE /api/session',
+      'GET /api/me',
+      'GET /api/session/profiles',
+    ]);
     expect(spyPath).toBe('/');
     // The nav is empty again: the picker is what unauthenticated looks like.
     expect(container?.querySelectorAll('[data-testid="nav-links"] a').length).toBe(0);
