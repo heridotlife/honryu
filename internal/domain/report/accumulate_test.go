@@ -122,6 +122,54 @@ func TestAccumulator_SnapshotIsOrdered(t *testing.T) {
 	}
 }
 
+// Response codes are counted per label so a report can say which status a
+// request returned, not only how many failed: a 500 and a 429 read very
+// differently at the same error rate.
+func TestAccumulator_ResponseCodesPerLabel(t *testing.T) {
+	t.Parallel()
+
+	iv := metrics.Interval{
+		Timestamp: 1000, Label: "checkout-pay",
+		Samples: 100, Succeeded: 90, Failed: 10,
+		ResponseCodes: map[string]int64{"200": 90, "500": 10},
+	}
+
+	acc := report.NewAccumulator()
+	acc.Add(iv)
+	acc.Add(iv) // two pods, the same second: counts add
+
+	rep := acc.Report(report.Meta{ExecutionID: 1, RunID: 1, Outcome: taurus.OutcomePassed})
+	if len(rep.Labels) != 1 {
+		t.Fatalf("labels = %+v", rep.Labels)
+	}
+	want := []report.StatusLabel{{Code: "200", Count: 180}, {Code: "500", Count: 20}}
+	if !reflect.DeepEqual(rep.Labels[0].Statuses, want) {
+		t.Errorf("statuses = %+v, want %+v (dominant first)", rep.Labels[0].Statuses, want)
+	}
+
+	// Equal counts fall back to code order, so the order is total and two
+	// reports of the same run cannot list the same statuses differently.
+	tie := report.NewAccumulator()
+	tie.Add(metrics.Interval{
+		Timestamp: 1000, Label: "probe", Samples: 20, Succeeded: 10, Failed: 10,
+		ResponseCodes: map[string]int64{"503": 10, "500": 10},
+	})
+	rep = tie.Report(report.Meta{ExecutionID: 1, RunID: 1, Outcome: taurus.OutcomeFailed})
+	want = []report.StatusLabel{{Code: "500", Count: 10}, {Code: "503", Count: 10}}
+	if !reflect.DeepEqual(rep.Labels[0].Statuses, want) {
+		t.Errorf("tied statuses = %+v, want %+v (count desc, then code)", rep.Labels[0].Statuses, want)
+	}
+
+	// A label the engine reported no codes for carries none -- nil, not an
+	// empty slice, so omitempty keeps old reports byte-identical.
+	none := report.NewAccumulator()
+	none.Add(metrics.Interval{Timestamp: 1000, Label: "probe", Samples: 5, Succeeded: 5})
+	rep = none.Report(report.Meta{ExecutionID: 1, RunID: 1, Outcome: taurus.OutcomePassed})
+	if len(rep.Labels) != 1 || rep.Labels[0].Statuses != nil {
+		t.Errorf("statuses without codes = %+v, want nil", rep.Labels)
+	}
+}
+
 // An empty accumulator is the state a run is in before its first pod reports.
 // It has to summarise cleanly rather than dividing by zero.
 func TestAccumulator_Empty(t *testing.T) {
@@ -176,6 +224,13 @@ func syntheticRun(rng *rand.Rand) []metrics.Interval {
 					iv.Errors = []metrics.ErrorGroup{e}
 				}
 				iv.Succeeded = iv.Samples - iv.Failed
+				// Codes are counted too, so every property above holds of them as
+				// well: accumulation, snapshot/restore, and the one-pass build must
+				// all agree on which status a label returned.
+				iv.ResponseCodes = map[string]int64{"200": iv.Succeeded}
+				if iv.Failed > 0 {
+					iv.ResponseCodes["500"] = iv.Failed
+				}
 				out = append(out, iv)
 			}
 			out = append(out, metrics.Interval{
