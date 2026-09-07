@@ -68,3 +68,42 @@ COMMIT STYLE:
   feat(web): status badges in labels table
 
 No PR, no push. Verify vitest total grows from 366 and stays green.
+---
+
+COMPLETION RECORD (2026-09-07)
+
+T1..T3 done, one commit each, gates green between.
+
+Recon correction (T2): "rides along FREE" was wrong for production reports.
+The final execution_report.labels JSON does ride free, but finalize() builds
+reports from STORED working state (Absorb -> report_progress_label ->
+Snapshot -> Restore -> Report), and that table has explicit columns. Without
+migration 0054 + a codes merge in mergeLabels + codes in scanLabelProgress,
+statuses would never have reached a production report. Done as:
+
+- 0054_report_progress_label_codes.sql: codes JSON NULL on
+  report_progress_label (ALTER, single statement, per migration convention).
+- mergeLabels: codes merged in Go under the same FOR UPDATE row lock as
+  latency (a map cannot be merged in SQL); both-nil stays SQL NULL, never {}.
+- Repository.Snapshot/scanLabelProgress: codes read back.
+- reportprogresstest contract fixture now carries ResponseCodes, so fake and
+  real adapters must round-trip them to pass the same suite (repo rule).
+- domain Snapshot/Restore carry LabelProgress.Codes; syntheticRun fixture
+  emits codes so MatchesBuild / SurvivesSnapshotAndRestore enforce the new
+  dimension.
+
+T3 note: the per-label table lives in web/src/components/LabelsTable.tsx (not
+Reports.tsx), so the 7th column and its test went there. testids are
+status-badge-{rowIdx}-{code} (rendered row index).
+
+Commits:
+- ba914fa feat(report): accumulate per-label response codes
+- c87cbaf feat(mysql): persist per-label response codes through progress state
+- 89e01d0 feat(web): status badges in labels table
+
+Gates: go test ./internal/... green; integration (Ryuk disabled locally)
+ReportProgress|Migrate|DeepPaths|Interval green against real MySQL; vitest
+367/367 (was 366); tsc -b clean; golangci-lint 0 issues on touched packages.
+
+Deliberately out of scope: statuses in the CSV export and the PDF label
+table (still 6 columns there).
