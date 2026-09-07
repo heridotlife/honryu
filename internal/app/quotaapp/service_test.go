@@ -476,3 +476,130 @@ func TestReserve_ConcurrentCallsNeverJointlyExceedTheCeiling(t *testing.T) {
 		t.Fatalf("total reserved engines = %d, want exactly %d (the ceiling), got reservations = %+v", sum, ceiling, got)
 	}
 }
+
+// The aggregate a capacity meter renders: ceilings sum across every tenant
+// configured on the cluster, and used sums each tenant's live-window
+// commitments. Seeded to mirror the homelab deployment's shape (tenants 1
+// and 4 on cluster "honryu").
+func TestClusterCapacity_SumsCeilingsAndUsedAcrossTenants(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	now := at(1_000_000)
+	svc := quotaapp.NewService(store).WithNow(func() time.Time { return now })
+
+	if err := store.SetCeiling(ctx, 1, "honryu", 4); err != nil {
+		t.Fatalf("SetCeiling(1): %v", err)
+	}
+	if err := store.SetCeiling(ctx, 4, "honryu", 8); err != nil {
+		t.Fatalf("SetCeiling(4): %v", err)
+	}
+	// Tenant 1: 3 engines spanning now. Tenant 4: 5 engines spanning now.
+	for _, r := range []reservation.Reservation{
+		{TenantID: 1, Cluster: "honryu", EngineCount: 3, Start: now.Add(-time.Hour), End: now.Add(time.Hour), ExecutionID: 100},
+		{TenantID: 4, Cluster: "honryu", EngineCount: 5, Start: now.Add(-time.Minute), End: now.Add(2 * time.Hour), ExecutionID: 400},
+	} {
+		if _, err := store.CreateReservation(ctx, r); err != nil {
+			t.Fatalf("CreateReservation(tenant %d): %v", r.TenantID, err)
+		}
+	}
+	// A reservation on another cluster must not leak into this one's sum.
+	if _, err := store.CreateReservation(ctx, reservation.Reservation{
+		TenantID: 1, Cluster: "elsewhere", EngineCount: 7, Start: now.Add(-time.Hour), End: now.Add(time.Hour), ExecutionID: 101,
+	}); err != nil {
+		t.Fatalf("CreateReservation(other cluster): %v", err)
+	}
+
+	used, ceiling, err := svc.ClusterCapacity(ctx, "honryu")
+	if err != nil {
+		t.Fatalf("ClusterCapacity: %v", err)
+	}
+	if ceiling != 12 {
+		t.Fatalf("ceiling = %d, want 12 (4 + 8 across tenants)", ceiling)
+	}
+	if used != 8 {
+		t.Fatalf("used = %d, want 8 (3 + 5 across tenants, other cluster excluded)", used)
+	}
+}
+
+// Overrun counts here exactly as it counts in Reserve: a reservation whose
+// declared end has passed but whose execution still runs is still occupying
+// real capacity, so the aggregate must carry it -- a meter that hid overrun
+// would under-report precisely the cluster state an operator most needs to
+// see.
+func TestClusterCapacity_CountsOverrunningReservations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	now := at(1_000_000)
+	svc := quotaapp.NewService(store).WithNow(func() time.Time { return now })
+
+	if err := store.SetCeiling(ctx, 1, "honryu", 4); err != nil {
+		t.Fatalf("SetCeiling: %v", err)
+	}
+	if _, err := store.CreateReservation(ctx, reservation.Reservation{
+		TenantID: 1, Cluster: "honryu", EngineCount: 3,
+		Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour), ExecutionID: 100,
+	}); err != nil {
+		t.Fatalf("CreateReservation (overrun): %v", err)
+	}
+	if _, err := store.StartRun(ctx, 100, ""); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	used, ceiling, err := svc.ClusterCapacity(ctx, "honryu")
+	if err != nil {
+		t.Fatalf("ClusterCapacity: %v", err)
+	}
+	if used != 3 || ceiling != 4 {
+		t.Fatalf("ClusterCapacity = %d/%d, want 3/4 -- the overrunning reservation still occupies its engines", used, ceiling)
+	}
+}
+
+// The "at now" scoping: a future booking is not capacity in use today, and a
+// stale reservation whose execution is not running is not either -- the
+// aggregate reports what is committed at this instant, not a running total
+// across all time.
+func TestClusterCapacity_IgnoresFutureBookingsAndStaleReservations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	now := at(1_000_000)
+	svc := quotaapp.NewService(store).WithNow(func() time.Time { return now })
+
+	if err := store.SetCeiling(ctx, 1, "honryu", 6); err != nil {
+		t.Fatalf("SetCeiling: %v", err)
+	}
+	for _, r := range []reservation.Reservation{
+		{TenantID: 1, Cluster: "honryu", EngineCount: 5, Start: now.Add(time.Hour), End: now.Add(2 * time.Hour), ExecutionID: 200},   // future
+		{TenantID: 1, Cluster: "honryu", EngineCount: 4, Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour), ExecutionID: 201}, // stale, never ran
+	} {
+		if _, err := store.CreateReservation(ctx, r); err != nil {
+			t.Fatalf("CreateReservation(execution %d): %v", r.ExecutionID, err)
+		}
+	}
+
+	used, ceiling, err := svc.ClusterCapacity(ctx, "honryu")
+	if err != nil {
+		t.Fatalf("ClusterCapacity: %v", err)
+	}
+	if used != 0 || ceiling != 6 {
+		t.Fatalf("ClusterCapacity = %d/%d, want 0/6 -- nothing is committed at now", used, ceiling)
+	}
+}
+
+// A cluster nobody configured quota on is the normal unconfigured state:
+// 0/0 with no error, so the caller (and the meter) treats it as "no
+// capacity reported" rather than as a failure.
+func TestClusterCapacity_UnconfiguredClusterIsZeroZeroNil(t *testing.T) {
+	t.Parallel()
+	svc, _ := newQuotaService(t)
+
+	used, ceiling, err := svc.ClusterCapacity(context.Background(), "ghost")
+	if err != nil {
+		t.Fatalf("ClusterCapacity(unconfigured) = %v, want nil", err)
+	}
+	if used != 0 || ceiling != 0 {
+		t.Fatalf("ClusterCapacity(unconfigured) = %d/%d, want 0/0", used, ceiling)
+	}
+}

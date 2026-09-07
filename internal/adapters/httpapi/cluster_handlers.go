@@ -37,6 +37,12 @@ type clusterResponse struct {
 	Origin       string    `json:"origin"`
 	CreatedBy    string    `json:"created_by,omitempty"`
 	CreatedTime  time.Time `json:"created_time"`
+	// Aggregate engine capacity from the quota ledger (phase 25). Pointers +
+	// omitempty: a deployment without the quota dep (or a failed read) omits
+	// them entirely -- wire shape stays backward compatible, and the frontend
+	// renders its honest "no capacity reported" state off the fields' absence.
+	EnginesUsed    *int `json:"engines_used,omitempty"`
+	EnginesCeiling *int `json:"engines_ceiling,omitempty"`
 }
 
 func toClusterResponse(c clusterregistry.Cluster) clusterResponse {
@@ -153,6 +159,23 @@ func (h *handlers) rotateIngestToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // listClusters returns every registered cluster.
+// withCapacity enriches a cluster response with the cluster's aggregate
+// engine capacity when the quota ledger is wired. A capacity read failure
+// degrades to omission (meter shows the honest no-data state), never to a
+// failed cluster list -- registration data is the point of the endpoint.
+func (h *handlers) withCapacity(c clusterResponse) clusterResponse {
+	if h.deps.Quota == nil {
+		return c
+	}
+	used, ceiling, err := h.deps.Quota.ClusterCapacity(context.Background(), c.Name)
+	if err != nil {
+		return c
+	}
+	c.EnginesUsed = &used
+	c.EnginesCeiling = &ceiling
+	return c
+}
+
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	if !h.clusterAdminGate(w, r) {
 		return
@@ -164,7 +187,7 @@ func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]clusterResponse, 0, len(clusters))
 	for _, c := range clusters {
-		out = append(out, toClusterResponse(c))
+		out = append(out, h.withCapacity(toClusterResponse(c)))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

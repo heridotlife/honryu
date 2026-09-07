@@ -17,6 +17,12 @@ export interface Cluster {
   origin: ClusterOrigin;
   created_by?: string;
   created_time: string;
+  /** Aggregate engines in use on the cluster (quota ledger, phase 25).
+   *  Absent when the deployment has no quota ledger wired -- the meter
+   *  renders its honest "no capacity reported" state off the absence. */
+  engines_used?: number;
+  /** Aggregate engine ceiling across tenants (quota ledger, phase 25). */
+  engines_ceiling?: number;
 }
 
 /**

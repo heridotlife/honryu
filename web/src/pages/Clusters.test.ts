@@ -24,13 +24,22 @@ describe('clusterCapacity', () => {
     created_time: '2026-09-05T10:29:02.848672Z',
   };
 
-  // Pins the phase 22 honest scope: GET /api/clusters' clusterResponse
-  // carries registration fields only -- no engine counts, no ceiling -- so
-  // no cluster carries capacity numbers and every row renders the meter's
-  // "no capacity reported" state. The day the backend grows real fields
-  // (phase 23 candidate), this test is the one to flip.
-  it('reports no capacity numbers for a registered cluster', () => {
+  // Phase 25 flipped the phase-22 honesty pin: capacity numbers now ride
+  // the wire (engines_used/engines_ceiling, both required), and their
+  // absence -- no quota ledger wired, or a half-wired read -- still maps to
+  // the meter's honest "no capacity reported" state.
+  it('maps wire capacity numbers onto the meter props', () => {
+    expect(clusterCapacity({ ...registered, engines_used: 2, engines_ceiling: 12 })).toEqual({
+      used: 2,
+      ceiling: 12,
+    });
+  });
+  it('reports no capacity numbers when the fields are absent', () => {
     expect(clusterCapacity(registered)).toEqual({});
+  });
+  it('reports no capacity numbers when only one field is present (half-wired read)', () => {
+    expect(clusterCapacity({ ...registered, engines_ceiling: 12 })).toEqual({});
+    expect(clusterCapacity({ ...registered, engines_used: 2 })).toEqual({});
   });
 });
 

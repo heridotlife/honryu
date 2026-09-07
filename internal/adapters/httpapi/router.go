@@ -22,6 +22,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/metricsapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
+	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
@@ -82,6 +83,10 @@ type Deps struct {
 	// Auth authenticates requests and authorizes actions. When nil or disabled,
 	// the legacy no-auth owner path applies (DefaultOwners).
 	Auth *authapp.Service
+	// Quota reads the reservation ledger's aggregate engine capacity for
+	// cluster responses (phase 25). Optional; nil keeps /api/clusters bodies
+	// byte-identical to before (no engines_used/engines_ceiling fields).
+	Quota *quotaapp.Service
 	// Tenants administers tenants and role grants. Required for the /api/tenants
 	// endpoints; nil disables them.
 	Tenants *tenantapp.Service

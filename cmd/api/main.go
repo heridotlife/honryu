@@ -189,6 +189,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Auth:             authapp.NewService(authProvider, repo, cfg.Auth.EnableRBAC),
 		Tenants:          tenantapp.NewService(repo, repo, repo),
 		Clusters:         clusterSvc,
+		Quota:            quota,
 		Audit:            audit,
 		DefaultOwners:    []string{"honryu"},
 		Sessions:         sessions,
