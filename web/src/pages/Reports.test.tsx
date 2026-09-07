@@ -327,6 +327,11 @@ async function renderReportsList(permissions: Record<string, string[]> | null, r
           ? json({ subject: 'demo:x', name: 'x', email: '', global_roles: [], tenants: {}, permissions, demo: true })
           : json({ message: 'unauthenticated' }, 401);
       }
+      if (url === '/api/executions' || url.endsWith('/api/executions')) {
+        return json([
+          { id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
+        ]);
+      }
       if (url.endsWith('/api/executions/1/reports')) {
         return json(reports);
       }
@@ -350,6 +355,11 @@ async function renderReportsList(permissions: Record<string, string[]> | null, r
 
 /** Fills the execution-id form and submits it, flushing the load. */
 async function loadExecution() {
+  // List-first (phase 27): the manual form sits behind a toggle; open it
+  // before the id input can be driven.
+  await act(async () => {
+    container!.querySelector('[data-testid="manual-id-toggle"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
   const input = container!.querySelector('input[type="number"]') as HTMLInputElement;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => {
@@ -361,6 +371,29 @@ async function loadExecution() {
   });
   await act(async () => {});
 }
+
+describe('ReportsList execution list (phase 27)', () => {
+  it('renders executions as clickable rows that load their reports', async () => {
+    await renderReportsList(navPersonas.alice);
+    const row = container!.querySelector('[data-testid="execution-1"]') as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('alpha-exec');
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {});
+    // Loading execution 1 puts its runs on screen (the fetch stub serves them).
+    expect(container!.querySelector('[data-testid="compare-runs-link"]')).not.toBeNull();
+  });
+  it('hides the manual id input until asked for', async () => {
+    await renderReportsList(navPersonas.alice);
+    expect(container!.querySelector('input[type="number"]')).toBeNull();
+    await act(async () => {
+      container!.querySelector('[data-testid="manual-id-toggle"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container!.querySelector('input[type="number"]')).not.toBeNull();
+  });
+});
 
 describe('ReportsList compare link (mounted)', () => {
   it('appears for every persona that can read reports, deep-linking the loaded execution', async () => {

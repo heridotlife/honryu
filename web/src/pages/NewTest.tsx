@@ -221,6 +221,7 @@ export default function NewTest() {
               <select className={`${inputCls} mt-1 w-full`} value={form.engine} onChange={(e) => set({ engine: e.target.value })}>
                 <option value="jmeter">jmeter</option>
                 <option value="gatling">gatling</option>
+                <option value="k6">k6</option>
               </select>
             </label>
           </div>
