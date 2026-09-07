@@ -580,7 +580,7 @@ func TestRunExport_RejectsMissingAndUnknownFormat(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("GET %s = %d, want 400", path, rec.Code)
 		}
-		if got := strings.TrimSpace(rec.Body.String()); got != `{"message":"format must be json or csv"}` {
+		if got := strings.TrimSpace(rec.Body.String()); got != `{"message":"format must be json, csv or pdf"}` {
 			t.Errorf("GET %s body = %s", path, got)
 		}
 	}

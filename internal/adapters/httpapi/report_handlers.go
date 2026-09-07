@@ -141,8 +141,8 @@ func (h *handlers) runExport(w http.ResponseWriter, r *http.Request) {
 	// caller's error whatever the deployment wires, and the 400 needs no
 	// store to answer.
 	format := r.URL.Query().Get("format")
-	if format != "json" && format != "csv" {
-		writeError(w, http.StatusBadRequest, "format must be json or csv")
+	if format != "json" && format != "csv" && format != "pdf" {
+		writeError(w, http.StatusBadRequest, "format must be json, csv or pdf")
 		return
 	}
 	if h.deps.Series == nil {
@@ -176,6 +176,12 @@ func (h *handlers) runExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="run-`+strconv.FormatInt(runID, 10)+`.`+format+`"`)
 	if format == "json" {
 		writeJSON(w, http.StatusOK, runExportResponse{Report: rep, Series: seriesResponse{Points: points}})
+		return
+	}
+	if format == "pdf" {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(runExportPDF(runID, rep, points))
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
