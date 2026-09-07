@@ -174,6 +174,54 @@ func RunReservationRepositoryContract(t *testing.T, newRepo NewReservationRepo) 
 		}
 	})
 
+	// Cluster-scoped quota listing: what a capacity aggregate sums across
+	// tenants. Scoped to the one cluster, ordered by tenant ID, reflects
+	// overwrites, and empty (not an error) for a cluster nobody configured.
+	t.Run("ListClusterQuotasScopesByCluster", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+
+		if err := repo.SetCeiling(ctx, 1, "default", 10); err != nil {
+			t.Fatalf("SetCeiling(1): %v", err)
+		}
+		if err := repo.SetCeiling(ctx, 2, "default", 5); err != nil {
+			t.Fatalf("SetCeiling(2): %v", err)
+		}
+		if err := repo.SetCeiling(ctx, 1, "eu-west", 7); err != nil {
+			t.Fatalf("SetCeiling(other cluster): %v", err)
+		}
+
+		got, err := repo.ListClusterQuotas(ctx, "default")
+		if err != nil {
+			t.Fatalf("ListClusterQuotas: %v", err)
+		}
+		want := []ports.TenantQuota{{TenantID: 1, Ceiling: 10}, {TenantID: 2, Ceiling: 5}}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("ListClusterQuotas = %+v, want %+v (only default-cluster rows, by tenant ID)", got, want)
+		}
+
+		// An overwrite is the row's new truth -- the same contract
+		// GetCeiling's overwrite case pins for one tenant.
+		if err := repo.SetCeiling(ctx, 1, "default", 4); err != nil {
+			t.Fatalf("SetCeiling (overwrite): %v", err)
+		}
+		got, err = repo.ListClusterQuotas(ctx, "default")
+		if err != nil {
+			t.Fatalf("ListClusterQuotas (after overwrite): %v", err)
+		}
+		if len(got) != 2 || got[0].Ceiling != 4 {
+			t.Fatalf("ListClusterQuotas (after overwrite) = %+v, want tenant 1's ceiling at 4", got)
+		}
+
+		other, err := repo.ListClusterQuotas(ctx, "ghost")
+		if err != nil {
+			t.Fatalf("ListClusterQuotas(unconfigured cluster): %v, want nil", err)
+		}
+		if len(other) != 0 {
+			t.Fatalf("ListClusterQuotas(unconfigured cluster) = %+v, want empty", other)
+		}
+	})
+
 	// Unlike InWindow, ReservationsForTenant ignores windows entirely -- it's
 	// what an overrun-reclaim pass scans to find every reservation for a
 	// tenant+cluster regardless of whether it overlaps anything in

@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/reservation"
@@ -96,6 +97,22 @@ func (s *Store) SetCeiling(_ context.Context, tenantID int64, cluster string, ce
 	defer s.mu.Unlock()
 	s.quotaCeilings[quotaKey{tenantID, cluster}] = ceiling
 	return nil
+}
+
+// ListClusterQuotas returns every tenant quota configured for cluster,
+// ordered by tenant ID.
+func (s *Store) ListClusterQuotas(_ context.Context, cluster string) ([]ports.TenantQuota, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ports.TenantQuota{}
+	for k, ceiling := range s.quotaCeilings {
+		if k.cluster != cluster {
+			continue
+		}
+		out = append(out, ports.TenantQuota{TenantID: k.tenantID, Ceiling: ceiling})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TenantID < out[j].TenantID })
+	return out, nil
 }
 
 // WithTenantLock runs fn while holding an exclusive lock scoped to

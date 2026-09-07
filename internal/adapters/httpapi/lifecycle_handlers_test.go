@@ -221,9 +221,14 @@ func TestLifecycleHTTP_TriggerWaitsForEngineReadiness(t *testing.T) {
 // WriteTimeout shorter than the wait, unlike the recorder-based tests above.
 func TestLifecycleHTTP_TriggerWaitOutlivesServerWriteTimeout(t *testing.T) {
 	t.Parallel()
-	e := newLifecycleEnvWithTimings(t, "honryu", 5*time.Millisecond, 50*time.Millisecond)
+	// Timings scaled 10x from the original 5/50/10ms: the property under
+	// test (server WriteTimeout < readiness wait) is unchanged, but the
+	// SetWriteDeadline override now has 100ms -- not 10ms -- to land before
+	// the server's deadline, which survives -race goroutine-scheduling
+	// delays on loaded CI runners (the 10ms window flaked once there).
+	e := newLifecycleEnvWithTimings(t, "honryu", 50*time.Millisecond, 500*time.Millisecond)
 	srv := httptest.NewUnstartedServer(e.h)
-	srv.Config.WriteTimeout = 10 * time.Millisecond // < the 50ms wait
+	srv.Config.WriteTimeout = 100 * time.Millisecond // < the 500ms wait
 	srv.Start()
 	defer srv.Close()
 

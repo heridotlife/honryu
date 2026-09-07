@@ -7,6 +7,13 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/reservation"
 )
 
+// TenantQuota is one tenant's configured engine ceiling on a cluster -- one
+// row of the quota ledger, as ListClusterQuotas returns them.
+type TenantQuota struct {
+	TenantID int64
+	Ceiling  int
+}
+
 // ReservationRepository persists time-bounded engine-capacity reservations --
 // the ledger that makes quota a guarantee rather than a best-effort check.
 type ReservationRepository interface {
@@ -30,6 +37,12 @@ type ReservationRepository interface {
 	GetCeiling(ctx context.Context, tenantID int64, cluster string) (int, error)
 	// SetCeiling sets a tenant's per-cluster engine quota ceiling.
 	SetCeiling(ctx context.Context, tenantID int64, cluster string, ceiling int) error
+	// ListClusterQuotas returns every tenant quota configured for cluster,
+	// ordered by tenant ID -- the cluster-scoped read an aggregate capacity
+	// view sums across tenants (GetCeiling answers one tenant at a time).
+	// No rows is an empty slice, not an error: a cluster nobody configured a
+	// ceiling on is the normal unconfigured state.
+	ListClusterQuotas(ctx context.Context, cluster string) ([]TenantQuota, error)
 
 	// ReleaseReservationsForExecution deletes every reservation belonging to
 	// executionID, freeing their capacity immediately. Not an error when

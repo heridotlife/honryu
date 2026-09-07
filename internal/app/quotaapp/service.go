@@ -278,3 +278,36 @@ func (s *Service) reclaimOverrun(ctx context.Context, overrun []reservation.Rese
 func (s *Service) Release(ctx context.Context, executionID int64) error {
 	return s.repo.ReleaseReservationsForExecution(ctx, executionID)
 }
+
+// ClusterCapacity reports a cluster's aggregate engine-capacity snapshot:
+// ceiling is the sum of every tenant quota configured on the cluster, used
+// is the sum over those tenants of the very usedCapacity admission runs --
+// reservations whose window spans now, plus overrunning ones -- so a
+// capacity meter can never disagree with Reserve about what "used" means.
+// The per-tenant probe is the zero-width window [now, now]: a reservation
+// counts when it strictly spans this instant, which is what "in use right
+// now" means on a ledger of full-window commitments. A cluster with no
+// quota rows is 0/0 and no error -- unconfigured, not unknown; the frontend
+// renders its honest "no capacity reported" state off the wire fields'
+// absence, not off this method's numbers.
+//
+// The reads are deliberately not taken under WithTenantLock: unlike Reserve
+// there is no read-then-write admission decision to interleave, so a
+// concurrent admission may move the aggregate by its own engine count -- an
+// acceptable skew for a dashboard read of a live ledger.
+func (s *Service) ClusterCapacity(ctx context.Context, cluster string) (used, ceiling int, err error) {
+	quotas, err := s.repo.ListClusterQuotas(ctx, cluster)
+	if err != nil {
+		return 0, 0, err
+	}
+	now := s.now()
+	for _, q := range quotas {
+		ceiling += q.Ceiling
+		u, _, err := s.usedCapacity(ctx, q.TenantID, cluster, now, now)
+		if err != nil {
+			return 0, 0, err
+		}
+		used += u
+	}
+	return used, ceiling, nil
+}

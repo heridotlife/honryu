@@ -171,3 +171,28 @@ func (r *Repository) SetCeiling(ctx context.Context, tenantID int64, cluster str
 	}
 	return nil
 }
+
+// ListClusterQuotas returns every tenant quota configured for cluster,
+// ordered by tenant ID. No rows is an empty slice, not an error.
+func (r *Repository) ListClusterQuotas(ctx context.Context, cluster string) ([]ports.TenantQuota, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT tenant_id, ceiling FROM tenant_quota WHERE cluster = ? ORDER BY tenant_id",
+		cluster)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: list cluster quotas: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []ports.TenantQuota{}
+	for rows.Next() {
+		var q ports.TenantQuota
+		if err := rows.Scan(&q.TenantID, &q.Ceiling); err != nil {
+			return nil, fmt.Errorf("mysql: scan cluster quota: %w", err)
+		}
+		out = append(out, q)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql: iterate cluster quotas: %w", err)
+	}
+	return out, nil
+}
