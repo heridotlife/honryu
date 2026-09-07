@@ -50,6 +50,22 @@ function exportRunHref(runId: number, format: 'csv' | 'json' | 'pdf'): string {
 const runActionClass =
   'inline-flex min-h-[32px] items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-caption font-medium text-slate-600 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800';
 
+/** Shared pill styling for the list pages' filter chips (phase 28) -- the
+ * latency percentile selector's visual language, so every toggleable pill
+ * in the SPA reads the same. */
+function chipClass(selected: boolean): string {
+  return `${
+    selected
+      ? 'bg-sky-600 text-white'
+      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:hover:bg-slate-700'
+  } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500`;
+}
+
+/** The engine a row groups under: absent engine means the deployment default. */
+function engineOf(e: ExecutionSummary): string {
+  return e.engine ?? 'default';
+}
+
 function sortedPercentiles(latency: Record<string, number>): [string, number][] {
   return Object.entries(latency).sort(([a], [b]) => Number(a) - Number(b));
 }
@@ -68,6 +84,8 @@ function ReportsList() {
   const [executionId, setExecutionId] = useState('');
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
   const [showManual, setShowManual] = useState(false);
+  const [engineFilter, setEngineFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [reports, setReports] = useState<Report[] | null>(null);
   const [loadedExecutionId, setLoadedExecutionId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +128,17 @@ function ReportsList() {
     }
   };
 
+  // Phase 28's filter row is client-side over the already-loaded list:
+  // engine chips (one per distinct engine) plus a name/id text filter.
+  const engines = executions === null ? [] : Array.from(new Set(executions.map(engineOf)));
+  const filtered = (executions ?? []).filter((e) => {
+    if (engineFilter !== 'all' && engineOf(e) !== engineFilter) {
+      return false;
+    }
+    const q = search.trim().toLowerCase();
+    return q === '' || `${e.id} ${e.name}`.toLowerCase().includes(q);
+  });
+
   // The compare deep-link: only meaningful once an execution with at
   // least two runs is on screen, and only for callers who may read
   // reports -- the same grant that shows the Reports nav item (task 10).
@@ -138,6 +167,44 @@ function ReportsList() {
         )}
       </div>
 
+      {/* The filter row (phase 28): engine chips + name/id search, purely
+          client-side -- the executions are already in memory. Hidden while
+          the list loads or is empty: there is nothing to filter yet. */}
+      {executions !== null && executions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="filter-chips">
+          <button
+            type="button"
+            data-testid="filter-engine-all"
+            aria-pressed={engineFilter === 'all'}
+            onClick={() => setEngineFilter('all')}
+            className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === 'all')}`}
+          >
+            All
+          </button>
+          {engines.map((engine) => (
+            <button
+              key={engine}
+              type="button"
+              data-testid={`filter-engine-${engine}`}
+              aria-pressed={engineFilter === engine}
+              onClick={() => setEngineFilter(engine)}
+              className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === engine)}`}
+            >
+              {engine}
+            </button>
+          ))}
+          <div className="w-full sm:w-56">
+            <Input
+              data-testid="filter-search"
+              type="search"
+              placeholder="Filter name/id…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+
       <Card>
         <ul className="divide-y divide-slate-200 dark:divide-slate-700" data-testid="execution-list">
           {executions === null ? (
@@ -146,8 +213,12 @@ function ReportsList() {
             <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
               No executions visible to you yet.
             </li>
+          ) : filtered.length === 0 ? (
+            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
+              No executions match the current filters.
+            </li>
           ) : (
-            executions.map((e) => {
+            filtered.map((e) => {
               const active = loadedExecutionId === e.id;
               return (
                 <li key={e.id}>
