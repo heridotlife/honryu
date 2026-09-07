@@ -14,6 +14,7 @@ import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
 import { getRunReport, getShardConfig, getShardLog, listExecutionReports } from '../api/reports';
 import type { Load, Report } from '../api/reports';
+import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { fetchSeries } from '../api/series';
 import type { SeriesPoint } from '../api/series';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
@@ -64,10 +65,28 @@ export default function Reports() {
 function ReportsList() {
   const { can } = useSession();
   const [executionId, setExecutionId] = useState('');
+  const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
+  const [showManual, setShowManual] = useState(false);
   const [reports, setReports] = useState<Report[] | null>(null);
   const [loadedExecutionId, setLoadedExecutionId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // List-first (phase 27): the executions a caller can see, so picking one
+  // needs no guessed id. Falls back silently -- the manual input below still
+  // works when the list endpoint errs or is empty.
+  useEffect(() => {
+    let alive = true;
+    listExecutions()
+      .then((rows) => {
+        if (alive) setExecutions(rows);
+      })
+      .catch(() => {
+        if (alive) setExecutions([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const load = async (id: string) => {
     const executionIdNum = Number(id);
@@ -119,26 +138,77 @@ function ReportsList() {
       </div>
 
       <Card>
-        <form
-          className="flex flex-col gap-4 sm:flex-row sm:items-end"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void load(executionId);
-          }}
-        >
-          <Input
-            label="Execution ID"
-            type="number"
-            min={1}
-            value={executionId}
-            onChange={(e) => setExecutionId(e.target.value)}
-            placeholder="e.g. 42"
-            fullWidth
-          />
-          <Button type="submit" disabled={loading}>
-            {loading ? 'Loading…' : 'Load reports'}
-          </Button>
-        </form>
+        <ul className="divide-y divide-slate-200 dark:divide-slate-700" data-testid="execution-list">
+          {executions === null ? (
+            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">Loading executions…</li>
+          ) : executions.length === 0 ? (
+            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
+              No executions visible to you yet.
+            </li>
+          ) : (
+            executions.map((e) => {
+              const active = loadedExecutionId === e.id;
+              return (
+                <li key={e.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExecutionId(String(e.id));
+                      void load(String(e.id));
+                    }}
+                    className={`flex w-full items-center justify-between rounded py-3 px-2 text-left text-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 ${
+                      active ? 'bg-slate-50 dark:bg-slate-800/50' : ''
+                    }`}
+                    data-testid={`execution-${e.id}`}
+                  >
+                    <span className="font-medium text-slate-900 dark:text-slate-100">
+                      #{e.id} {e.name}
+                    </span>
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {e.engine ?? 'default'}
+                      {' · '}
+                      {new Date(e.created_time).toLocaleString()}
+                      {active ? ' · loaded' : ''}
+                    </span>
+                  </button>
+                </li>
+              );
+            })
+          )}
+        </ul>
+        <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+          {showManual ? (
+            <form
+              className="flex flex-col gap-4 sm:flex-row sm:items-end"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void load(executionId);
+              }}
+            >
+              <Input
+                label="Execution ID"
+                type="number"
+                min={1}
+                value={executionId}
+                onChange={(e) => setExecutionId(e.target.value)}
+                placeholder="e.g. 42"
+                fullWidth
+              />
+              <Button type="submit" disabled={loading}>
+                {loading ? 'Loading…' : 'Load reports'}
+              </Button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowManual(true)}
+              className="text-caption rounded text-slate-500 underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-slate-400"
+              data-testid="manual-id-toggle"
+            >
+              Know the id? Enter it manually →
+            </button>
+          )}
+        </div>
         {error && (
           <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
             {error}
