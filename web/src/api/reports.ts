@@ -33,6 +33,16 @@ export interface LabelSummary {
   failed: number;
   error_rate: number;
   latency: Record<string, number>;
+  /** Per-status counts, dominant first (Phase 30). Absent -- never [] --
+   * for runs whose engine reports no response codes or reports from before
+   * they were accumulated; do not materialize it. */
+  statuses?: StatusBadge[];
+}
+
+/** One HTTP status a label's requests returned, and how often. */
+export interface StatusBadge {
+  code: string;
+  count: number;
 }
 
 export type Outcome = 'passed' | 'failed' | 'aborted' | 'error';
