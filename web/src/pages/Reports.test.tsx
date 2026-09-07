@@ -183,6 +183,10 @@ describe('ReportDetail export + copy-link (mounted)', () => {
     expect(json?.getAttribute('href')).toBe('/api/runs/9/export?format=json');
     expect(json?.hasAttribute('download')).toBe(true);
     expect(json?.textContent).toContain('Export JSON');
+    const pdf = container!.querySelector('[data-testid="export-pdf"]');
+    expect(pdf?.getAttribute('href')).toBe('/api/runs/9/export?format=pdf');
+    expect(pdf?.hasAttribute('download')).toBe(true);
+    expect(pdf?.textContent).toContain('Export PDF');
     expect(container!.querySelector('[data-testid="copy-link"]')).not.toBeNull();
   });
 

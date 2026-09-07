@@ -38,7 +38,7 @@ function formatTime(iso: string): string {
 /** The run export download URL: the API base (same origin as the SPA) plus
  * the run's export endpoint with the requested format. Anchors, not fetch:
  * the browser performs the download natively. */
-function exportRunHref(runId: number, format: 'csv' | 'json'): string {
+function exportRunHref(runId: number, format: 'csv' | 'json' | 'pdf'): string {
   return `${apiClient.baseUrl}/runs/${runId}/export?format=${format}`;
 }
 
@@ -614,6 +614,15 @@ function ReportDetail({ runId }: { runId: string }) {
                 >
                   <Download aria-hidden className="h-3.5 w-3.5" />
                   Export JSON
+                </a>
+                <a
+                  href={exportRunHref(report.run_id, 'pdf')}
+                  download
+                  data-testid="export-pdf"
+                  className={runActionClass}
+                >
+                  <Download aria-hidden className="h-3.5 w-3.5" />
+                  Export PDF
                 </a>
                 <CopyLink />
               </div>
