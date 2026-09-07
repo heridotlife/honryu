@@ -11,6 +11,7 @@ import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../a
 import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { deployExecution, purgeExecution, stopExecution, triggerExecution } from '../api/lifecycle';
 import { useSession } from '../hooks/useSession';
+import ExecutionConfigCard from '../components/ExecutionConfigCard';
 import { useLiveSeries } from '../hooks/useLiveSeries';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import ClusterBadge from '../components/ui/ClusterBadge';
@@ -480,6 +481,9 @@ export default function Execution() {
               keyInfo={{ engine: info.engine, cpu: '500m', memory: '512Mi' }}
               targetQPS={100}
             />
+          )}
+          {status.phase === 'idle' && (
+            <ExecutionConfigCard executionId={executionId} canUpdate={can('execution', 'update')} />
           )}
           <Card padding="none">
             <CardHeader>
