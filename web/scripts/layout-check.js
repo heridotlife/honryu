@@ -703,7 +703,7 @@ try {
             const exportGeo = await settleAt(page, exportRoute);
             if (exportGeo) {
               checkLayout(`alice ${exportRoute} (export affordances)`, exportGeo);
-              for (const id of ['export-csv', 'export-json', 'copy-link']) {
+              for (const id of ['export-csv', 'export-json', 'export-pdf', 'copy-link']) {
                 const present = await page
                   .waitForSelector(`[data-testid="${id}"]`, { timeout: 10000 })
                   .then(() => true)
@@ -769,6 +769,25 @@ try {
                 `${persona.id} /clusters keeps its Capacity column`,
                 headers.includes('Capacity'),
                 `headers: ${headers.join(', ')}`
+              );
+              // Phase 25 (task 4): when the quota ledger is wired and any
+              // row carries capacity numbers, the meter must render the
+              // used/ceiling figures (e.g. "2 / 12") rather than the honest
+              // no-data line. Rows without numbers (unconfigured cluster)
+              // legitimately keep the no-data state, so this asserts on the
+              // numbers' presence-or-absence matching the meter text, and
+              // only reports rows that show neither (a broken mapping).
+              const meterTexts = await page.$$eval('table tbody tr td:last-child span, table tbody tr td:last-child p', (els) =>
+                els.map((e) => (e.textContent ?? '').trim()).filter(Boolean)
+              );
+              const anyNumbers = meterTexts.some((t) => /\d+\s*\/\s*\d+/.test(t));
+              const anyNoData = meterTexts.some((t) => /no capacity/i.test(t));
+              check(
+                `${persona.id} /clusters meters render numbers or the honest no-data state`,
+                anyNumbers || anyNoData,
+                meterTexts.length === 0
+                  ? 'no meter elements found (empty registry)'
+                  : `meters: ${meterTexts.slice(0, 3).join(' | ')}`
               );
             } else {
               console.log(
