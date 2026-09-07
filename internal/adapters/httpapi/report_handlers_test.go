@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
+	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/domain/report"
@@ -62,6 +63,185 @@ func TestReportHTTP_FetchesAStoredReport(t *testing.T) {
 	}
 	if len(got.Errors) != 1 || got.Errors[0].Count != 3 {
 		t.Errorf("errors = %+v, want one signature counted 3", got.Errors)
+	}
+}
+
+// newCriteriaReportEnv wires the execution service alongside the report
+// store -- the deployment shape the run report's Phase 29 verdict layer reads
+// criteria from.
+func newCriteriaReportEnv(t *testing.T) (http.Handler, *fake.ReportStore, *fake.Store) {
+	t.Helper()
+	reports := fake.NewReportStore()
+	store := fake.NewStore()
+	obj := fake.NewObjectStore()
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports: reports, Store: obj,
+		Executions:    executionapp.NewService(store, obj, 100),
+		DefaultOwners: []string{"honryu"},
+	})
+	return h, reports, store
+}
+
+// verdictShape decodes the Phase 29 run-report wire: the embedded domain
+// report plus the two verdict arrays.
+type verdictShape struct {
+	report.Report
+	Criteria        []string `json:"criteria"`
+	FailingCriteria []struct {
+		Criterion string `json:"criterion"`
+		Unparsed  bool   `json:"unparsed"`
+	} `json:"failing_criteria"`
+}
+
+// A configured criterion the report's own measurements trip is named in
+// failing_criteria; one that passes is absent; one outside the grammar is
+// named as unparsed, never silently dropped.
+func TestReportHTTP_ReportCarriesCriteriaVerdict(t *testing.T) {
+	t.Parallel()
+	h, reports, store := newCriteriaReportEnv(t)
+	ctx := context.Background()
+	// 30% failures, p95 at 0.7s: "failures>50%" passes, "p95>500ms" trips,
+	// and the "for" window is outside the grammar the evaluator understands.
+	rep := report.Build(report.Input{
+		ExecutionID: 1, RunID: 42,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomeFailed,
+		Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 10, Failed: 3, Succeeded: 7,
+			Latency: metrics.Histogram{0.01: 7, 0.7: 3},
+			Errors:  []metrics.ErrorGroup{{Message: "Not Found", ResponseCode: "404", Count: 3}},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if err := store.SetExecutionCriteria(ctx, 1, []string{"failures>50%", "p95>500ms", "p99<1s for 5s"}); err != nil {
+		t.Fatalf("SetExecutionCriteria: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got verdictShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The report itself stays verbatim -- the verdict is layered on, never a
+	// rewrite.
+	if got.RunID != 42 || got.Outcome != taurus.OutcomeFailed || len(got.Errors) != 1 {
+		t.Errorf("report fields = run %d outcome %s errors %d, want the stored report verbatim", got.RunID, got.Outcome, len(got.Errors))
+	}
+	wantCriteria := []string{"failures>50%", "p95>500ms", "p99<1s for 5s"}
+	if len(got.Criteria) != len(wantCriteria) {
+		t.Fatalf("criteria = %v, want %v", got.Criteria, wantCriteria)
+	}
+	for i, w := range wantCriteria {
+		if got.Criteria[i] != w {
+			t.Fatalf("criteria = %v, want %v in order", got.Criteria, wantCriteria)
+		}
+	}
+	if len(got.FailingCriteria) != 2 {
+		t.Fatalf("failing_criteria = %+v, want the tripped p95 and the unparsed window clause", got.FailingCriteria)
+	}
+	if got.FailingCriteria[0].Criterion != "p95>500ms" || got.FailingCriteria[0].Unparsed {
+		t.Errorf("failing_criteria[0] = %+v, want p95>500ms parsed and tripped", got.FailingCriteria[0])
+	}
+	if got.FailingCriteria[1].Criterion != "p99<1s for 5s" || !got.FailingCriteria[1].Unparsed {
+		t.Errorf("failing_criteria[1] = %+v, want the for-window clause reported unparsed", got.FailingCriteria[1])
+	}
+}
+
+// No criteria configured: both verdict keys answer empty -- the report
+// itself is untouched.
+func TestReportHTTP_NoConfiguredCriteriaYieldEmptyVerdicts(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newCriteriaReportEnv(t)
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got verdictShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Criteria) != 0 || len(got.FailingCriteria) != 0 {
+		t.Errorf("verdict = criteria %v failing %+v, want both empty", got.Criteria, got.FailingCriteria)
+	}
+	if got.RunID != 42 {
+		t.Errorf("run_id = %d, want 42", got.RunID)
+	}
+}
+
+// criteriaFailStore forces the criteria read to fail while everything else
+// stays the embedded fake's -- the verdict layer is additive, so a criteria
+// store failure must never fail the report read.
+type criteriaFailStore struct {
+	*fake.Store
+}
+
+func (criteriaFailStore) CriteriaFor(context.Context, int64) ([]string, error) { return nil, errBoom }
+
+func TestReportHTTP_CriteriaReadFailureStillServesTheReport(t *testing.T) {
+	t.Parallel()
+	reports := fake.NewReportStore()
+	store := &criteriaFailStore{fake.NewStore()}
+	obj := fake.NewObjectStore()
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports: reports, Store: obj,
+		Executions:    executionapp.NewService(store, obj, 100),
+		DefaultOwners: []string{"honryu"},
+	})
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s), want 200 despite the criteria read failing", rec.Code, rec.Body.String())
+	}
+	var got verdictShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Criteria) != 0 || len(got.FailingCriteria) != 0 {
+		t.Errorf("verdict = criteria %v failing %+v, want both empty when the read failed", got.Criteria, got.FailingCriteria)
+	}
+	if got.RunID != 42 || got.Outcome != taurus.OutcomeFailed {
+		t.Errorf("report = %+v, want the stored report served verbatim", got.Report)
+	}
+}
+
+// A report-only deployment wires no execution service: the report still
+// serves, with empty verdicts -- the pre-Phase-29 behaviour plus two empty
+// keys.
+func TestReportHTTP_NoExecutionServiceStillServesTheReport(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got verdictShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Criteria) != 0 || len(got.FailingCriteria) != 0 {
+		t.Errorf("verdict = criteria %v failing %+v, want both empty with no execution service", got.Criteria, got.FailingCriteria)
+	}
+	if got.RunID != 42 {
+		t.Errorf("run_id = %d, want 42", got.RunID)
 	}
 }
 

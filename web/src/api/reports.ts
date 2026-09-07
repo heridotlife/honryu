@@ -37,6 +37,14 @@ export interface LabelSummary {
 
 export type Outcome = 'passed' | 'failed' | 'aborted' | 'error';
 
+/** One configured criterion the run tripped (unparsed absent/false), or
+ * could not be evaluated at all (unparsed true) — Phase 29's verdict layer.
+ * unparsed is omitempty on the wire, hence optional here. */
+export interface FailingCriterion {
+  criterion: string;
+  unparsed?: boolean;
+}
+
 export interface Report {
   execution_id: number;
   scenario_id: number;
@@ -57,6 +65,10 @@ export interface Report {
   attribution: Attribution;
   errors?: ErrorSignature[];
   labels?: LabelSummary[];
+  /** The execution's configured pass/fail criteria, as configured (Phase 29). */
+  criteria?: string[] | null;
+  /** Which configured criteria this run tripped (or could not parse). */
+  failing_criteria?: FailingCriterion[] | null;
 }
 
 /**
@@ -71,8 +83,14 @@ export async function listExecutionReports(executionId: number, limit?: number):
   return got ?? [];
 }
 
-export function getRunReport(runId: number): Promise<Report> {
-  return apiClient.get<Report>(`/runs/${runId}/report`);
+/** GET /api/runs/{run_id}/report. The Phase 29 verdict arrays normalize
+ * null/absent to [] — the same convention listExecutionReports applies — so
+ * a run with no criteria renders "none" rather than crashing on null. */
+export async function getRunReport(runId: number): Promise<Report> {
+  const rep = await apiClient.get<Report>(`/runs/${runId}/report`);
+  if (rep.criteria == null) rep.criteria = [];
+  if (rep.failing_criteria == null) rep.failing_criteria = [];
+  return rep;
 }
 
 /** The two shard object kinds the run endpoints expose (task 30). */

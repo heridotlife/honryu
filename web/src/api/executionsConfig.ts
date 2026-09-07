@@ -25,6 +25,10 @@ export interface ExecutionConfig {
   execution_id: number;
   tests: ConfigTest[];
   csv_split?: boolean;
+  /** Taurus pass/fail criteria (e.g. "failures>10%", "p95>500ms") evaluated
+   * against every run report. Absent on the wire = none configured; a save
+   * always sends an array (empty clears), so removals persist. */
+  criteria?: string[];
 }
 
 /** GET /api/executions/{id}/config — unwraps the multi-test envelope. */
