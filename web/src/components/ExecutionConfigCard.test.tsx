@@ -59,6 +59,7 @@ afterEach(() => {
 });
 
 describe('ExecutionConfigCard', () => {
+
   it('shows the config with unlimited throughput when the key is omitted', async () => {
     await render({ executionId: 7 });
     const input = container!.querySelector('[data-testid="config-throughput-0"]') as HTMLInputElement;
@@ -95,7 +96,10 @@ describe('ExecutionConfigCard', () => {
     await act(async () => {});
     expect(calls.length).toBe(1);
     const sent = JSON.parse(calls[0].body);
-    expect(sent['multi-test'].tests[0].throughput).toBe(250);
+    // Bare profile on the wire (PUT contract), not the GET wrapper.
+    expect(sent['multi-test']).toBeUndefined();
+    expect(sent.tests[0].throughput).toBe(250);
+    expect(sent.execution_id).toBe(7);
   });
 
   it('read-only mode renders text, not inputs', async () => {

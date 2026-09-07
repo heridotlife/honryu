@@ -38,7 +38,7 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
         if (!alive) return;
         setCfg(c);
         const d: Record<number, string> = {};
-        c['multi-test'].tests.forEach((t, i) => {
+        c.tests.forEach((t, i) => {
           d[i] = t.throughput == null ? '' : String(t.throughput);
         });
         setDrafts(d);
@@ -60,15 +60,13 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
   const save = () => {
     if (!cfg) return;
     const next: ExecutionConfig = {
-      'multi-test': {
-        ...cfg['multi-test'],
-        tests: cfg['multi-test'].tests.map((t, i) => {
-          const raw = drafts[i];
-          const n = raw === '' ? undefined : Number(raw);
-          // undefined = unlimited = omit the key; invalid text is rejected below
-          return n !== undefined && !Number.isFinite(n) ? t : { ...t, throughput: n };
-        }),
-      },
+      ...cfg,
+      tests: cfg.tests.map((t, i) => {
+        const raw = drafts[i];
+        const n = raw === '' ? undefined : Number(raw);
+        // undefined = unlimited = omit the key; invalid text is rejected below
+        return n !== undefined && !Number.isFinite(n) ? t : { ...t, throughput: n };
+      }),
     };
     setBusy(true);
     putExecutionConfig(executionId, next)
@@ -138,7 +136,7 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {cfg['multi-test'].tests.map((t, i) => (
+            {cfg.tests.map((t, i) => (
               <tr key={i}>
                 <td className="px-3 py-2">{t.name || `test ${i + 1}`}</td>
                 <td className="px-3 py-2">{t.scenario_id}</td>
