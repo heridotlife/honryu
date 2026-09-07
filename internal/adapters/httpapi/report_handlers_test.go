@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +37,9 @@ func sampleReport(executionID, runID int64) report.Report {
 		Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
 		Intervals: []metrics.Interval{{
 			Timestamp: 1000, Label: "checkout", Samples: 10, Failed: 3, Succeeded: 7,
-			Latency: metrics.Histogram{0.01: 7, 0.5: 3},
-			Errors:  []metrics.ErrorGroup{{Message: "Not Found", ResponseCode: "404", Count: 3}},
+			Latency:       metrics.Histogram{0.01: 7, 0.5: 3},
+			ResponseCodes: map[string]int64{"200": 7, "404": 3},
+			Errors:        []metrics.ErrorGroup{{Message: "Not Found", ResponseCode: "404", Count: 3}},
 		}},
 	})
 }
@@ -63,6 +65,11 @@ func TestReportHTTP_FetchesAStoredReport(t *testing.T) {
 	}
 	if len(got.Errors) != 1 || got.Errors[0].Count != 3 {
 		t.Errorf("errors = %+v, want one signature counted 3", got.Errors)
+	}
+	// The per-label status breakdown rides the same wire, dominant first.
+	wantStatuses := []report.StatusLabel{{Code: "200", Count: 7}, {Code: "404", Count: 3}}
+	if len(got.Labels) != 1 || !reflect.DeepEqual(got.Labels[0].Statuses, wantStatuses) {
+		t.Errorf("label statuses = %+v, want %+v", got.Labels, wantStatuses)
 	}
 }
 

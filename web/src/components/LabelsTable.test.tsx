@@ -73,7 +73,7 @@ describe('LabelsTable (mounted)', () => {
 
     const row = (label: string) =>
       Array.from(container!.querySelectorAll('tbody tr')).find((tr) => tr.textContent?.includes(label));
-    const cellsOf = (tr: Element) => Array.from(tr.querySelectorAll('td[data-label]')).map((td) => td.textContent);
+    const cellsOf = (tr: Element) => Array.from(tr.querySelectorAll('td[data-label^="p"]')).map((td) => td.textContent);
 
     // POST /login has p50/p95 but no p99.
     expect(cellsOf(row('POST /login')!)).toEqual(['30.0 ms', '100.0 ms', '—']);
@@ -89,6 +89,44 @@ describe('LabelsTable (mounted)', () => {
     await renderTable([]);
     expect(container!.textContent).toBe('');
     expect(container!.querySelector('[data-testid="labels-card"]')).toBeNull();
+  });
+
+  // Phase 30: the per-label status breakdown. Badges render in the wire's
+  // own order (dominant first), coloured by class -- 2xx green, 5xx red --
+  // and a label with no statuses at all (a run whose engine reports no
+  // codes, or a report from before they were counted) shows an em-dash,
+  // never empty badges.
+  it('renders status badges per label and an em-dash where none were reported', async () => {
+    await renderTable([
+      {
+        label: 'GET /cart',
+        samples: 200,
+        failed: 20,
+        error_rate: 0.1,
+        latency: {},
+        statuses: [
+          { code: '200', count: 180 },
+          { code: '500', count: 20 },
+        ],
+      },
+      { label: 'GET /legacy', samples: 10, failed: 0, error_rate: 0, latency: {} },
+    ]);
+
+    const ok = container!.querySelector('[data-testid="status-badge-0-200"]')!;
+    const err = container!.querySelector('[data-testid="status-badge-0-500"]')!;
+    expect(ok.textContent).toBe('200×180');
+    expect(err.textContent).toBe('500×20');
+    // Wire order (dominant first) is the render order.
+    expect(ok.compareDocumentPosition(err) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Colour by status class: green for 2xx, red for 5xx.
+    expect(ok.className).toContain('emerald');
+    expect(err.className).toContain('red');
+
+    const legacyRow = Array.from(container!.querySelectorAll('tbody tr')).find((tr) =>
+      tr.textContent?.includes('GET /legacy'),
+    )!;
+    expect(legacyRow.querySelector('td[data-label="statuses"]')?.textContent).toBe('—');
+    expect(container!.querySelectorAll('[data-testid^="status-badge-1"]').length).toBe(0);
   });
 
   it('sorts by label alphabetically and toggles direction on a second click', async () => {

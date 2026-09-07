@@ -1,6 +1,7 @@
 package report
 
 import (
+	"maps"
 	"sort"
 
 	"github.com/heridotlife/honryu/internal/domain/metrics"
@@ -25,6 +26,10 @@ type Accumulator struct {
 }
 
 type labelState struct {
+	// codes counts each HTTP status the label's requests returned. Nil until
+	// a response code arrives, so a label no engine reported codes for stays
+	// distinguishable from one that reported all-zeroes.
+	codes   map[string]int64
 	samples int64
 	failed  int64
 	latency metrics.Histogram
@@ -70,6 +75,15 @@ func (a *Accumulator) Add(iv metrics.Interval) {
 	st.samples += iv.Samples
 	st.failed += iv.Failed
 	st.latency.Merge(iv.Latency)
+
+	if len(iv.ResponseCodes) > 0 {
+		if st.codes == nil {
+			st.codes = map[string]int64{}
+		}
+		for code, n := range iv.ResponseCodes {
+			st.codes[code] += n
+		}
+	}
 
 	for _, e := range iv.Errors {
 		sig := NewSignature(iv.Label, e)
@@ -124,6 +138,7 @@ func (a *Accumulator) Report(m Meta) Report {
 			Failed:    st.failed,
 			ErrorRate: rate(st.failed, st.samples),
 			Latency:   st.latency.Percentiles(reportedPercentiles...),
+			Statuses:  statusLabels(st.codes),
 		})
 	}
 
@@ -134,6 +149,26 @@ func (a *Accumulator) Report(m Meta) Report {
 	rep.Latency = overall.Percentiles(reportedPercentiles...)
 	rep.Errors, rep.Attribution = a.errors()
 	return rep
+}
+
+// statusLabels turns a label's accumulated response codes into a slice a
+// reader can scan: dominant status first, ties by code, nil when nothing was
+// counted.
+func statusLabels(codes map[string]int64) []StatusLabel {
+	if len(codes) == 0 {
+		return nil
+	}
+	out := make([]StatusLabel, 0, len(codes))
+	for code, n := range codes {
+		out = append(out, StatusLabel{Code: code, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Code < out[j].Code
+	})
+	return out
 }
 
 // peak is the most virtual users the run had in flight at once.
@@ -235,6 +270,10 @@ type LabelProgress struct {
 	Samples int64
 	Failed  int64
 	Latency metrics.Histogram
+	// Codes counts each HTTP status the label returned. A nil map -- nothing
+	// reported -- must survive the round trip, or a report cannot say which
+	// status a request returned.
+	Codes map[string]int64
 }
 
 // SecondProgress is one second's concurrency, as each source reported it.
@@ -263,6 +302,7 @@ func (a *Accumulator) Snapshot() Snapshot {
 	for name, st := range a.labels {
 		s.Labels = append(s.Labels, LabelProgress{
 			Label: name, Samples: st.samples, Failed: st.failed, Latency: st.latency,
+			Codes: st.codes,
 		})
 	}
 	sort.Slice(s.Labels, func(i, j int) bool { return s.Labels[i].Label < s.Labels[j].Label })
@@ -288,7 +328,14 @@ func Restore(s Snapshot) *Accumulator {
 	for _, l := range s.Labels {
 		hist := metrics.Histogram{}
 		hist.Merge(l.Latency)
-		a.labels[l.Label] = &labelState{samples: l.Samples, failed: l.Failed, latency: hist}
+		// The map is copied rather than kept: the snapshot's caller may hold it
+		// while the restored accumulator keeps counting, and the same Add that
+		// mutates the accumulator must not reach back into state already written
+		// down -- the same discipline as the histogram above.
+		a.labels[l.Label] = &labelState{
+			samples: l.Samples, failed: l.Failed, latency: hist,
+			codes: maps.Clone(l.Codes),
+		}
 	}
 	for _, sec := range s.Seconds {
 		a.seconds[sec.Second] = &secondState{engine: sec.Engine, labels: sec.Labels}

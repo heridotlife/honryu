@@ -86,6 +86,14 @@ type Load struct {
 	Failed  int64 `json:"failed,omitempty"`
 }
 
+// StatusLabel is one HTTP status a label's requests returned, and how often.
+// Codes are consistent across engines where error messages are not, so they
+// are what a report counts per request.
+type StatusLabel struct {
+	Code  string `json:"code"`
+	Count int64  `json:"count"`
+}
+
 // LabelSummary is one request's share of a run. A service owner needs to know
 // which request degraded, not only that something did.
 type LabelSummary struct {
@@ -94,6 +102,10 @@ type LabelSummary struct {
 	Failed    int64       `json:"failed"`
 	ErrorRate float64     `json:"error_rate"`
 	Latency   Percentiles `json:"latency"`
+	// Statuses counts each HTTP status the label's requests returned, dominant
+	// first. Nil when none were counted -- a run whose engine reports no
+	// response codes, or a report from before they were accumulated.
+	Statuses []StatusLabel `json:"statuses,omitempty"`
 }
 
 // Meta is everything about a run that its measurements do not carry: which run
