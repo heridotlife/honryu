@@ -109,15 +109,17 @@ afterEach(() => {
 });
 
 describe('ReportDetail time series (mounted)', () => {
-  it('renders three charts from the run\'s series points', async () => {
+  it('renders the hero and latency charts from the run\'s series points', async () => {
     await renderReportDetail();
 
     expect(container!.textContent).toContain('Time series');
-    // The time-series card's three charts (the overlay card adds its own).
-    for (const id of ['chart-vus-rps', 'chart-errors', 'chart-latency']) {
+    // The hero leads the time-series card; latency follows (the overlay
+    // card adds its own).
+    for (const id of ['chart-hero', 'chart-latency']) {
       const wrap = container!.querySelector(`[data-testid="${id}"]`);
       expect(wrap?.querySelector('svg[role="img"]')).not.toBeNull();
     }
+    // The hero folds VUs, RPS, and error % into its one shared chart.
     expect(container!.querySelector('[data-series="VUs"]')).not.toBeNull();
     expect(container!.querySelector('[data-series="RPS"]')).not.toBeNull();
     expect(container!.querySelector('[data-series="error %"]')).not.toBeNull();
@@ -126,6 +128,24 @@ describe('ReportDetail time series (mounted)', () => {
     // The time axis formats ticks as wall-clock times.
     const xLabels = Array.from(container!.querySelectorAll('svg text')).map((t) => t.textContent);
     expect(xLabels.some((l) => /\d{2}:\d{2}:\d{2}/.test(l ?? ''))).toBe(true);
+  });
+
+  it('shows chart-hero first; the folded charts keep hidden testid wrappers', async () => {
+    await renderReportDetail();
+
+    const hero = container!.querySelector('[data-testid="chart-hero"]');
+    const latency = container!.querySelector('[data-testid="chart-latency"]');
+    expect(hero).not.toBeNull();
+    expect(latency).not.toBeNull();
+    // The hero comes first in DOM order.
+    expect(hero!.compareDocumentPosition(latency!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const id of ['chart-vus-rps', 'chart-errors']) {
+      const wrap = container!.querySelector(`[data-testid="${id}"]`);
+      expect(wrap).not.toBeNull();
+      expect(wrap!.className).toContain('hidden');
+      expect(wrap!.querySelector('svg')).toBeNull();
+    }
+    expect(container!.textContent).toContain('folded into hero chart');
   });
 
   it('switches the latency percentile client-side: no refetch, new series', async () => {
