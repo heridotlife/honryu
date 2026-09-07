@@ -290,6 +290,12 @@ func Run(t *testing.T, newProgress NewProgress) {
 		intervals[1].Errors = []metrics.ErrorGroup{
 			{Message: "socket: too many open files", Count: 5},
 		}
+		// Response codes ride the same round trip: a report that said which
+		// status each request returned before a restart but not after would be
+		// silently wrong in the one dimension a reader can act on.
+		intervals[0].ResponseCodes = map[string]int64{"200": 90, "404": 10}
+		intervals[1].ResponseCodes = map[string]int64{"200": 45, "502": 5}
+		intervals[2].ResponseCodes = map[string]int64{"200": 100}
 		if err := p.Absorb(ctx, batch(1, 0, "s1", true, intervals...)); err != nil {
 			t.Fatalf("Absorb: %v", err)
 		}

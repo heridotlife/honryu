@@ -145,6 +145,30 @@ func mergeProgress(ctx context.Context, tx *sql.Tx, runID int64, s report.Snapsh
 	return nil
 }
 
+// storedLabel is one label's read-back state during a merge: the JSON
+// columns that can only be merged in Go, read under the row lock.
+type storedLabel struct {
+	latency metrics.Histogram
+	codes   map[string]int64
+}
+
+// mergeCodes adds a batch's response-code counts to what is stored. Both nil
+// stays nil -- "no codes reported" is not "every code zero times", and a NULL
+// column must not become {} for a label whose engine reports no codes.
+func mergeCodes(stored, delta map[string]int64) map[string]int64 {
+	if len(stored) == 0 && len(delta) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(stored)+len(delta))
+	for code, n := range stored {
+		out[code] = n
+	}
+	for code, n := range delta {
+		out[code] += n
+	}
+	return out
+}
+
 // mergeLabels folds a batch's worth of measurements into every label's stored
 // progress, in three round trips total no matter how many distinct labels the
 // batch touches -- rather than three per label, which turned a batch touching
@@ -200,28 +224,33 @@ func mergeLabels(ctx context.Context, tx *sql.Tx, runID int64, labels []report.L
 
 	// #nosec G202 -- inClause elements are the literal "?"; values bound via inArgs.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT label, latency FROM report_progress_label
+		`SELECT label, latency, codes FROM report_progress_label
 		 WHERE run_id=? AND label IN (`+strings.Join(inClause, ",")+`) FOR UPDATE`,
 		inArgs...)
 	if err != nil {
 		return fmt.Errorf("mysql: lock label progress: %w", err)
 	}
-	stored := make(map[string]metrics.Histogram, len(labels))
+	stored := make(map[string]storedLabel, len(labels))
 	for rows.Next() {
 		var (
-			label string
-			raw   []byte
+			label      string
+			latencyRaw []byte
+			codesRaw   []byte
 		)
-		if err := rows.Scan(&label, &raw); err != nil {
+		if err := rows.Scan(&label, &latencyRaw, &codesRaw); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("mysql: scan label progress: %w", err)
 		}
-		var h metrics.Histogram
-		if err := decodeJSON(raw, &h); err != nil {
+		var sl storedLabel
+		if err := decodeJSON(latencyRaw, &sl.latency); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("mysql: decode label latency: %w", err)
 		}
-		stored[label] = h
+		if err := decodeJSON(codesRaw, &sl.codes); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("mysql: decode label codes: %w", err)
+		}
+		stored[label] = sl
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -230,23 +259,31 @@ func mergeLabels(ctx context.Context, tx *sql.Tx, runID int64, labels []report.L
 	_ = rows.Close()
 
 	mergeRows := make([]string, len(labels))
-	mergeArgs := make([]any, 0, len(labels)*5)
+	mergeArgs := make([]any, 0, len(labels)*6)
 	for i, l := range labels {
 		merged := metrics.Histogram{}
-		merged.Merge(stored[l.Label])
+		merged.Merge(stored[l.Label].latency)
 		merged.Merge(l.Latency)
 		latency, err := json.Marshal(merged)
 		if err != nil {
 			return fmt.Errorf("mysql: encode label latency: %w", err)
 		}
-		mergeRows[i] = "(?,?,?,?,?)"
-		mergeArgs = append(mergeArgs, runID, l.Label, l.Samples, l.Failed, latency)
+		mergedCodes := mergeCodes(stored[l.Label].codes, l.Codes)
+		var codes any // nil map -> SQL NULL, exactly the pre-0054 row shape
+		if mergedCodes != nil {
+			codes, err = json.Marshal(mergedCodes)
+			if err != nil {
+				return fmt.Errorf("mysql: encode label codes: %w", err)
+			}
+		}
+		mergeRows[i] = "(?,?,?,?,?,?)"
+		mergeArgs = append(mergeArgs, runID, l.Label, l.Samples, l.Failed, latency, codes)
 	}
-	// #nosec G202 -- mergeRows elements are the literal "(?,?,?,?,?)"; values bound via mergeArgs.
+	// #nosec G202 -- mergeRows elements are the literal "(?,?,?,?,?,?)"; values bound via mergeArgs.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO report_progress_label (run_id, label, samples, failed, latency) VALUES `+strings.Join(mergeRows, ",")+`
+		`INSERT INTO report_progress_label (run_id, label, samples, failed, latency, codes) VALUES `+strings.Join(mergeRows, ",")+`
 		 ON DUPLICATE KEY UPDATE
-			samples=samples+VALUES(samples), failed=failed+VALUES(failed), latency=VALUES(latency)`,
+			samples=samples+VALUES(samples), failed=failed+VALUES(failed), latency=VALUES(latency), codes=VALUES(codes)`,
 		mergeArgs...); err != nil {
 		return fmt.Errorf("mysql: merge labels: %w", err)
 	}
@@ -344,7 +381,7 @@ func (r *Repository) Snapshot(ctx context.Context, runID int64) (report.Snapshot
 	var s report.Snapshot
 
 	labels, err := r.db.QueryContext(ctx,
-		`SELECT label, samples, failed, latency FROM report_progress_label
+		`SELECT label, samples, failed, latency, codes FROM report_progress_label
 		 WHERE run_id=? ORDER BY label`, runID)
 	if err != nil {
 		return s, err
@@ -380,14 +417,18 @@ func scanLabelProgress(rows *sql.Rows) ([]report.LabelProgress, error) {
 	var out []report.LabelProgress
 	for rows.Next() {
 		var (
-			l   report.LabelProgress
-			raw []byte
+			l          report.LabelProgress
+			latencyRaw []byte
+			codesRaw   []byte
 		)
-		if err := rows.Scan(&l.Label, &l.Samples, &l.Failed, &raw); err != nil {
+		if err := rows.Scan(&l.Label, &l.Samples, &l.Failed, &latencyRaw, &codesRaw); err != nil {
 			return nil, err
 		}
-		if err := decodeJSON(raw, &l.Latency); err != nil {
+		if err := decodeJSON(latencyRaw, &l.Latency); err != nil {
 			return nil, fmt.Errorf("mysql: decode label latency: %w", err)
+		}
+		if err := decodeJSON(codesRaw, &l.Codes); err != nil {
+			return nil, fmt.Errorf("mysql: decode label codes: %w", err)
 		}
 		out = append(out, l)
 	}
