@@ -13,13 +13,13 @@ image:
   # digest, because imagePullPolicy is Always/IfNotPresent by tag, not by
   # content. A new build always gets a new tag.
   api:
-    tag: phase27
+    tag: phase28
   calibrator:
-    tag: phase27
+    tag: phase28
   scheduler:
-    tag: phase27
+    tag: phase28
   sidecar:
-    tag: phase27
+    tag: phase28
   # Already a real tag, not a floating one -- pinned here for consistency
   # with the rest of image.*, so mysql's version is a values-file decision
   # like everything else, not a hardcoded literal in the template.
@@ -36,7 +36,7 @@ image:
   # the upstream Grafana version, since that's already pinned inside the
   # Dockerfile's own FROM line.
   grafana:
-    tag: phase27
+    tag: phase28
   pullPolicy: Always
   pullSecret: registry-pve-heri-life
 
