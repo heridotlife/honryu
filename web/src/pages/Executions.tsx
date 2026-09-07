@@ -1,9 +1,26 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Card, { CardContent } from '../components/ui/Card';
+import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { useSession } from '../hooks/useSession';
+
+/** Shared pill styling for the list pages' filter chips (phase 28) -- the
+ * latency percentile selector's visual language, so every toggleable pill
+ * in the SPA reads the same. */
+function chipClass(selected: boolean): string {
+  return `${
+    selected
+      ? 'bg-sky-600 text-white'
+      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:hover:bg-slate-700'
+  } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500`;
+}
+
+/** The engine a row groups under: absent engine means the deployment default. */
+function engineOf(e: ExecutionSummary): string {
+  return e.engine ?? 'default';
+}
 
 /**
  * /executions -- the caller-scoped execution list (phase 19 R1, over G1's
@@ -14,6 +31,8 @@ export default function Executions() {
   const { can } = useSession();
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [engineFilter, setEngineFilter] = useState('all');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -28,6 +47,17 @@ export default function Executions() {
       alive = false;
     };
   }, []);
+
+  // Phase 28's filter row is client-side over the already-loaded list:
+  // engine chips (one per distinct engine) plus a name/id text filter.
+  const engines = executions === null ? [] : Array.from(new Set(executions.map(engineOf)));
+  const filtered = (executions ?? []).filter((e) => {
+    if (engineFilter !== 'all' && engineOf(e) !== engineFilter) {
+      return false;
+    }
+    const q = search.trim().toLowerCase();
+    return q === '' || `${e.id} ${e.name}`.toLowerCase().includes(q);
+  });
 
   if (error) {
     return (
@@ -51,6 +81,43 @@ export default function Executions() {
           </Link>
         )}
       </div>
+      {/* The filter row (phase 28): engine chips + name/id search, purely
+          client-side -- the executions are already in memory. Hidden while
+          the list loads or is empty: there is nothing to filter yet. */}
+      {executions !== null && executions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="filter-chips">
+          <button
+            type="button"
+            data-testid="filter-engine-all"
+            aria-pressed={engineFilter === 'all'}
+            onClick={() => setEngineFilter('all')}
+            className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === 'all')}`}
+          >
+            All
+          </button>
+          {engines.map((engine) => (
+            <button
+              key={engine}
+              type="button"
+              data-testid={`filter-engine-${engine}`}
+              aria-pressed={engineFilter === engine}
+              onClick={() => setEngineFilter(engine)}
+              className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === engine)}`}
+            >
+              {engine}
+            </button>
+          ))}
+          <div className="w-full sm:w-56">
+            <Input
+              data-testid="filter-search"
+              type="search"
+              placeholder="Filter name/id…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
       {executions === null ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : executions.length === 0 ? (
@@ -59,9 +126,11 @@ export default function Executions() {
             <p className="text-sm text-slate-500">No executions yet.</p>
           </CardContent>
         </Card>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-slate-500">No executions match the current filters.</p>
       ) : (
         <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-          {executions.map((e) => (
+          {filtered.map((e) => (
             <li key={e.id}>
               <Link
                 to={`/executions/${e.id}`}

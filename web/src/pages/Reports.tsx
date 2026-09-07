@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ExternalLink, Download } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -9,6 +9,7 @@ import CopyLink from '../components/CopyLink';
 import EngineBadge from '../components/ui/EngineBadge';
 import Input from '../components/ui/Input';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
+import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
 import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
@@ -49,6 +50,22 @@ function exportRunHref(runId: number, format: 'csv' | 'json' | 'pdf'): string {
 const runActionClass =
   'inline-flex min-h-[32px] items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-caption font-medium text-slate-600 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800';
 
+/** Shared pill styling for the list pages' filter chips (phase 28) -- the
+ * latency percentile selector's visual language, so every toggleable pill
+ * in the SPA reads the same. */
+function chipClass(selected: boolean): string {
+  return `${
+    selected
+      ? 'bg-sky-600 text-white'
+      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700/50 dark:text-slate-300 dark:hover:bg-slate-700'
+  } focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500`;
+}
+
+/** The engine a row groups under: absent engine means the deployment default. */
+function engineOf(e: ExecutionSummary): string {
+  return e.engine ?? 'default';
+}
+
 function sortedPercentiles(latency: Record<string, number>): [string, number][] {
   return Object.entries(latency).sort(([a], [b]) => Number(a) - Number(b));
 }
@@ -67,6 +84,8 @@ function ReportsList() {
   const [executionId, setExecutionId] = useState('');
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
   const [showManual, setShowManual] = useState(false);
+  const [engineFilter, setEngineFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [reports, setReports] = useState<Report[] | null>(null);
   const [loadedExecutionId, setLoadedExecutionId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +128,17 @@ function ReportsList() {
     }
   };
 
+  // Phase 28's filter row is client-side over the already-loaded list:
+  // engine chips (one per distinct engine) plus a name/id text filter.
+  const engines = executions === null ? [] : Array.from(new Set(executions.map(engineOf)));
+  const filtered = (executions ?? []).filter((e) => {
+    if (engineFilter !== 'all' && engineOf(e) !== engineFilter) {
+      return false;
+    }
+    const q = search.trim().toLowerCase();
+    return q === '' || `${e.id} ${e.name}`.toLowerCase().includes(q);
+  });
+
   // The compare deep-link: only meaningful once an execution with at
   // least two runs is on screen, and only for callers who may read
   // reports -- the same grant that shows the Reports nav item (task 10).
@@ -137,6 +167,44 @@ function ReportsList() {
         )}
       </div>
 
+      {/* The filter row (phase 28): engine chips + name/id search, purely
+          client-side -- the executions are already in memory. Hidden while
+          the list loads or is empty: there is nothing to filter yet. */}
+      {executions !== null && executions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="filter-chips">
+          <button
+            type="button"
+            data-testid="filter-engine-all"
+            aria-pressed={engineFilter === 'all'}
+            onClick={() => setEngineFilter('all')}
+            className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === 'all')}`}
+          >
+            All
+          </button>
+          {engines.map((engine) => (
+            <button
+              key={engine}
+              type="button"
+              data-testid={`filter-engine-${engine}`}
+              aria-pressed={engineFilter === engine}
+              onClick={() => setEngineFilter(engine)}
+              className={`rounded-full px-3 py-1 text-caption font-medium transition-colors ${chipClass(engineFilter === engine)}`}
+            >
+              {engine}
+            </button>
+          ))}
+          <div className="w-full sm:w-56">
+            <Input
+              data-testid="filter-search"
+              type="search"
+              placeholder="Filter name/id…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+
       <Card>
         <ul className="divide-y divide-slate-200 dark:divide-slate-700" data-testid="execution-list">
           {executions === null ? (
@@ -145,8 +213,12 @@ function ReportsList() {
             <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
               No executions visible to you yet.
             </li>
+          ) : filtered.length === 0 ? (
+            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
+              No executions match the current filters.
+            </li>
           ) : (
-            executions.map((e) => {
+            filtered.map((e) => {
               const active = loadedExecutionId === e.id;
               return (
                 <li key={e.id}>
@@ -626,11 +698,43 @@ function RequestedVsAchieved({ requested, points }: { requested: Load; points: S
   );
 }
 
+/** The run workspace's tabs, in strip order; each id names its panel and its ?tab= URL value. */
+const RUN_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'timeseries', label: 'Time series' },
+  { id: 'labels', label: 'Labels' },
+  { id: 'errors', label: 'Errors' },
+  { id: 'config', label: 'Config' },
+  { id: 'objects', label: 'Objects' },
+];
+
+/**
+ * /reports/:runId as a dense tabbed workspace (phase 28): one header band
+ * -- identity, verdict, the get-data-out group, and jumps to this
+ * execution's neighbouring runs -- then six panels behind a tab strip.
+ * Every panel renders on first paint, inactive ones behind the hidden
+ * attribute, so charts, labels, and shard objects are addressable without
+ * clicking first (the mounted suite queries hidden subtrees; deep links
+ * land on the URL's tab) and switching costs no refetch. The active tab
+ * mirrors into ?tab= so a copied link reopens the exact view.
+ */
 function ReportDetail({ runId }: { runId: string }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [apmTemplate] = useState<string>(() => loadApmTemplate());
+  // This execution's runs, newest first, for the prev/next jumps. A null
+  // value also covers "fetch failed" -- the jumps simply disable; they
+  // never block the page (this is an affordance, not a dependency).
+  const [siblings, setSiblings] = useState<Report[] | null>(null);
+
+  const urlTab = searchParams.get('tab');
+  const tab = urlTab !== null && RUN_TABS.some((t) => t.id === urlTab) ? urlTab : 'overview';
+  const setTab = (id: string) => {
+    // View state, not navigation: replace keeps tab clicks out of history.
+    setSearchParams({ tab: id }, { replace: true });
+  };
 
   useEffect(() => {
     const id = Number(runId);
@@ -640,10 +744,38 @@ function ReportDetail({ runId }: { runId: string }) {
     }
     setError(null);
     setReport(null);
+    setSiblings(null);
     getRunReport(id)
       .then(setReport)
       .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'Failed to load report.'));
   }, [runId]);
+
+  // Neighbouring runs load once per execution, not per run: the fetch is
+  // keyed on execution_id, and failures land back on null (disabled jumps).
+  const executionId = report?.execution_id;
+  useEffect(() => {
+    if (executionId === undefined) {
+      return;
+    }
+    let alive = true;
+    listExecutionReports(executionId)
+      .then((rows) => {
+        if (alive) setSiblings(rows);
+      })
+      .catch(() => {
+        if (alive) setSiblings(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [executionId]);
+
+  // Newest first is the list endpoint's contract: "next" is the run above
+  // ours (newer), "prev" the one below (older); the list's edges disable.
+  const runIndex =
+    siblings !== null && report !== null ? siblings.findIndex((r) => r.run_id === report.run_id) : -1;
+  const prevRun = siblings !== null && runIndex >= 0 && runIndex + 1 < siblings.length ? siblings[runIndex + 1] : null;
+  const nextRun = runIndex > 0 && siblings !== null ? siblings[runIndex - 1] : null;
 
   return (
     <div className="space-y-6">
@@ -661,10 +793,17 @@ function ReportDetail({ runId }: { runId: string }) {
 
       {report && (
         <>
+          {/* The header band: the run's identity and verdict at a glance, plus
+              the actions that should never need a scroll to reach. */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex flex-wrap items-center gap-2">
                 <CardTitle>Run #{report.run_id}</CardTitle>
+                <OutcomeBadge outcome={report.outcome} />
+                {report.engine && <EngineBadge engine={report.engine} />}
+                {report.cluster && <ClusterBadge cluster={report.cluster} />}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
                 {/* The get-data-out group: both export formats the endpoint
                     serves, plus the deep-link to this very page. */}
                 <a
@@ -695,8 +834,29 @@ function ReportDetail({ runId }: { runId: string }) {
                   Export PDF
                 </a>
                 <CopyLink />
+                <div className="flex items-center gap-1" role="group" aria-label="Neighbouring runs">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-testid="run-prev"
+                    aria-label="Previous run in this execution"
+                    disabled={prevRun === null}
+                    onClick={() => prevRun && navigate(`/reports/${prevRun.run_id}`)}
+                  >
+                    ← Prev
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-testid="run-next"
+                    aria-label="Next run in this execution"
+                    disabled={nextRun === null}
+                    onClick={() => nextRun && navigate(`/reports/${nextRun.run_id}`)}
+                  >
+                    Next →
+                  </Button>
+                </div>
               </div>
-              <OutcomeBadge outcome={report.outcome} />
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div>
@@ -715,134 +875,171 @@ function ReportDetail({ runId }: { runId: string }) {
                 <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Ended</p>
                 <p className="text-body-sm text-slate-900 dark:text-white">{formatTime(report.ended_at)}</p>
               </div>
-              {report.engine && (
-                <div>
-                  <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Engine</p>
-                  <p className="text-body-sm text-slate-900 dark:text-white">{report.engine}</p>
-                </div>
-              )}
-              {report.cluster && (
-                <div>
-                  <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Cluster</p>
-                  <p className="text-body-sm text-slate-900 dark:text-white">{report.cluster}</p>
-                </div>
-              )}
             </CardContent>
           </Card>
 
-          {report.correlation_id && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Correlation id</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap items-center gap-3">
-                  <code className="rounded-md bg-slate-100 px-2 py-1 font-mono text-body-sm break-all text-slate-900 dark:bg-slate-900 dark:text-slate-100">
-                    {report.correlation_id}
-                  </code>
-                  <CopyButton value={report.correlation_id} label="Copy correlation id" />
-                  {formatApmLink(apmTemplate, report.correlation_id) && (
-                    <a
-                      href={formatApmLink(apmTemplate, report.correlation_id) as string}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 rounded text-sm font-medium text-sky-600 hover:text-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
-                    >
-                      Open in APM <ExternalLink aria-hidden className="h-3.5 w-3.5" />
-                    </a>
-                  )}
-                </div>
-                <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
-                  The trace id this run&apos;s load carried (traceparent/baggage); paste it into your APM to see exactly this run&apos;s traffic.
-                </p>
-              </CardContent>
-            </Card>
-          )}
+          <Tabs tabs={RUN_TABS} active={tab} onChange={setTab} data-testid="run-tabs" />
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Load</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-              <LoadStat label="Requested" load={report.requested} />
-              <LoadStat label="Achieved" load={report.achieved} />
-            </CardContent>
-          </Card>
+          <div className="mt-6">
+            {/* Overview: the verdict-level numbers -- asked vs held load, the
+                report's latency percentiles, where failures were attributed,
+                and the trace id this run's load carried. */}
+            <TabPanel id="overview" active={tab} className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Load</CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                  <LoadStat label="Requested" load={report.requested} />
+                  <LoadStat label="Achieved" load={report.achieved} />
+                </CardContent>
+              </Card>
 
-          <TimeSeriesSection runId={report.run_id} requested={report.requested} />
-
-          {/* Hides itself when the report carries no labels (task 8's hide rule). */}
-          <LabelsTable labels={report.labels} />
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Latency percentiles</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {Object.keys(report.latency).length === 0 ? (
-                <p className="text-body-sm">No latency data.</p>
-              ) : (
-                <div className="flex flex-wrap gap-4">
-                  {sortedPercentiles(report.latency).map(([p, seconds]) => (
-                    <div key={p} className="rounded-lg bg-slate-100 px-3 py-2 dark:bg-slate-700/50">
-                      <p className="text-caption text-slate-500 dark:text-slate-400">p{p}</p>
-                      <p className="text-body-sm font-semibold text-slate-900 dark:text-white">{seconds.toFixed(3)}s</p>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Latency percentiles</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {Object.keys(report.latency).length === 0 ? (
+                    <p className="text-body-sm">No latency data.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-4">
+                      {sortedPercentiles(report.latency).map(([p, seconds]) => (
+                        <div key={p} className="rounded-lg bg-slate-100 px-3 py-2 dark:bg-slate-700/50">
+                          <p className="text-caption text-slate-500 dark:text-slate-400">p{p}</p>
+                          <p className="text-body-sm font-semibold text-slate-900 dark:text-white">{seconds.toFixed(3)}s</p>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                  )}
+                </CardContent>
+              </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Attribution</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-3 gap-4">
-              <div>
-                <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Target</p>
-                <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.target}</p>
-              </div>
-              <div>
-                <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Engine</p>
-                <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.engine}</p>
-              </div>
-              <div>
-                <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Unknown</p>
-                <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.unknown}</p>
-              </div>
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Attribution</CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Target</p>
+                    <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.target}</p>
+                  </div>
+                  <div>
+                    <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Engine</p>
+                    <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.engine}</p>
+                  </div>
+                  <div>
+                    <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Unknown</p>
+                    <p className="text-heading-md text-slate-900 dark:text-white">{report.attribution.unknown}</p>
+                  </div>
+                </CardContent>
+              </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Error signatures</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {!report.errors || report.errors.length === 0 ? (
-                <p className="text-body-sm">No failures recorded.</p>
-              ) : (
-                <ul className="space-y-3">
-                  {report.errors.map((e, i) => (
-                    <li key={i} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-body-sm font-medium text-slate-900 dark:text-white">{e.label}</span>
-                        <span className="text-caption text-slate-500 dark:text-slate-400">
-                          {e.side} · {e.count} {e.count === 1 ? 'occurrence' : 'occurrences'}
-                          {e.response_code ? ` · ${e.response_code}` : ''}
-                        </span>
-                      </div>
-                      {e.exemplars && e.exemplars.length > 0 && (
-                        <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">{e.exemplars[0]}</p>
+              {report.correlation_id && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Correlation id</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <code className="rounded-md bg-slate-100 px-2 py-1 font-mono text-body-sm break-all text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+                        {report.correlation_id}
+                      </code>
+                      <CopyButton value={report.correlation_id} label="Copy correlation id" />
+                      {formatApmLink(apmTemplate, report.correlation_id) && (
+                        <a
+                          href={formatApmLink(apmTemplate, report.correlation_id) as string}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded text-sm font-medium text-sky-600 hover:text-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400 dark:hover:text-sky-300"
+                        >
+                          Open in APM <ExternalLink aria-hidden className="h-3.5 w-3.5" />
+                        </a>
                       )}
-                    </li>
-                  )                  )}
-                </ul>
+                    </div>
+                    <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
+                      The trace id this run&apos;s load carried (traceparent/baggage); paste it into your APM to see exactly this run&apos;s traffic.
+                    </p>
+                  </CardContent>
+                </Card>
               )}
-            </CardContent>
-          </Card>
+            </TabPanel>
 
-          <ShardObjects report={report} />
+            {/* Time series: the per-second shape, re-used exactly -- the
+                section owns its loading/error/empty states and its own
+                requested-vs-achieved overlay hide rule. */}
+            <TabPanel id="timeseries" active={tab}>
+              <TimeSeriesSection runId={report.run_id} requested={report.requested} />
+            </TabPanel>
+
+            {/* Hides itself when the report carries no labels (task 8's hide
+                rule), leaving an honest empty panel in its place. */}
+            <TabPanel id="labels" active={tab}>
+              <LabelsTable labels={report.labels} />
+            </TabPanel>
+
+            <TabPanel id="errors" active={tab}>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Error signatures</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {!report.errors || report.errors.length === 0 ? (
+                    <p className="text-body-sm">No failures recorded.</p>
+                  ) : (
+                    <ul className="space-y-3">
+                      {report.errors.map((e, i) => (
+                        <li key={i} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-body-sm font-medium text-slate-900 dark:text-white">{e.label}</span>
+                            <span className="text-caption text-slate-500 dark:text-slate-400">
+                              {e.side} · {e.count} {e.count === 1 ? 'occurrence' : 'occurrences'}
+                              {e.response_code ? ` · ${e.response_code}` : ''}
+                            </span>
+                          </div>
+                          {e.exemplars && e.exemplars.length > 0 && (
+                            <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">{e.exemplars[0]}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+            </TabPanel>
+
+            {/* Config: what the deployment asked for, as the run saw it. */}
+            <TabPanel id="config" active={tab}>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Requested configuration</CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                  <LoadStat label="Requested load" load={report.requested} />
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Engine</p>
+                      <p className="text-body-sm text-slate-900 dark:text-white">{report.engine ?? 'default'}</p>
+                    </div>
+                    <div>
+                      <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Cluster</p>
+                      <p className="text-body-sm text-slate-900 dark:text-white">{report.cluster ?? 'default'}</p>
+                    </div>
+                    <div>
+                      <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Duration</p>
+                      <p className="text-body-sm text-slate-900 dark:text-white">
+                        {report.requested.duration_seconds ? `${report.requested.duration_seconds}s` : 'until stopped'}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabPanel>
+
+            <TabPanel id="objects" active={tab}>
+              <ShardObjects report={report} />
+            </TabPanel>
+          </div>
         </>
       )}
     </div>

@@ -825,7 +825,29 @@ try {
                   `h3 titles: ${sections.join(', ')}`
                 );
               }
-              for (const testId of ['chart-vus-rps', 'chart-errors', 'chart-latency', 'chart-requested', 'labels-table']) {
+              // Phase 28: the run page is a tabbed workspace -- the charts
+              // live on the "Time series" panel and the per-label table on
+              // "Labels"; panels stay in the DOM behind `hidden`, so the
+              // visibility waits below must first pick the owning tab, the
+              // way an operator would.
+              const pickTab = async (name) => {
+                try {
+                  await page.getByRole('tab', { name }).click({ timeout: 5000 });
+                  return true;
+                } catch {
+                  return false;
+                }
+              };
+              check(`${reportRoute} opens the Time series tab`, await pickTab('Time series'));
+              for (const testId of ['chart-vus-rps', 'chart-errors', 'chart-latency', 'chart-requested']) {
+                const present = await page
+                  .waitForSelector(`[data-testid="${testId}"]`, { timeout: 10000 })
+                  .then(() => true)
+                  .catch(() => false);
+                check(`${reportRoute} renders ${testId}`, present);
+              }
+              check(`${reportRoute} opens the Labels tab`, await pickTab('Labels'));
+              for (const testId of ['labels-table']) {
                 const present = await page
                   .waitForSelector(`[data-testid="${testId}"]`, { timeout: 10000 })
                   .then(() => true)
