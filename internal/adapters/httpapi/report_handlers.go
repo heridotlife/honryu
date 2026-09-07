@@ -47,10 +47,23 @@ func (h *handlers) authorizeRunShard(r *http.Request, runID int64) error {
 	return h.authorizeReport(r, executionID)
 }
 
+// runReportResponse is the wire shape of GET /api/runs/{run_id}/report: the
+// stored report's every field verbatim (the embedded domain type serializes
+// flattened), plus the execution's configured pass/fail criteria and which of
+// them this run tripped -- the verdict-at-a-glance layer (Phase 29). Both
+// added arrays are always arrays, the series endpoint's own rule: an empty
+// verdict renders as nothing, not as null.
+type runReportResponse struct {
+	report.Report
+	Criteria        []string                   `json:"criteria"`
+	FailingCriteria []failingCriterionResponse `json:"failing_criteria"`
+}
+
 // runReport returns a run's stored report -- the durable record of what it
-// produced, retrievable after the engines and their pods are gone.
-// Authorized via the report's own recorded ExecutionID, resolved before
-// anything is written back (Phase 20).
+// produced, retrievable after the engines and their pods are gone -- with the
+// execution's configured criteria evaluated against it (Phase 29). Authorized
+// via the report's own recorded ExecutionID, resolved before anything is
+// written back (Phase 20).
 func (h *handlers) runReport(w http.ResponseWriter, r *http.Request) {
 	runID, ok := pathInt(r, "run_id")
 	if !ok {
@@ -66,7 +79,35 @@ func (h *handlers) runReport(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rep)
+	writeJSON(w, http.StatusOK, h.withCriteriaVerdict(r, rep))
+}
+
+// withCriteriaVerdict layers the Phase 29 verdict fields onto a stored
+// report: the execution's configured criteria as-is, and which of them the
+// report's own measurements tripped via EvaluateCriteria (pure, tested domain
+// logic). Strictly additive -- no execution service wired, or a criteria read
+// that fails, yields empty verdict fields, never a failed report read: the
+// report existed and was authorized before criteria entered the picture.
+func (h *handlers) withCriteriaVerdict(r *http.Request, rep report.Report) runReportResponse {
+	var crits []string
+	if h.deps.Executions != nil {
+		if c, err := h.deps.Executions.CriteriaFor(r.Context(), rep.ExecutionID); err == nil {
+			crits = c
+		}
+	}
+	failing := rep.EvaluateCriteria(crits)
+	out := runReportResponse{
+		Report:          rep,
+		Criteria:        crits,
+		FailingCriteria: make([]failingCriterionResponse, len(failing)),
+	}
+	for i, fc := range failing {
+		out.FailingCriteria[i] = failingCriterionResponse{Criterion: fc.Criterion, Unparsed: fc.Unparsed}
+	}
+	if out.Criteria == nil {
+		out.Criteria = []string{}
+	}
+	return out
 }
 
 // seriesResponse is the wire shape of GET /api/runs/{run_id}/series: points

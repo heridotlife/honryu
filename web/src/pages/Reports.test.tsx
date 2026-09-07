@@ -435,3 +435,44 @@ describe('ReportsList compare link (mounted)', () => {
     expect(container!.querySelector('[data-testid="compare-runs-link"]')).toBeNull();
   });
 });
+
+describe('ReportDetail thresholds card (phase 29)', () => {
+  it('renders a verdict per configured criterion: pass, fail, unparsed', async () => {
+    const report: Report = {
+      ...reportFixture,
+      criteria: ['failures>10%', 'p95>500ms', 'p99<1s for 5s'],
+      failing_criteria: [{ criterion: 'p95>500ms' }, { criterion: 'p99<1s for 5s', unparsed: true }],
+    };
+    await renderReportDetail(() => json({ points: [] }), [], report);
+
+    expect(container!.querySelector('[data-testid="thresholds-card"]')).not.toBeNull();
+    // failures>10% passed: not named in failing_criteria.
+    expect(container!.querySelector('[data-testid="threshold-pass-0"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="threshold-fail-0"]')).toBeNull();
+    // p95>500ms tripped.
+    expect(container!.querySelector('[data-testid="threshold-fail-1"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="threshold-pass-1"]')).toBeNull();
+    // The for-window clause is outside the grammar: unknown, not failed.
+    expect(container!.querySelector('[data-testid="threshold-unparsed-2"]')).not.toBeNull();
+    expect(container!.textContent).toContain('could not be evaluated');
+  });
+
+  it('says no criteria are configured and points at the Configuration card', async () => {
+    await renderReportDetail();
+
+    expect(container!.querySelector('[data-testid="thresholds-card"]')).not.toBeNull();
+    expect(container!.textContent).toContain('No criteria configured');
+    expect(container!.textContent).toContain('Configuration card');
+    expect(container!.querySelector('[data-testid="threshold-row-0"]')).toBeNull();
+  });
+
+  it('normalizes a null verdict from the wire into no criteria', async () => {
+    // Go marshals a nil slice as null; getRunReport must normalize before
+    // the card renders.
+    const report = { ...reportFixture, criteria: null, failing_criteria: null };
+    await renderReportDetail(() => json({ points: [] }), [], report);
+
+    expect(container!.querySelector('[data-testid="thresholds-card"]')).not.toBeNull();
+    expect(container!.textContent).toContain('No criteria configured');
+  });
+});

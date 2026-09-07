@@ -249,6 +249,13 @@ func (s *Service) GetConfig(ctx context.Context, executionID int64) (loadprofile
 	}}, nil
 }
 
+// CriteriaFor returns the execution's currently configured Taurus pass/fail
+// criteria, in the order they were stored -- the run report's verdict layer
+// reads them without paying for the rest of GetConfig.
+func (s *Service) CriteriaFor(ctx context.Context, executionID int64) ([]string, error) {
+	return s.repo.CriteriaFor(ctx, executionID)
+}
+
 func executionKey(executionID int64, filename string) string {
 	return fmt.Sprintf("execution/%d/%s", executionID, filename)
 }

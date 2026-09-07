@@ -18,6 +18,9 @@ interface Props {
   canUpdate: boolean;
 }
 
+const inputCls =
+  'rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+
 export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
   const [cfg, setCfg] = useState<ExecutionConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +28,11 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   // Draft throughput per test index: '' = unlimited (wire omits the key).
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  // Draft criteria list and the add-row's text. The draft always saves as an
+  // array (empty clears), so a removal persists rather than round-tripping
+  // the stored list back in.
+  const [crits, setCrits] = useState<string[]>([]);
+  const [critInput, setCritInput] = useState('');
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
@@ -32,6 +40,8 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
     setCfg(null);
     setError(null);
     setDrafts({});
+    setCrits([]);
+    setCritInput('');
     setDirty(false);
     getExecutionConfig(executionId)
       .then((c) => {
@@ -42,6 +52,7 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
           d[i] = t.throughput == null ? '' : String(t.throughput);
         });
         setDrafts(d);
+        setCrits(c.criteria ?? []);
       })
       .catch((e: unknown) => {
         if (alive) setError(e instanceof ApiError ? e.message : 'failed to load config');
@@ -57,10 +68,27 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
     setSavedAt(null);
   };
 
+  const addCriterion = () => {
+    const v = critInput.trim();
+    if (!v) return;
+    setCrits((prev) => [...prev, v]);
+    setCritInput('');
+    setDirty(true);
+    setSavedAt(null);
+  };
+
+  const removeCriterion = (i: number) => {
+    setCrits((prev) => prev.filter((_, j) => j !== i));
+    setDirty(true);
+    setSavedAt(null);
+  };
+
   const save = () => {
     if (!cfg) return;
     const next: ExecutionConfig = {
       ...cfg,
+      // Always an array: empty means "none configured", never "unchanged".
+      criteria: crits,
       tests: cfg.tests.map((t, i) => {
         const raw = drafts[i];
         const n = raw === '' ? undefined : Number(raw);
@@ -164,6 +192,57 @@ export default function ExecutionConfigCard({ executionId, canUpdate }: Props) {
             ))}
           </tbody>
         </table>
+        <div className="mt-4">
+          <h4 className="text-body-sm font-medium text-slate-700 dark:text-slate-200">
+            Pass/fail criteria
+          </h4>
+          {crits.length === 0 && (
+            <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
+              No criteria — every run counts as passing regardless of its measurements.
+            </p>
+          )}
+          <ul className="mt-2 space-y-1" data-testid="criteria-list">
+            {crits.map((c, i) => (
+              <li key={i} className="flex items-center gap-2" data-testid={`criteria-row-${i}`}>
+                <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-body-sm text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                  {c}
+                </code>
+                {canUpdate && (
+                  <Button
+                    variant="ghost"
+                    className="min-h-0 px-2 py-1"
+                    onClick={() => removeCriterion(i)}
+                    aria-label={`remove criterion ${i + 1}`}
+                    data-testid={`criteria-remove-${i}`}
+                  >
+                    ✕
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {canUpdate && (
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                className={`${inputCls} w-64`}
+                value={critInput}
+                onChange={(e) => setCritInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addCriterion();
+                }}
+                placeholder="failures>10%"
+                aria-label="new criterion"
+                data-testid="criteria-input"
+              />
+              <Button variant="secondary" onClick={addCriterion} data-testid="criteria-add">
+                Add
+              </Button>
+            </div>
+          )}
+          <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
+            e.g. failures&gt;10%, p95&gt;500ms — evaluated against every run report.
+          </p>
+        </div>
         <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
           Empty target QPS = unlimited. {canUpdate ? 'Save writes the whole config back.' : 'Read-only for your role.'}
         </p>

@@ -885,6 +885,56 @@ function ReportDetail({ runId }: { runId: string }) {
                 report's latency percentiles, where failures were attributed,
                 and the trace id this run's load carried. */}
             <TabPanel id="overview" active={tab} className="space-y-6">
+              {/* Thresholds first: the verdict at a glance — did this run meet
+                  the bar its execution set, criterion by criterion, before
+                  any measurement detail. */}
+              <Card data-testid="thresholds-card">
+                <CardHeader>
+                  <CardTitle>Thresholds</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {(report.criteria ?? []).length === 0 ? (
+                    <p className="text-body-sm text-slate-500 dark:text-slate-400">
+                      No criteria configured. Add pass/fail criteria in the execution&apos;s Configuration card.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {(report.criteria ?? []).map((c, i) => {
+                        // Configured but not named in failing_criteria = passed.
+                        const fc = (report.failing_criteria ?? []).find((f) => f.criterion === c);
+                        return (
+                          <li key={i} className="flex items-center gap-2" data-testid={`threshold-row-${i}`}>
+                            {fc ? (
+                              fc.unparsed ? (
+                                <span role="img" aria-label="could not be evaluated" data-testid={`threshold-unparsed-${i}`}>
+                                  ❓
+                                </span>
+                              ) : (
+                                <span role="img" aria-label="failed" data-testid={`threshold-fail-${i}`}>
+                                  ❌
+                                </span>
+                              )
+                            ) : (
+                              <span role="img" aria-label="passed" data-testid={`threshold-pass-${i}`}>
+                                ✅
+                              </span>
+                            )}
+                            <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-body-sm text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                              {c}
+                            </code>
+                            {fc?.unparsed && (
+                              <span className="text-caption text-slate-500 dark:text-slate-400">
+                                could not be evaluated
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+
               <Card>
                 <CardHeader>
                   <CardTitle>Load</CardTitle>
