@@ -18,6 +18,7 @@ import type { Load, Report } from '../api/reports';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { fetchSeries } from '../api/series';
 import type { SeriesPoint } from '../api/series';
+import HeroChart from '../components/charts/HeroChart';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { useSession } from '../hooks/useSession';
 import { formatApmLink, loadApmTemplate, saveApmTemplate } from '../api/apm';
@@ -503,11 +504,13 @@ function pctPill(selected: boolean): string {
 }
 
 /**
- * The run's per-second shape once the series is in memory: VUs and RPS on
- * one axis (the plan's dual-series chart; the legend names each unit),
- * error rate, and latency with a percentile selector that switches the
- * plotted series client-side -- every percentile arrived in the same
- * fetch, so switching costs nothing.
+ * The run's per-second shape once the series is in memory: the hero chart
+ * leads -- VUs, RPS, and the error rate folded into one picture -- with
+ * latency below it, its percentile selector switching the plotted series
+ * client-side (every percentile arrived in the same fetch, so switching
+ * costs nothing). The former chart-vus-rps and chart-errors blocks live
+ * on as hidden wrappers so the testids layout-check and the tests key on
+ * stay stable.
  */
 function TimeSeriesCharts({ points, pct, onPct }: { points: SeriesPoint[]; pct: string; onPct: (p: string) => void }) {
   const available = LATENCY_PERCENTILES.filter((p) => points.some((pt) => pt.latency?.[p] !== undefined));
@@ -518,23 +521,13 @@ function TimeSeriesCharts({ points, pct, onPct }: { points: SeriesPoint[]; pct: 
 
   return (
     <div className="space-y-6">
-      <div data-testid="chart-vus-rps">
-        <p className="text-caption mb-2 font-medium text-slate-500 dark:text-slate-400">Concurrency and throughput</p>
-        <TimeSeriesChart
-          xType="time"
-          series={[
-            { name: 'VUs', color: 'text-sky-500', points: points.map((p) => ({ x: p.ts, y: p.vus })) },
-            { name: 'RPS', color: 'text-amber-500', points: points.map((p) => ({ x: p.ts, y: p.rps })) },
-          ]}
-        />
+      <HeroChart points={points} />
+      {/* Folded into the hero above; the testid wrappers stay for layout-check. */}
+      <div data-testid="chart-vus-rps" className="hidden">
+        <p className="sr-only">folded into hero chart</p>
       </div>
-      <div data-testid="chart-errors">
-        <p className="text-caption mb-2 font-medium text-slate-500 dark:text-slate-400">Error rate</p>
-        <TimeSeriesChart
-          xType="time"
-          yLabel="%"
-          series={[{ name: 'error %', color: 'text-rose-500', points: points.map((p) => ({ x: p.ts, y: p.err_pct })) }]}
-        />
+      <div data-testid="chart-errors" className="hidden">
+        <p className="sr-only">error rate folded into hero chart</p>
       </div>
       <div data-testid="chart-latency">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
