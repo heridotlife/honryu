@@ -49,6 +49,7 @@ type rbacFixture struct {
 	sessions *session.Provider
 	audit    *auditmem.Log
 	reports  *fake.ReportStore
+	shares   *fake.ShareStore
 	bus      *membus.Bus
 	obj      *fake.ObjectStore
 }
@@ -78,6 +79,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	}
 	audit := auditmem.New(nil)
 	reports := fake.NewReportStore()
+	shares := fake.NewShareStore()
 	// The series endpoint's interval store: wired the way cmd/api wires it,
 	// so the audit probe reaches the report:read gate rather than a 404.
 	series := fake.NewReportProgress()
@@ -99,6 +101,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		Calibrations: calibrations,
 		Store:        obj,
 		Reports:      reports,
+		Shares:       shares,
 		Series:       series,
 		Usage:        usageapp.NewService(store),
 		Events:       bus,
@@ -110,7 +113,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		Clusters: &stubClusterService{list: func() ([]clusterregistry.Cluster, error) { return nil, nil }},
 		Sessions: sessions,
 	})
-	return &rbacFixture{router: router, store: store, sched: sched, prov: prov, sessions: sessions, audit: audit, reports: reports, bus: bus, obj: obj}
+	return &rbacFixture{router: router, store: store, sched: sched, prov: prov, sessions: sessions, audit: audit, reports: reports, shares: shares, bus: bus, obj: obj}
 }
 
 func (f *rbacFixture) req(t *testing.T, method, path, tok string, form url.Values) *httptest.ResponseRecorder {

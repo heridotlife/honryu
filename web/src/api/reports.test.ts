@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getShardConfig, listExecutionReports, shardObjectUrl } from './reports';
+import { fetchShared, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
 
 describe('listExecutionReports', () => {
   afterEach(() => {
@@ -72,5 +72,77 @@ describe('shard objects', () => {
 
     expect(seenUrl).toBe('/api/runs/9/scenarios/2/shards/0/config');
     expect(got).toBe('execution:\n  concurrency: 10');
+  });
+});
+
+describe('share links', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shareRun POSTs an empty body when no expiry is given, JSON when one is', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init: init ?? {} });
+        return new Response(JSON.stringify({ token: 't'.repeat(64), url: `/share/${'t'.repeat(64)}`, expires_at: null }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+
+    await shareRun(9);
+    await shareRun(9, 168);
+
+    expect(calls[0].url).toBe('/api/runs/9/share');
+    expect(calls[0].init.body).toBeUndefined();
+    expect(calls[1].init.body).toBe(JSON.stringify({ expires_in_hours: 168 }));
+    expect(new Headers(calls[1].init.headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('listShares normalizes null to [] and revokeShare DELETEs the token path', async () => {
+    const urls: string[] = [];
+    const methods: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        urls.push(String(input));
+        methods.push((init?.method as string) ?? 'GET');
+        return new Response('null', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      })
+    );
+
+    await listShares(9);
+    expect(await listShares(9)).toEqual([]);
+    await revokeShare(9, 'abc');
+
+    expect(urls).toEqual(['/api/runs/9/share', '/api/runs/9/share', '/api/runs/9/share/abc']);
+    expect(methods).toEqual(['GET', 'GET', 'DELETE']);
+  });
+
+  it('fetchShared reads the public path and normalizes null verdict arrays', async () => {
+    let seenUrl = '';
+    vi.stubGlobal(
+      'fetch',
+      async (input: RequestInfo | URL) => {
+        seenUrl = String(input);
+        return new Response(JSON.stringify({ run_id: 9, started_at: 'x', ended_at: 'y', outcome: 'passed' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+
+    const got = await fetchShared('tok');
+
+    expect(seenUrl).toBe('/api/share/tok');
+    expect(got.criteria).toEqual([]);
+    expect(got.failing_criteria).toEqual([]);
+  });
+
+  it('shareLinkUrl builds the absolute hand-out URL', () => {
+    expect(shareLinkUrl('abc')).toBe(`${window.location.origin}/share/abc`);
   });
 });

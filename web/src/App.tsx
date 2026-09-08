@@ -10,6 +10,7 @@ import ProfilePicker from './pages/ProfilePicker';
 import Reports from './pages/Reports';
 import Reservations from './pages/Reservations';
 import RunCompare from './pages/RunCompare';
+import SharedReport from './pages/SharedReport';
 
 export default function App() {
   return (
@@ -31,6 +32,10 @@ export default function App() {
             <Route path="/status" element={<Navigate to="/executions" replace />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/reports/:runId" element={<Reports />} />
+            {/* Phase 34: the public share-out. Renders the run workspace
+                read-only from the token alone; the picker never redirects
+                an anonymous visitor away from it. */}
+            <Route path="/share/:token" element={<SharedReport />} />
             <Route path="/reservations" element={<Reservations />} />
 
             <Route path="/campaigns" element={<Campaigns />} />

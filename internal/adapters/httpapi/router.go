@@ -56,6 +56,10 @@ type Deps struct {
 	// Reports serves a run's stored report, the durable record of what it
 	// produced.
 	Reports ports.ReportStore
+	// Shares issues and resolves public run-report share links. Optional;
+	// nil disables the share endpoints (404), which keeps a deployment that
+	// does not want public links exactly as closed as before phase 34.
+	Shares ports.ShareStore
 	// Series reads a run's per-second measurements for the series endpoint.
 	// Optional; nil disables GET /api/runs/{run_id}/series (404), which serves
 	// report-store-only deployments that never absorbed intervals.
@@ -141,11 +145,18 @@ const (
 	sessionProfilesPath = "/api/session/profiles"
 )
 
+// shareFetchPrefix is the public share-link fetch. A share token is a bare
+// capability: GET /api/share/{token} carries its own credential (the token
+// itself), so the user auth middleware cannot demand a session for it --
+// the whole point of the link is that the recipient has none.
+const shareFetchPrefix = "/api/share/"
+
 // publicAPIPath reports whether an API path is exempt from the user auth
-// middleware: it either carries its own credential (ingest) or is itself the
-// authentication (demo session endpoints).
+// middleware: it either carries its own credential (ingest, share link) or
+// is itself the authentication (demo session endpoints).
 func publicAPIPath(path string) bool {
-	return path == ingestPath || path == sessionPath || path == sessionProfilesPath
+	return path == ingestPath || path == sessionPath || path == sessionProfilesPath ||
+		strings.HasPrefix(path, shareFetchPrefix)
 }
 
 // Route is one registered endpoint. The route table is the single source of
@@ -220,6 +231,13 @@ var routes = []Route{
 	{"GET", "/api/runs/{run_id}/export", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runExport })},
 	{"GET", "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/log", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runShardLog })},
 	{"GET", "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/config", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runShardConfig })},
+
+	// Phase 34: token-gated public run reports. Issue/list/revoke sit under
+	// the reports permission; the fetch is public (publicAPIPath).
+	{"POST", "/api/runs/{run_id}/share", "reports", hf(func(h *handlers) http.HandlerFunc { return h.createRunShare })},
+	{"GET", "/api/runs/{run_id}/share", "reports", hf(func(h *handlers) http.HandlerFunc { return h.listRunShares })},
+	{"DELETE", "/api/runs/{run_id}/share/{token}", "reports", hf(func(h *handlers) http.HandlerFunc { return h.deleteRunShare })},
+	{"GET", "/api/share/{token}", "reports", hf(func(h *handlers) http.HandlerFunc { return h.sharedReport })},
 
 	{"GET", "/api/usage/history", "usage", hf(func(h *handlers) http.HandlerFunc { return h.usageHistory })},
 	{"GET", "/api/usage/summary", "usage", hf(func(h *handlers) http.HandlerFunc { return h.usageSummary })},

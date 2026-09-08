@@ -2061,6 +2061,123 @@ paths:
             text/plain: {}
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/runs/{run_id}/share:
+    post:
+      tags: [reports]
+      summary: Issue a share link for a run's report
+      description: >-
+        Mints a token-gated public mirror of one run's report: anyone holding
+        the link reads that report through GET /api/share/{token} with no
+        session at all. Multiple live tokens per run are allowed. The body is
+        optional; expires_in_hours (positive, clamped to 720) mints a link
+        that dies on its own. Authorization matches the run report route
+        (report:read against the owning execution's tenant).
+      parameters: [{ $ref: '#/components/parameters/RunID' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_in_hours:
+                  type: integer
+                  format: int64
+                  description: >-
+                    Hours until the link expires; omitted means never. Values
+                    above 720 are clamped to 720 (30 days).
+                  minimum: 1
+      responses:
+        '201':
+          description: The issued link
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, url]
+                properties:
+                  token:
+                    type: string
+                    description: 64 lowercase hex chars (256 bits of crypto/rand).
+                  url:
+                    type: string
+                    description: The SPA path that resolves the token ('/share/{token}').
+                  expires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [reports]
+      summary: List a run's share links
+      description: >-
+        The run's links in issue order, oldest first, so the issuing UI can
+        show what is already out in the world and revoke it. Authorization
+        matches the issue route.
+      parameters: [{ $ref: '#/components/parameters/RunID' }]
+      responses:
+        '200':
+          description: The run's links
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [token, created_time]
+                  properties:
+                    token: { type: string }
+                    created_by: { type: string, description: "Issuing account's name; empty in no-auth mode." }
+                    created_time: { type: string, format: date-time }
+                    expires_at: { type: string, format: date-time, nullable: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/runs/{run_id}/share/{token}:
+    delete:
+      tags: [reports]
+      summary: Revoke one share link
+      description: >-
+        Removes the named token; the public fetch 404s immediately afterwards.
+        Other tokens for the same run are untouched. Authorization matches the
+        issue route.
+      parameters:
+        - { $ref: '#/components/parameters/RunID' }
+        - name: token
+          in: path
+          required: true
+          description: The share token to revoke.
+          schema: { type: string }
+      responses:
+        '204': { description: Revoked }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/share/{token}:
+    get:
+      tags: [reports]
+      summary: Fetch a run's report through a share link (no authentication)
+      description: >-
+        The public face of a share link: exactly the payload GET
+        /api/runs/{run_id}/report serves -- criteria and failing_criteria
+        included -- and nothing else (no execution listing, no shard
+        objects). The token is the entire authorization; no session is
+        required or consulted. Unknown and expired tokens answer the same
+        404, so a guesser learns nothing about which tokens exist.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: The share token (64 lowercase hex chars).
+          schema: { type: string }
+      responses:
+        '200':
+          description: Report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/usage/history:
     get:
       tags: [usage]

@@ -97,7 +97,14 @@ export async function listExecutionReports(executionId: number, limit?: number):
  * null/absent to [] — the same convention listExecutionReports applies — so
  * a run with no criteria renders "none" rather than crashing on null. */
 export async function getRunReport(runId: number): Promise<Report> {
-  const rep = await apiClient.get<Report>(`/runs/${runId}/report`);
+  return normalizeVerdicts(await apiClient.get<Report>(`/runs/${runId}/report`));
+}
+
+/** The Phase 29 verdict arrays arrive null/absent when the backend had
+ * none to send (Go's nil slice encodes as JSON null); normalized to [] so
+ * every consumer can treat them as arrays. Shared by the session'd and
+ * shared fetches, which serve the same payload. */
+function normalizeVerdicts(rep: Report): Report {
   if (rep.criteria == null) rep.criteria = [];
   if (rep.failing_criteria == null) rep.failing_criteria = [];
   return rep;
@@ -119,4 +126,62 @@ export function getShardConfig(runId: number, scenarioId: number, shard: number)
 /** A shard's captured engine output, durable after the pod that produced it is deleted (text/plain). */
 export function getShardLog(runId: number, scenarioId: number, shard: number): Promise<string> {
   return apiClient.text(shardObjectUrl(runId, scenarioId, shard, 'log'));
+}
+
+// --- Share links (phase 34) -------------------------------------------------
+
+/** The POST /share response: a freshly minted public link. expires_at is
+ * null for a never-expiring link. */
+export interface ShareLink {
+  token: string;
+  /** SPA path ('/share/<token>'); prefix the origin for a hand-out URL. */
+  url: string;
+  expires_at: string | null;
+}
+
+/** One row of the share-link list: what the share dialog shows and what
+ * revoke is keyed by. */
+export interface ShareLinkInfo {
+  token: string;
+  created_by: string;
+  created_time: string;
+  expires_at: string | null;
+}
+
+/** POST /api/runs/{run_id}/share. expiresInHours omitted mints a
+ * never-expiring link; the backend clamps to 720 (30 days). */
+export function shareRun(runId: number, expiresInHours?: number): Promise<ShareLink> {
+  const body =
+    expiresInHours === undefined ? undefined : JSON.stringify({ expires_in_hours: expiresInHours });
+  return apiClient.request<ShareLink>(`/runs/${runId}/share`, {
+    method: 'POST',
+    // The one honryu mutation family with a JSON body besides the session
+    // endpoints: the issue route parses JSON, not a form.
+    ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body }),
+  });
+}
+
+/** GET /api/runs/{run_id}/share — the run's links in issue order. */
+export async function listShares(runId: number): Promise<ShareLinkInfo[]> {
+  const got = await apiClient.get<ShareLinkInfo[] | null>(`/runs/${runId}/share`);
+  return got ?? [];
+}
+
+/** DELETE /api/runs/{run_id}/share/{token} — revoke one link. */
+export function revokeShare(runId: number, token: string): Promise<void> {
+  return apiClient.request<void>(`/runs/${runId}/share/${token}`, { method: 'DELETE' });
+}
+
+/** GET /api/share/{token} — the public fetch: the same Report payload the
+ * session'd route serves, verdict arrays normalized the same way. No
+ * session required; 404 (ApiError) on an unknown, revoked, or expired
+ * link. */
+export async function fetchShared(token: string): Promise<Report> {
+  return normalizeVerdicts(await apiClient.get<Report>(`/share/${token}`));
+}
+
+/** The hand-out form of a share link: absolute, so pasting it anywhere
+ * (chat, email) lands on the SPA whatever its path was. */
+export function shareLinkUrl(token: string): string {
+  return `${window.location.origin}/share/${token}`;
 }
