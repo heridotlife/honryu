@@ -5,6 +5,8 @@ import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card'
 import { ApiError, errorDetails } from '../api/client';
 import { getExecutionInfo, getExecutionStatus, getScenarioPodLog } from '../api/status';
 import { listExecutionReports, type Report } from '../api/reports';
+import { getExecutionTrend } from '../api/trends';
+import type { TrendPoint } from '../api/trends';
 import TaurusEditor from '../components/TaurusEditor';
 import CapacityPanel from '../components/CapacityPanel';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
@@ -138,6 +140,84 @@ export function shortTime(iso: string): string {
   }
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Outcome→colour for the recent-runs strip's pills (phase 33): passed
+ * green, failed rose, everything else (aborted included) neutral slate —
+ * deliberately not OutcomeBadge's amber: the strip is a scan affordance
+ * where failed must read as red at arm's length. */
+function trendPillClass(outcome: string): string {
+  switch (outcome) {
+    case 'passed':
+      return 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50';
+    case 'failed':
+      return 'bg-rose-100 text-rose-800 hover:bg-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:hover:bg-rose-900/50';
+    default:
+      return 'bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600';
+  }
+}
+
+/** Styling for the strip's REGRESSED mark: it must read on top of any
+ * outcome pill, so it carries its own solid rose fill. */
+const regressedBadgeClass =
+  'inline-flex items-center rounded-full bg-rose-600 px-1.5 py-px text-[10px] font-semibold tracking-wide text-white';
+
+/** The recent-runs strip under the execution header (phase 33): the last
+ * ten trend points as pills — run id on the outcome colour, plus a
+ * REGRESSED mark when the backend's regression rule tripped — so the
+ * execution's recent health reads in one glance, before any scrolling.
+ * Points arrive newest-first and render that way; each pill deep-links
+ * the run's report. Hidden when the trend is empty or the fetch fails:
+ * a strip with nothing to say is noise, and the Past runs card below
+ * still lists everything. */
+function TrendStrip({ executionId }: { executionId: number }) {
+  const [points, setPoints] = useState<TrendPoint[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPoints(null);
+    getExecutionTrend(executionId, 10)
+      .then((t) => {
+        // regressed is omitempty on the wire: absent simply means false.
+        if (!cancelled && t.points.length > 0) {
+          setPoints(t.points);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPoints(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [executionId]);
+
+  if (points === null) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-testid="trend-strip">
+      <span className="text-caption font-medium text-slate-500 dark:text-slate-400">Recent runs</span>
+      {points.map((p) => (
+        <Link
+          key={p.run_id}
+          to={`/reports/${p.run_id}`}
+          data-testid={`trend-pill-${p.run_id}`}
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 ${trendPillClass(p.outcome)}`}
+        >
+          #{p.run_id}
+          {p.regressed && (
+            <span
+              data-testid={`trend-regressed-${p.run_id}`}
+              title="missed target QPS vs previous hit"
+              className={regressedBadgeClass}
+            >
+              REGRESSED
+            </span>
+          )}
+        </Link>
+      ))}
+    </div>
+  );
 }
 
 /** The live chart's latency percentiles, in display order (same selector concept as Reports). */
@@ -354,6 +434,7 @@ export default function Execution() {
             that URL to a colleague. */}
         <CopyLink />
       </div>
+      <TrendStrip executionId={executionId} />
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
