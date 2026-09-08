@@ -824,6 +824,36 @@ function baselineOptionClass(selected: boolean): string {
   } focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-500`;
 }
 
+/** One row of the per-label p95 diff (task 3): 'both' carries the two
+ * p95s, 'new'/'dropped' carry the one side that measured anything
+ * (seconds off the wire, rendered ms). */
+export interface LabelDiffRow {
+  label: string;
+  kind: 'both' | 'new' | 'dropped';
+  current?: number;
+  baseline?: number;
+}
+
+/** The per-label p95 diff's rows: every label either run exercised,
+ * matched by name, sorted alphabetically so the table is deterministic
+ * regardless of each report's own label order. */
+export function compareLabelRows(current: Report, baseline: Report): LabelDiffRow[] {
+  const cur = new Map((current.labels ?? []).map((l) => [l.label, l]));
+  const base = new Map((baseline.labels ?? []).map((l) => [l.label, l]));
+  const names = Array.from(new Set([...cur.keys(), ...base.keys()])).sort((a, b) => a.localeCompare(b));
+  return names.map((name) => {
+    const c = cur.get(name);
+    const b = base.get(name);
+    if (c !== undefined && b !== undefined) {
+      return { label: name, kind: 'both' as const, current: c.latency?.['95'], baseline: b.latency?.['95'] };
+    }
+    if (c !== undefined) {
+      return { label: name, kind: 'new' as const, current: c.latency?.['95'] };
+    }
+    return { label: name, kind: 'dropped' as const, baseline: base.get(name)?.latency?.['95'] };
+  });
+}
+
 /** The Overview tab's Compare card (phase 33): the run on screen against
  * a picked baseline from the same execution — headline metric rows with
  * signed percent deltas under the ±10% band, plus (task 3) a per-label
@@ -978,6 +1008,63 @@ function CompareCard({ current, siblings }: { current: Report; siblings: Report[
             </table>
           </div>
         )}
+        {baseline !== null && (() => {
+          // Task 3: the per-label p95 diff under the headline rows. Hidden
+          // when neither run recorded labels — an empty table is noise.
+          const rows = compareLabelRows(current, baseline);
+          if (rows.length === 0) {
+            return null;
+          }
+          return (
+            <div className="overflow-x-auto" data-testid="compare-labels">
+              <p className="text-caption mb-2 font-medium text-slate-500 dark:text-slate-400">Per-label p95 diff</p>
+              <table className="w-full text-left text-body-sm">
+                <thead>
+                  <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                    <th scope="col" className="px-3 py-2 font-medium">Label</th>
+                    <th scope="col" className="px-3 py-2 font-medium">This run (#{current.run_id})</th>
+                    <th scope="col" className="px-3 py-2 font-medium">Baseline (#{baseline.run_id})</th>
+                    <th scope="col" className="px-3 py-2 font-medium">Delta</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {rows.map((row) => {
+                    const delta =
+                      row.current !== undefined && row.baseline !== undefined
+                        ? pctDelta(row.baseline, row.current)
+                        : null;
+                    return (
+                    <tr key={row.label} data-testid={`compare-label-${row.label}`}>
+                      <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{row.label}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {row.current !== undefined ? `${(row.current * 1000).toFixed(1)} ms` : '—'}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {row.baseline !== undefined ? `${(row.baseline * 1000).toFixed(1)} ms` : '—'}
+                      </td>
+                      <td className="px-3 py-2 font-medium whitespace-nowrap">
+                        {row.kind === 'new' && (
+                          <span className="inline-flex items-center rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+                            new
+                          </span>
+                        )}
+                        {row.kind === 'dropped' && (
+                          <span className="inline-flex items-center rounded-full bg-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-400">
+                            dropped
+                          </span>
+                        )}
+                        {row.kind === 'both' && (
+                          <span className={toneClass(deltaTone('lower', delta))}>{formatDelta(delta)}</span>
+                        )}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
         <p className="text-caption text-slate-500 dark:text-slate-400">
           Deltas read this run against the baseline; ±10% is the significance band. Latencies in ms.
         </p>

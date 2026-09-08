@@ -742,3 +742,70 @@ describe('ReportDetail compare card (phase 33, mounted)', () => {
     expect(container!.querySelector('[data-testid="compare-card"]')).toBeNull();
   });
 });
+
+// Task 3: the per-label p95 diff under the headline rows — shared labels
+// as delta rows, one-sided labels badged new/dropped, alphabetical order.
+describe('ReportDetail per-label p95 diff (phase 33, mounted)', () => {
+  const withLabels: Report = {
+    ...reportFixture,
+    latency: { '50': 0.05, '95': 0.15, '99': 0.5 },
+    labels: [
+      { label: 'beta', samples: 50, failed: 0, error_rate: 0, latency: { '95': 0.3 } },
+      { label: 'alpha', samples: 100, failed: 0, error_rate: 0, latency: { '95': 0.2 } },
+    ],
+  };
+  const baseWithLabels: Report = {
+    ...reportFixture,
+    run_id: 7,
+    started_at: '2026-09-03T10:00:00Z',
+    outcome: 'passed',
+    latency: { '50': 0.05, '95': 0.2, '99': 0.4 },
+    labels: [
+      { label: 'gamma', samples: 40, failed: 0, error_rate: 0, latency: { '95': 0.25 } },
+      { label: 'alpha', samples: 100, failed: 0, error_rate: 0, latency: { '95': 0.1 } },
+    ],
+  };
+
+  it('diffs shared labels and badges one-sided labels, alphabetically', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], withLabels, [withLabels, baseWithLabels], {
+      7: baseWithLabels,
+    });
+
+    const table = container!.querySelector('[data-testid="compare-labels"]');
+    expect(table?.textContent).toContain('Per-label p95 diff');
+
+    // Alphabetical regardless of each report's own label order.
+    const rows = Array.from(table!.querySelectorAll('tr[data-testid^="compare-label-"]'));
+    expect(rows.map((r) => r.getAttribute('data-testid'))).toEqual([
+      'compare-label-alpha',
+      'compare-label-beta',
+      'compare-label-gamma',
+    ]);
+
+    // Shared: alpha 200ms vs 100ms → +100%, rose. Wire seconds → ms.
+    const alphaCells = rows[0].querySelectorAll('td');
+    expect(alphaCells[1].textContent).toBe('200.0 ms');
+    expect(alphaCells[2].textContent).toBe('100.0 ms');
+    expect(alphaCells[3].textContent).toBe('+100.0%');
+    expect(alphaCells[3].querySelector('span')?.className).toContain('rose');
+
+    // Only in the current run: "new"; only in the baseline: "dropped".
+    const betaCells = rows[1].querySelectorAll('td');
+    expect(betaCells[1].textContent).toBe('300.0 ms');
+    expect(betaCells[2].textContent).toBe('—');
+    expect(betaCells[3].textContent).toContain('new');
+    const gammaCells = rows[2].querySelectorAll('td');
+    expect(gammaCells[1].textContent).toBe('—');
+    expect(gammaCells[2].textContent).toBe('250.0 ms');
+    expect(gammaCells[3].textContent).toContain('dropped');
+  });
+
+  it('hides the label table when neither run recorded labels', async () => {
+    const current: Report = { ...reportFixture, latency: { '95': 0.15 } };
+    const base: Report = { ...reportFixture, run_id: 7, outcome: 'passed', latency: { '95': 0.2 } };
+    await renderReportDetail(() => json({ points: [] }), [], current, [current, base], { 7: base });
+
+    expect(container!.querySelector('[data-testid="compare-card"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="compare-labels"]')).toBeNull();
+  });
+});
