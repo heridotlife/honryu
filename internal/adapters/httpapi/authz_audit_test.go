@@ -152,6 +152,14 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/log", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/config", decision: "report:read"},
 
+	// Phase 34: issuing, listing and revoking share links is report-read
+	// material (the same grant that shows the report); the public fetch
+	// answers to the token alone.
+	{method: "POST", pattern: "/api/runs/{run_id}/share", decision: "report:read"},
+	{method: "GET", pattern: "/api/runs/{run_id}/share", decision: "report:read"},
+	{method: "DELETE", pattern: "/api/runs/{run_id}/share/{token}", decision: "report:read"},
+	{method: "GET", pattern: "/api/share/{token}", decision: decisionPublic},
+
 	{method: "GET", pattern: "/api/usage/history", decision: decisionSystemAdmin},
 	{method: "GET", pattern: "/api/usage/summary", decision: decisionSystemAdmin},
 
@@ -215,6 +223,9 @@ type auditSeed struct {
 	tenant1, tenant2, tenant3                        int64
 	projectID, scenarioID, executionID, scheduleID   int64
 	runID, campaignID, calibrationExecutionID, jobID int64
+	// shareToken is a live share link for runID (phase 34): the public
+	// report fetch's probe resolves it.
+	shareToken string
 }
 
 // seedAuditFixture provisions one of everything a probe path can name, all
@@ -284,6 +295,12 @@ func seedAuditFixture(t *testing.T, f *rbacFixture) auditSeed {
 	}); err != nil {
 		t.Fatalf("SaveReport: %v", err)
 	}
+	// A live share link for that run, seeded the way the issue endpoint
+	// would (a fixed token reads better in probe failures than a minted one).
+	s.shareToken = strings.Repeat("7", 64)
+	if err := f.shares.CreateShare(ctx, s.runID, s.shareToken, "admin", nil); err != nil {
+		t.Fatalf("seed share link: %v", err)
+	}
 	return s
 }
 
@@ -302,6 +319,7 @@ func (s auditSeed) path(pattern string) string {
 		"{name}", "home",
 		"{kind}", "scenario",
 		"{id}", strconv.FormatInt(s.scenarioID, 10),
+		"{token}", s.shareToken,
 	)
 	return r.Replace(pattern)
 }
@@ -547,6 +565,20 @@ func probePublic(t *testing.T, f *rbacFixture, e authzEntry, path string, seed a
 		}
 		if !strings.Contains(rec.Body.String(), "auditor") {
 			t.Fatalf("profiles list missing the configured persona: %s", rec.Body.String())
+		}
+	case "/api/share/{token}":
+		// The share fetch serves the linked run's report with no credentials
+		// at all -- that is the feature. A bare 200 is not enough: the body
+		// must be the seeded run's report, or the route would be public
+		// without being the share fetch.
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/share/{token} got %d, want 200 (%s)", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"run_id":`+strconv.FormatInt(seed.runID, 10)) {
+			t.Fatalf("share fetch body is not the seeded run's report: %s", rec.Body.String())
 		}
 	default:
 		t.Fatalf("no public probe defined for %q", e.pattern)
