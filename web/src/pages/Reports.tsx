@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ExternalLink, Download, Check, ChevronDown } from 'lucide-react';
+import { ExternalLink, Download, Check, ChevronDown, Share2 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import ClusterBadge from '../components/ui/ClusterBadge';
@@ -11,6 +11,7 @@ import Input from '../components/ui/Input';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
+import ShareRunModal from '../components/ShareRunModal';
 import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
@@ -1103,6 +1104,9 @@ function ReportDetail({ runId }: { runId: string }) {
   // value also covers "fetch failed" -- the jumps simply disable; they
   // never block the page (this is an affordance, not a dependency).
   const [siblings, setSiblings] = useState<Report[] | null>(null);
+  // The share dialog's open state (phase 34); the dialog itself mints,
+  // lists, and revokes the run's public links.
+  const [shareOpen, setShareOpen] = useState(false);
 
   const urlTab = searchParams.get('tab');
   const tab = urlTab !== null && RUN_TABS.some((t) => t.id === urlTab) ? urlTab : 'overview';
@@ -1208,6 +1212,17 @@ function ReportDetail({ runId }: { runId: string }) {
                   <Download aria-hidden className="h-3.5 w-3.5" />
                   Export PDF
                 </a>
+                {/* Phase 34: mint a token-gated public link to exactly this
+                    report — the customer-facing share-out. */}
+                <button
+                  type="button"
+                  data-testid="share-run-btn"
+                  onClick={() => setShareOpen(true)}
+                  className={runActionClass}
+                >
+                  <Share2 aria-hidden className="h-3.5 w-3.5" />
+                  Share
+                </button>
                 <CopyLink />
                 <div className="flex items-center gap-1" role="group" aria-label="Neighbouring runs">
                   <Button
@@ -1473,6 +1488,7 @@ function ReportDetail({ runId }: { runId: string }) {
           </div>
         </>
       )}
+      {shareOpen && report && <ShareRunModal runId={report.run_id} onClose={() => setShareOpen(false)} />}
     </div>
   );
 }
