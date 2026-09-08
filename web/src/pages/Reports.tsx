@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ExternalLink, Download, Check, ChevronDown, Share2 } from 'lucide-react';
 import Button from '../components/ui/Button';
@@ -1094,19 +1095,33 @@ const RUN_TABS = [
  * land on the URL's tab) and switching costs no refetch. The active tab
  * mirrors into ?tab= so a copied link reopens the exact view.
  */
-function ReportDetail({ runId }: { runId: string }) {
-  const navigate = useNavigate();
+/**
+ * The run workspace (phase 28's tabbed layout): the header band and every
+ * panel behind the tab strip, report in hand -- the view half of run
+ * detail, rendered as-is by the public share page (phase 34). Session-only
+ * affordances are props, not conditionals on a route: headerActions is the
+ * session'd page's Share button (anonymous visitors get none), and the
+ * prev/next run jumps exist only when onNavigateRun is wired, because
+ * listing the execution's runs needs a session. The CompareCard is
+ * sibling-driven -- null siblings (the share page, or a failed fetch on the
+ * session'd page) hides it, the card's own hide rule.
+ */
+export function ReportWorkspace({
+  report,
+  siblings,
+  onNavigateRun,
+  headerActions,
+}: {
+  report: Report;
+  /** This execution's runs, newest first, or null when unknown. */
+  siblings: Report[] | null;
+  /** Jumps to a neighbouring run; absent hides the prev/next group. */
+  onNavigateRun?: (runId: number) => void;
+  /** Extra header actions rendered with the export group (the Share button). */
+  headerActions?: ReactNode;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [report, setReport] = useState<Report | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [apmTemplate] = useState<string>(() => loadApmTemplate());
-  // This execution's runs, newest first, for the prev/next jumps. A null
-  // value also covers "fetch failed" -- the jumps simply disable; they
-  // never block the page (this is an affordance, not a dependency).
-  const [siblings, setSiblings] = useState<Report[] | null>(null);
-  // The share dialog's open state (phase 34); the dialog itself mints,
-  // lists, and revokes the run's public links.
-  const [shareOpen, setShareOpen] = useState(false);
 
   const urlTab = searchParams.get('tab');
   const tab = urlTab !== null && RUN_TABS.some((t) => t.id === urlTab) ? urlTab : 'overview';
@@ -1115,63 +1130,14 @@ function ReportDetail({ runId }: { runId: string }) {
     setSearchParams({ tab: id }, { replace: true });
   };
 
-  useEffect(() => {
-    const id = Number(runId);
-    if (!Number.isInteger(id) || id <= 0) {
-      setError('Invalid run id.');
-      return;
-    }
-    setError(null);
-    setReport(null);
-    setSiblings(null);
-    getRunReport(id)
-      .then(setReport)
-      .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'Failed to load report.'));
-  }, [runId]);
-
-  // Neighbouring runs load once per execution, not per run: the fetch is
-  // keyed on execution_id, and failures land back on null (disabled jumps).
-  const executionId = report?.execution_id;
-  useEffect(() => {
-    if (executionId === undefined) {
-      return;
-    }
-    let alive = true;
-    listExecutionReports(executionId)
-      .then((rows) => {
-        if (alive) setSiblings(rows);
-      })
-      .catch(() => {
-        if (alive) setSiblings(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [executionId]);
-
   // Newest first is the list endpoint's contract: "next" is the run above
   // ours (newer), "prev" the one below (older); the list's edges disable.
-  const runIndex =
-    siblings !== null && report !== null ? siblings.findIndex((r) => r.run_id === report.run_id) : -1;
+  const runIndex = siblings !== null ? siblings.findIndex((r) => r.run_id === report.run_id) : -1;
   const prevRun = siblings !== null && runIndex >= 0 && runIndex + 1 < siblings.length ? siblings[runIndex + 1] : null;
   const nextRun = runIndex > 0 && siblings !== null ? siblings[runIndex - 1] : null;
 
   return (
-    <div className="space-y-6">
-      <Button variant="ghost" size="sm" onClick={() => navigate('/reports')}>
-        ← Back to reports
-      </Button>
-
-      {error && (
-        <Card>
-          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-            {error}
-          </p>
-        </Card>
-      )}
-
-      {report && (
-        <>
+    <>
           {/* The header band: the run's identity and verdict at a glance, plus
               the actions that should never need a scroll to reach. */}
           <Card>
@@ -1212,40 +1178,32 @@ function ReportDetail({ runId }: { runId: string }) {
                   <Download aria-hidden className="h-3.5 w-3.5" />
                   Export PDF
                 </a>
-                {/* Phase 34: mint a token-gated public link to exactly this
-                    report — the customer-facing share-out. */}
-                <button
-                  type="button"
-                  data-testid="share-run-btn"
-                  onClick={() => setShareOpen(true)}
-                  className={runActionClass}
-                >
-                  <Share2 aria-hidden className="h-3.5 w-3.5" />
-                  Share
-                </button>
+                {headerActions}
                 <CopyLink />
-                <div className="flex items-center gap-1" role="group" aria-label="Neighbouring runs">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    data-testid="run-prev"
-                    aria-label="Previous run in this execution"
-                    disabled={prevRun === null}
-                    onClick={() => prevRun && navigate(`/reports/${prevRun.run_id}`)}
-                  >
-                    ← Prev
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    data-testid="run-next"
-                    aria-label="Next run in this execution"
-                    disabled={nextRun === null}
-                    onClick={() => nextRun && navigate(`/reports/${nextRun.run_id}`)}
-                  >
-                    Next →
-                  </Button>
-                </div>
+                {onNavigateRun && (
+                  <div className="flex items-center gap-1" role="group" aria-label="Neighbouring runs">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      data-testid="run-prev"
+                      aria-label="Previous run in this execution"
+                      disabled={prevRun === null}
+                      onClick={() => prevRun && onNavigateRun(prevRun.run_id)}
+                    >
+                      ← Prev
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      data-testid="run-next"
+                      aria-label="Next run in this execution"
+                      disabled={nextRun === null}
+                      onClick={() => nextRun && onNavigateRun(nextRun.run_id)}
+                    >
+                      Next →
+                    </Button>
+                  </div>
+                )}
               </div>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -1486,7 +1444,91 @@ function ReportDetail({ runId }: { runId: string }) {
               <ShardObjects report={report} />
             </TabPanel>
           </div>
-        </>
+    </>
+  );
+}
+
+function ReportDetail({ runId }: { runId: string }) {
+  const navigate = useNavigate();
+  const [report, setReport] = useState<Report | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // This execution's runs, newest first, for the prev/next jumps. A null
+  // value also covers "fetch failed" -- the jumps simply disable; they
+  // never block the page (this is an affordance, not a dependency).
+  const [siblings, setSiblings] = useState<Report[] | null>(null);
+  // The share dialog's open state (phase 34); the dialog itself mints,
+  // lists, and revokes the run's public links.
+  const [shareOpen, setShareOpen] = useState(false);
+
+  useEffect(() => {
+    const id = Number(runId);
+    if (!Number.isInteger(id) || id <= 0) {
+      setError('Invalid run id.');
+      return;
+    }
+    setError(null);
+    setReport(null);
+    setSiblings(null);
+    getRunReport(id)
+      .then(setReport)
+      .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'Failed to load report.'));
+  }, [runId]);
+
+  // Neighbouring runs load once per execution, not per run: the fetch is
+  // keyed on execution_id, and failures land back on null (disabled jumps).
+  const executionId = report?.execution_id;
+  useEffect(() => {
+    if (executionId === undefined) {
+      return;
+    }
+    let alive = true;
+    listExecutionReports(executionId)
+      .then((rows) => {
+        if (alive) setSiblings(rows);
+      })
+      .catch(() => {
+        if (alive) setSiblings(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [executionId]);
+
+  return (
+    <div className="space-y-6">
+      <Button variant="ghost" size="sm" onClick={() => navigate('/reports')}>
+        ← Back to reports
+      </Button>
+
+      {error && (
+        <Card>
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {error}
+          </p>
+        </Card>
+      )}
+
+      {report && (
+        <ReportWorkspace
+          report={report}
+          siblings={siblings}
+          onNavigateRun={(id) => navigate(`/reports/${id}`)}
+          headerActions={
+            <>
+              {/* Phase 34: mint a token-gated public link to exactly this
+                  report — the customer-facing share-out. */}
+              <button
+                type="button"
+                data-testid="share-run-btn"
+                onClick={() => setShareOpen(true)}
+                className={runActionClass}
+              >
+                <Share2 aria-hidden className="h-3.5 w-3.5" />
+                Share
+              </button>
+            </>
+          }
+        />
       )}
       {shareOpen && report && <ShareRunModal runId={report.run_id} onClose={() => setShareOpen(false)} />}
     </div>

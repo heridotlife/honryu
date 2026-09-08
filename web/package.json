@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "typecheck": "tsc -b --noEmit",
     "test:watch": "vitest",
     "layout-check": "node scripts/layout-check.js"
   },
