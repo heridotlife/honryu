@@ -11,6 +11,7 @@ import Input from '../components/ui/Input';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
+import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
 import { getRunReport, getShardConfig, getShardLog, listExecutionReports } from '../api/reports';
@@ -82,6 +83,9 @@ export default function Reports() {
 
 function ReportsList() {
   const { can } = useSession();
+  // Phase 32: the global project switcher's selection (localStorage via
+  // the shared hook) scopes this list like every other execution view.
+  const { selectedId, selectedName, select } = useProjectSelection();
   const [executionId, setExecutionId] = useState('');
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
   const [showManual, setShowManual] = useState(false);
@@ -129,10 +133,15 @@ function ReportsList() {
     }
   };
 
-  // Phase 28's filter row is client-side over the already-loaded list:
-  // engine chips (one per distinct engine) plus a name/id text filter.
+  // The filter row: engine chips + name/id search (phase 28) under the
+  // global project scope (phase 32), purely client-side -- the executions
+  // are already in memory. Hidden while the list loads or is empty: there
+  // is nothing to filter yet.
   const engines = executions === null ? [] : Array.from(new Set(executions.map(engineOf)));
   const filtered = (executions ?? []).filter((e) => {
+    if (selectedId !== '' && String(e.project_id) !== selectedId) {
+      return false;
+    }
     if (engineFilter !== 'all' && engineOf(e) !== engineFilter) {
       return false;
     }
@@ -168,11 +177,30 @@ function ReportsList() {
         )}
       </div>
 
-      {/* The filter row (phase 28): engine chips + name/id search, purely
-          client-side -- the executions are already in memory. Hidden while
-          the list loads or is empty: there is nothing to filter yet. */}
+      {/* The filter row: engine chips + name/id search (phase 28) under the
+          global project scope (phase 32), purely client-side -- the
+          executions are already in memory. Hidden while the list loads or
+          is empty: there is nothing to filter yet. */}
       {executions !== null && executions.length > 0 && (
         <div className="flex flex-wrap items-center gap-2" data-testid="filter-chips">
+          {/* The active project scope (phase 32) leads the row so the list's
+              narrowing reads top-down: project first, then engine, then text. */}
+          {selectedId !== '' && (
+            <span
+              data-testid="filter-project"
+              className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-3 py-1 text-caption font-medium text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+            >
+              project: {selectedName !== '' ? selectedName : selectedId}
+              <button
+                type="button"
+                aria-label="Clear project filter"
+                onClick={() => select('')}
+                className="rounded-full px-1 transition-colors hover:bg-sky-200 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:hover:bg-sky-800"
+              >
+                ✕
+              </button>
+            </span>
+          )}
           <button
             type="button"
             data-testid="filter-engine-all"

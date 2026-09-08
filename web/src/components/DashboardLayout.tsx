@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, Menu, Moon, Sun, X } from 'lucide-react';
 import Button from './ui/Button';
+import ProjectSwitcher from './ProjectSwitcher';
 import { useSession } from '../hooks/useSession';
 
 export interface NavItem {
@@ -184,19 +185,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               </div>
             </div>
 
-            <div className="hidden items-center space-x-4 md:flex">
-              <Button
-                onClick={toggleTheme}
-                variant="ghost"
-                size="md"
-                className="min-h-[44px] min-w-[44px] p-2 text-amber-500 dark:text-sky-600"
-                title="Toggle theme"
-              >
-                {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-              </Button>
-            </div>
-
-            <div className="flex items-center space-x-2 md:hidden">
+            {/* One right-side control group for every viewport (phase 32):
+                the project switcher leads, then the theme toggle, then the
+                burger (mobile only). A single switcher/theme instance keeps
+                the nav to one /api/projects fetch per page. */}
+            <div className="flex items-center space-x-2 md:space-x-4">
+              <ProjectSwitcher />
               <Button
                 onClick={toggleTheme}
                 variant="ghost"
@@ -210,7 +204,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 onClick={() => setIsMobileMenuOpen((open) => !open)}
                 variant="ghost"
                 size="md"
-                className="mobile-menu-button min-h-[44px] min-w-[44px] p-2 text-slate-600 dark:text-slate-300"
+                className="mobile-menu-button min-h-[44px] min-w-[44px] p-2 text-slate-600 dark:text-slate-300 md:hidden"
                 title="Toggle menu"
               >
                 {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}

@@ -7,6 +7,7 @@ import type { Report } from '../api/reports';
 import type { SeriesPoint } from '../api/series';
 import { SessionProvider } from '../hooks/useSession';
 import { can as canOn } from '../api/session';
+import { PROJECT_STORAGE_KEY } from '../components/ProjectSwitcher';
 
 describe('parseShard', () => {
   it('parses 0-indexed shard numbers', () => {
@@ -106,6 +107,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   root = null;
+  localStorage.removeItem(PROJECT_STORAGE_KEY);
 });
 
 describe('ReportDetail time series (mounted)', () => {
@@ -335,6 +337,12 @@ const listFixture: Report[] = [
   { ...reportFixture, run_id: 7, started_at: '2026-09-03T10:00:00Z' },
 ];
 
+/** The projects the phase 32 filter resolves names from (live shapes). */
+const projectsFixture = [
+  { id: 1, name: 'phase16-live', owner: 'honryu', tenant_id: 1, created_time: '2026-08-01T00:00:00Z' },
+  { id: 2, name: 'phase16-sched', owner: 'heri', tenant_id: 1, created_time: '2026-08-02T00:00:00Z' },
+];
+
 async function renderReportsList(permissions: Record<string, string[]> | null, reports: Report[] = listFixture) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -350,7 +358,11 @@ async function renderReportsList(permissions: Record<string, string[]> | null, r
       if (url === '/api/executions' || url.endsWith('/api/executions')) {
         return json([
           { id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
+          { id: 2, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
         ]);
+      }
+      if (url.endsWith('/api/projects')) {
+        return json(projectsFixture);
       }
       if (url.endsWith('/api/executions/1/reports')) {
         return json(reports);
@@ -494,5 +506,46 @@ describe('ReportDetail thresholds card (phase 29)', () => {
 
     expect(container!.querySelector('[data-testid="thresholds-card"]')).not.toBeNull();
     expect(container!.textContent).toContain('No criteria configured');
+  });
+});
+
+// Phase 32: the global project switcher's stored selection scopes the list
+// client-side (project_id === selected), with a chip that clears back to
+// all projects -- the same contract Executions.test.tsx pins mounted.
+describe('ReportsList project filter (phase 32)', () => {
+  it('scopes rows to the stored project and shows the project chip', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, '1');
+    await renderReportsList(navPersonas.alice);
+
+    expect(container!.querySelector('[data-testid="execution-1"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="execution-2"]')).toBeNull();
+    const chip = container!.querySelector('[data-testid="filter-project"]');
+    expect(chip?.textContent).toContain('project: phase16-live');
+  });
+
+  it('clearing the chip returns every execution and unscopes the stored selection', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, '2');
+    await renderReportsList(navPersonas.alice);
+
+    expect(container!.querySelector('[data-testid="execution-1"]')).toBeNull();
+    await act(async () => {
+      container!
+        .querySelector('[data-testid="filter-project"] button')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {});
+
+    expect(container!.querySelector('[data-testid="execution-1"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="execution-2"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="filter-project"]')).toBeNull();
+    expect(localStorage.getItem(PROJECT_STORAGE_KEY)).toBe('');
+  });
+
+  it('shows every execution, with no chip, when no project is stored', async () => {
+    await renderReportsList(navPersonas.alice);
+
+    expect(container!.querySelector('[data-testid="execution-1"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="execution-2"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="filter-project"]')).toBeNull();
   });
 });
