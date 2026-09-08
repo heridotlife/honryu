@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseShard, requestedLine, default as Reports } from './Reports';
+import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, default as Reports } from './Reports';
 import type { Report } from '../api/reports';
 import type { SeriesPoint } from '../api/series';
 import { SessionProvider } from '../hooks/useSession';
@@ -64,7 +64,9 @@ let root: Root | null = null;
 async function renderReportDetail(
   seriesBody: () => Response = () => json({ points: seriesFixture }),
   calls: string[] = [],
-  report: Report = reportFixture
+  report: Report = reportFixture,
+  siblings: Report[] | null = null,
+  baselineReports: Record<number, Report> = {}
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -78,6 +80,17 @@ async function renderReportDetail(
       }
       if (url.endsWith('/api/runs/9/series')) {
         return seriesBody();
+      }
+      // The execution's runs (phase 33's compare card picks its baseline
+      // from these); null keeps the old behaviour — endpoint fails, card
+      // hides. Baseline reports served per run id, on pick.
+      if (url.endsWith('/api/executions/1/reports')) {
+        return siblings === null ? json({ message: 'no siblings' }, 500) : json(siblings);
+      }
+      for (const [id, rep] of Object.entries(baselineReports)) {
+        if (url === `/api/runs/${id}/report`) {
+          return json(rep);
+        }
       }
       return json({ message: `no stub for ${url}` }, 500);
     })
@@ -547,5 +560,185 @@ describe('ReportsList project filter (phase 32)', () => {
     expect(container!.querySelector('[data-testid="execution-1"]')).not.toBeNull();
     expect(container!.querySelector('[data-testid="execution-2"]')).not.toBeNull();
     expect(container!.querySelector('[data-testid="filter-project"]')).toBeNull();
+  });
+});
+
+// Phase 33: the Overview tab's Compare card — the run on screen against a
+// picked baseline from the same execution. Pure helpers first (band edges,
+// default pick), then the mounted card over stubbed sibling/baseline
+// reports.
+describe('deltaTone (phase 33)', () => {
+  it('reads beyond +10% as worse for lower-is-better, beyond -10% as better', () => {
+    expect(deltaTone('lower', 25)).toBe('worse');
+    expect(deltaTone('lower', -25)).toBe('better');
+  });
+
+  it('flips for higher-is-better metrics (samples, rps)', () => {
+    expect(deltaTone('higher', -25)).toBe('worse');
+    expect(deltaTone('higher', 25)).toBe('better');
+  });
+
+  it('treats the band edges and inside as neutral — exactly ±10% does not shout', () => {
+    expect(COMPARE_BAND_PCT).toBe(10);
+    expect(deltaTone('lower', COMPARE_BAND_PCT)).toBe('neutral');
+    expect(deltaTone('lower', -COMPARE_BAND_PCT)).toBe('neutral');
+    expect(deltaTone('higher', 5)).toBe('neutral');
+    expect(deltaTone('lower', 0)).toBe('neutral');
+  });
+
+  it('an unmeasured delta (null — baseline 0 or metric missing) stays neutral', () => {
+    expect(deltaTone('lower', null)).toBe('neutral');
+  });
+});
+
+describe('defaultBaselineRun (phase 33)', () => {
+  it('picks the newest other passed run — the list arrives newest-first', () => {
+    const others: Report[] = [
+      { ...reportFixture, run_id: 8, outcome: 'failed' },
+      { ...reportFixture, run_id: 7, outcome: 'passed' },
+      { ...reportFixture, run_id: 6, outcome: 'passed' },
+    ];
+    expect(defaultBaselineRun(others)).toBe(7);
+  });
+
+  it('falls back to the newest other run when nothing passed yet', () => {
+    const others: Report[] = [
+      { ...reportFixture, run_id: 8, outcome: 'failed' },
+      { ...reportFixture, run_id: 7, outcome: 'aborted' },
+    ];
+    expect(defaultBaselineRun(others)).toBe(8);
+  });
+
+  it('returns null with no other run — the card hides', () => {
+    expect(defaultBaselineRun([])).toBeNull();
+  });
+});
+
+describe('ReportDetail compare card (phase 33, mounted)', () => {
+  // The run on screen: p95 improved 25% vs baseline 7, p99 regressed 25%,
+  // samples down 16.7%, rps down 15.8%, error rate up 1100% — one of each
+  // tone so the colouring is assertable end to end.
+  const currentReport: Report = {
+    ...reportFixture,
+    latency: { '50': 0.05, '95': 0.15, '99': 0.5 },
+    achieved: { concurrency: 10, throughput: 80, samples: 5000, failed: 30 },
+    error_rate: 0.006,
+  };
+  const baseline7: Report = {
+    ...reportFixture,
+    run_id: 7,
+    started_at: '2026-09-03T10:00:00Z',
+    outcome: 'passed',
+    latency: { '50': 0.05, '95': 0.2, '99': 0.4 },
+    achieved: { concurrency: 10, throughput: 95, samples: 6000, failed: 3 },
+    error_rate: 0.0005,
+  };
+  const baseline8: Report = {
+    ...reportFixture,
+    run_id: 8,
+    started_at: '2026-09-04T09:00:00Z',
+    outcome: 'failed',
+    latency: { '50': 0.05, '95': 0.1, '99': 0.3 },
+    achieved: { concurrency: 10, throughput: 99, samples: 6000, failed: 3 },
+    error_rate: 0.0005,
+  };
+  // Newest first, the list endpoint's contract: 9 is the run on screen.
+  const siblingList: Report[] = [
+    currentReport,
+    baseline8,
+    baseline7,
+  ];
+
+  /** The delta cell of a metric row: the td after the two value cells. */
+  const deltaCell = (name: string) =>
+    container!.querySelector(`[data-testid="compare-metric-${name}"]`)?.querySelectorAll('td')[3] ?? null;
+
+  it('renders under the thresholds card with computed, coloured deltas', async () => {
+    await renderReportDetail(
+      () => json({ points: [] }),
+      [],
+      currentReport,
+      siblingList,
+      { 7: baseline7 }
+    );
+
+    const card = container!.querySelector('[data-testid="compare-card"]');
+    expect(card).not.toBeNull();
+    // Directly under the thresholds card, before the Load card.
+    const thresholds = container!.querySelector('[data-testid="thresholds-card"]');
+    expect(thresholds!.compareDocumentPosition(card!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // p95 150ms vs 200ms: -25%, emerald.
+    const p95 = deltaCell('p95');
+    expect(p95?.textContent).toBe('-25.0%');
+    expect(p95?.className).toContain('emerald');
+    // p99 500ms vs 400ms: +25%, rose.
+    const p99 = deltaCell('p99');
+    expect(p99?.textContent).toBe('+25.0%');
+    expect(p99?.className).toContain('rose');
+    // samples 5000 vs 6000: -16.7% (down >10%), rose.
+    expect(deltaCell('samples')?.className).toContain('rose');
+    // rps 80 vs 95: -15.8%, rose.
+    expect(deltaCell('rps')?.className).toContain('rose');
+    // error rate 0.6% vs 0.05%: rose.
+    expect(deltaCell('error_rate')?.className).toContain('rose');
+    // Latency renders ms although the wire carries seconds.
+    const p95Values = container!.querySelector('[data-testid="compare-metric-p95"]')?.textContent;
+    expect(p95Values).toContain('150.0 ms');
+    expect(p95Values).toContain('200.0 ms');
+  });
+
+  it('defaults the baseline to the previous passed run, not the newest sibling', async () => {
+    const calls: string[] = [];
+    await renderReportDetail(() => json({ points: [] }), calls, currentReport, siblingList, {
+      7: baseline7,
+      8: baseline8,
+    });
+
+    // Sibling 8 (failed) is newer than 7 (passed): the default must skip it.
+    expect(calls.some((u) => u === '/api/runs/7/report')).toBe(true);
+    expect(container!.querySelector('[data-testid="compare-metric-p95"]')?.textContent).toContain('200.0 ms');
+    expect(container!.querySelector('[data-testid="compare-baseline-toggle"]')?.textContent).toContain('#7');
+  });
+
+  it('picks another baseline from the popover and refetches its report', async () => {
+    const calls: string[] = [];
+    await renderReportDetail(() => json({ points: [] }), calls, currentReport, siblingList, {
+      7: baseline7,
+      8: baseline8,
+    });
+    expect(calls.filter((u) => u === '/api/runs/8/report').length).toBe(0);
+
+    await act(async () => {
+      container!
+        .querySelector('[data-testid="compare-baseline-toggle"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const opt8 = container!.querySelector('[data-testid="compare-baseline-8"]');
+    expect(opt8?.textContent).toContain('#8');
+    expect(opt8?.textContent).toContain('failed');
+    // The current run is never an option.
+    expect(container!.querySelector('[data-testid="compare-baseline-9"]')).toBeNull();
+
+    await act(async () => {
+      opt8!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {});
+
+    expect(calls.filter((u) => u === '/api/runs/8/report').length).toBe(1);
+    // p95 against run 8: 150ms vs 100ms = +50%, rose (it was emerald vs 7).
+    const p95 = deltaCell('p95');
+    expect(p95?.textContent).toBe('+50.0%');
+    expect(p95?.className).toContain('rose');
+  });
+
+  it('hides the card entirely when the execution has no comparable run', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], currentReport, [currentReport]);
+    expect(container!.querySelector('[data-testid="compare-card"]')).toBeNull();
+  });
+
+  it('hides the card when the sibling list cannot be fetched', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], currentReport, null);
+    expect(container!.querySelector('[data-testid="compare-card"]')).toBeNull();
   });
 });

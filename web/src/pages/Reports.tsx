@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ExternalLink, Download } from 'lucide-react';
+import { ExternalLink, Download, Check, ChevronDown } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import ClusterBadge from '../components/ui/ClusterBadge';
@@ -16,6 +16,7 @@ import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
 import { getRunReport, getShardConfig, getShardLog, listExecutionReports } from '../api/reports';
 import type { Load, Report } from '../api/reports';
+import { pctDelta, formatDelta } from './RunCompare';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { fetchSeries } from '../api/series';
 import type { SeriesPoint } from '../api/series';
@@ -719,6 +720,272 @@ function RequestedVsAchieved({ requested, points }: { requested: Load; points: S
   );
 }
 
+/** The headline metrics the compare card diffs, in display order. RPS is
+ * the achieved figure; latency fields are seconds on the wire and format
+ * as ms, like every latency read in the SPA. */
+const COMPARE_METRICS: Array<{
+  name: string;
+  label: string;
+  /** Which direction reads as an improvement for this metric. */
+  better: 'lower' | 'higher';
+  value: (r: Report) => number | undefined;
+  format: (v: number) => string;
+}> = [
+  {
+    name: 'samples',
+    label: 'Samples',
+    better: 'higher',
+    value: (r) => r.achieved?.samples,
+    format: (v) => v.toLocaleString(),
+  },
+  {
+    name: 'error_rate',
+    label: 'Error rate',
+    better: 'lower',
+    value: (r) => r.error_rate,
+    format: (v) => `${(v * 100).toFixed(2)}%`,
+  },
+  {
+    name: 'p95',
+    label: 'p95',
+    better: 'lower',
+    value: (r) => r.latency?.['95'],
+    format: (v) => `${(v * 1000).toFixed(1)} ms`,
+  },
+  {
+    name: 'p99',
+    label: 'p99',
+    better: 'lower',
+    value: (r) => r.latency?.['99'],
+    format: (v) => `${(v * 1000).toFixed(1)} ms`,
+  },
+  {
+    name: 'rps',
+    label: 'RPS',
+    better: 'higher',
+    value: (r) => r.achieved?.throughput,
+    format: (v) => `${v.toFixed(1)} req/s`,
+  },
+];
+
+/** ±10% is the card's significance band (phase 33): a delta beyond it in
+ * the bad direction reads rose, beyond it in the good direction emerald,
+ * within it (or unmeasured — pctDelta's null) slate. "Same-ish" must not
+ * shout. */
+export const COMPARE_BAND_PCT = 10;
+
+/** Which tone a delta renders with; exported for the band-edge unit tests. */
+export type CompareTone = 'worse' | 'better' | 'neutral';
+
+/** Tone of a signed percent delta under the ±10% band, given which
+ * direction is better for the metric. */
+export function deltaTone(better: 'lower' | 'higher', delta: number | null): CompareTone {
+  if (delta === null) {
+    return 'neutral';
+  }
+  const up = delta > COMPARE_BAND_PCT;
+  const down = delta < -COMPARE_BAND_PCT;
+  if (better === 'lower') {
+    return up ? 'worse' : down ? 'better' : 'neutral';
+  }
+  return down ? 'worse' : up ? 'better' : 'neutral';
+}
+
+/** Tone → text colour classes (rose/emerald/slate, phase 33's palette). */
+function toneClass(tone: CompareTone): string {
+  switch (tone) {
+    case 'worse':
+      return 'text-rose-600 dark:text-rose-400';
+    case 'better':
+      return 'text-emerald-600 dark:text-emerald-400';
+    default:
+      return 'text-slate-500 dark:text-slate-400';
+  }
+}
+
+/** The default baseline: the newest OTHER passed run — the last honest
+ * green the execution posted — falling back to the newest other run when
+ * nothing passed yet (something to diff beats nothing). Null when there
+ * is no other run at all: the card's hide rule. */
+export function defaultBaselineRun(others: Report[]): number | null {
+  if (others.length === 0) {
+    return null;
+  }
+  const passed = others.find((r) => r.outcome === 'passed');
+  return (passed ?? others[0]).run_id;
+}
+
+/** The baseline picker's option styling, ProjectSwitcher's visual language. */
+function baselineOptionClass(selected: boolean): string {
+  return `flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-sm transition-colors ${
+    selected
+      ? 'bg-sky-50 font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+      : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+  } focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-500`;
+}
+
+/** The Overview tab's Compare card (phase 33): the run on screen against
+ * a picked baseline from the same execution — headline metric rows with
+ * signed percent deltas under the ±10% band, plus (task 3) a per-label
+ * p95 diff. The baseline is another run's full report, fetched on pick;
+ * the current one is already in memory. Hidden entirely when the
+ * execution offers no other run to compare against. */
+function CompareCard({ current, siblings }: { current: Report; siblings: Report[] }) {
+  // Others = this execution's runs minus the one on screen. Siblings load
+  // once per execution and the card (re)mounts on every run navigation,
+  // so the initial pick is simply the default baseline at mount.
+  const others = siblings.filter((r) => r.run_id !== current.run_id);
+  const [baselineId, setBaselineId] = useState<number | null>(() => defaultBaselineRun(others));
+  const [baseline, setBaseline] = useState<Report | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  // Tap-away and Escape close, ProjectSwitcher's pattern: listeners exist
+  // only while open, and the root's marker class keeps the toggle button
+  // itself outside the outside-click check.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest('.compare-picker')) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (baselineId === null) {
+      return;
+    }
+    let cancelled = false;
+    setBaseline(null);
+    setError(null);
+    getRunReport(baselineId)
+      .then((rep) => {
+        if (!cancelled) setBaseline(rep);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load baseline.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [baselineId]);
+
+  if (baselineId === null) {
+    return null;
+  }
+  const selected = others.find((r) => r.run_id === baselineId) ?? null;
+
+  return (
+    <Card data-testid="compare-card">
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
+        <CardTitle>Compare</CardTitle>
+        <div className="compare-picker relative">
+          <button
+            type="button"
+            data-testid="compare-baseline-toggle"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            onClick={() => setOpen((o) => !o)}
+            className="flex min-h-[36px] max-w-72 items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-caption font-medium text-slate-600 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <span className="truncate">
+              Baseline: {selected ? `#${selected.run_id} · ${selected.outcome}` : '—'}
+            </span>
+            <ChevronDown aria-hidden className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+          </button>
+          {open && (
+            <div
+              role="listbox"
+              aria-label="Baseline run"
+              className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-800 dark:bg-slate-950"
+            >
+              <div className="max-h-72 overflow-y-auto px-2 pb-1">
+                {others.map((r) => (
+                  <button
+                    key={r.run_id}
+                    type="button"
+                    role="option"
+                    aria-selected={r.run_id === baselineId}
+                    data-testid={`compare-baseline-${r.run_id}`}
+                    onClick={() => {
+                      setBaselineId(r.run_id);
+                      setOpen(false);
+                    }}
+                    className={baselineOptionClass(r.run_id === baselineId)}
+                  >
+                    <span className="truncate">#{r.run_id} · {r.outcome} · {formatTime(r.started_at)}</span>
+                    {r.run_id === baselineId && <Check aria-hidden className="h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {error}
+          </p>
+        )}
+        {!error && baseline === null && (
+          <p className="text-body-sm text-slate-500 dark:text-slate-400" data-testid="compare-loading">
+            Loading baseline…
+          </p>
+        )}
+        {baseline !== null && (
+          <div className="overflow-x-auto" data-testid="compare-metrics">
+            <table className="w-full text-left text-body-sm">
+              <thead>
+                <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                  <th scope="col" className="px-3 py-2 font-medium">Metric</th>
+                  <th scope="col" className="px-3 py-2 font-medium">This run (#{current.run_id})</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Baseline (#{baseline.run_id})</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Delta</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {COMPARE_METRICS.map((m) => {
+                  const base = m.value(baseline);
+                  const cur = m.value(current);
+                  const delta = base !== undefined && cur !== undefined ? pctDelta(base, cur) : null;
+                  const tone = deltaTone(m.better, delta);
+                  return (
+                    <tr key={m.name} data-testid={`compare-metric-${m.name}`}>
+                      <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{m.label}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{cur !== undefined ? m.format(cur) : '—'}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{base !== undefined ? m.format(base) : '—'}</td>
+                      <td className={`px-3 py-2 font-medium whitespace-nowrap ${toneClass(tone)}`}>{formatDelta(delta)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-caption text-slate-500 dark:text-slate-400">
+          Deltas read this run against the baseline; ±10% is the significance band. Latencies in ms.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 /** The run workspace's tabs, in strip order; each id names its panel and its ?tab= URL value. */
 const RUN_TABS = [
   { id: 'overview', label: 'Overview' },
@@ -955,6 +1222,12 @@ function ReportDetail({ runId }: { runId: string }) {
                   )}
                 </CardContent>
               </Card>
+
+              {/* Phase 33: the run against a picked baseline from this
+                  execution, straight under the verdict — regression context
+                  before measurement detail. Hidden when no other run
+                  exists to compare against. */}
+              {siblings !== null && <CompareCard current={report} siblings={siblings} />}
 
               <Card>
                 <CardHeader>
