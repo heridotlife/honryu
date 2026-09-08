@@ -2,11 +2,18 @@ package httpapi
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/reportapp"
@@ -495,4 +502,202 @@ func queryInt(r *http.Request, name string) int {
 		return 0
 	}
 	return v
+}
+
+// --- Share links (phase 34) -------------------------------------------------
+
+// shareMaxExpiryHours caps the lifetime a share link may be minted with
+// (720h = 30 days). Clamped, not rejected: an over-long ask still gets the
+// longest link the deployment hands out -- the asker can already read the
+// report, so the cap protects the link's afterlife, not the report.
+const shareMaxExpiryHours = 720
+
+// shareTokenHexBytes is a share token's entropy: 32 crypto/rand bytes,
+// served as 64 lowercase hex chars. A share link is a bare capability, so
+// guessing a live token must be harder than being handed one.
+const shareTokenHexBytes = 32
+
+// shareMaxBodyBytes bounds the issue request's body, which is one optional
+// integer and nothing else.
+const shareMaxBodyBytes = 1 << 14
+
+// shareResponse is the wire shape of POST /api/runs/{run_id}/share: the
+// token, the SPA path that resolves it, and when -- if ever -- the link
+// dies.
+type shareResponse struct {
+	Token     string  `json:"token"`
+	URL       string  `json:"url"`
+	ExpiresAt *string `json:"expires_at"`
+}
+
+// shareLinkResponse is one row of GET /api/runs/{run_id}/share: what the
+// issuing UI needs to show and revoke existing links. The token itself
+// rides along -- revoking is keyed by it, and re-showing an existing link
+// must not require minting another.
+type shareLinkResponse struct {
+	Token       string  `json:"token"`
+	CreatedBy   string  `json:"created_by"`
+	CreatedTime string  `json:"created_time"`
+	ExpiresAt   *string `json:"expires_at"`
+}
+
+// authorizeShareGate is the issue/list/delete gate: the report read the
+// link will grant, checked before any token is minted or listed -- an
+// unknown run 404s exactly like the report route, and report:read against
+// the owning execution's tenant (Phase 20) decides who may hand that
+// report to the world.
+func (h *handlers) authorizeShareGate(r *http.Request, runID int64) error {
+	rep, err := h.deps.Reports.GetReport(r.Context(), runID)
+	if err != nil {
+		return err
+	}
+	return h.authorizeReport(r, rep.ExecutionID)
+}
+
+// createRunShare issues a share link for a run's report. The body is
+// optional: absent mints a never-expiring link, {"expires_in_hours": N}
+// one that dies after N hours (clamped to shareMaxExpiryHours). Multiple
+// live tokens per run are allowed -- two customers, two links, one
+// revocable without breaking the other.
+func (h *handlers) createRunShare(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Shares == nil {
+		writeError(w, http.StatusNotFound, "share links not configured")
+		return
+	}
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	var body struct {
+		ExpiresInHours *int64 `json:"expires_in_hours"`
+	}
+	// An absent body decodes to EOF -- that is the no-expiry default, not a
+	// malformed request.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, shareMaxBodyBytes)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "body must be JSON with an optional expires_in_hours")
+		return
+	}
+	var expires *time.Time
+	if body.ExpiresInHours != nil {
+		if *body.ExpiresInHours <= 0 {
+			writeError(w, http.StatusBadRequest, "expires_in_hours must be positive")
+			return
+		}
+		t := time.Now().Add(time.Duration(min(*body.ExpiresInHours, shareMaxExpiryHours)) * time.Hour).UTC()
+		expires = &t
+	}
+	if err := h.authorizeShareGate(r, runID); err != nil {
+		respondError(w, err)
+		return
+	}
+	raw := make([]byte, shareTokenHexBytes)
+	if _, err := rand.Read(raw); err != nil {
+		// crypto/rand failing is the platform's entropy source failing;
+		// nothing about the request can fix that.
+		slog.Error("httpapi: share token entropy", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	token := hex.EncodeToString(raw)
+	createdBy := accountFrom(r.Context()).Name
+	if err := h.deps.Shares.CreateShare(r.Context(), runID, token, createdBy, expires); err != nil {
+		respondError(w, err)
+		return
+	}
+	resp := shareResponse{Token: token, URL: "/share/" + token}
+	if expires != nil {
+		s := expires.Format(time.RFC3339)
+		resp.ExpiresAt = &s
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// listRunShares lists a run's links in issue order, so the share dialog can
+// show what is already out in the world and revoke it.
+func (h *handlers) listRunShares(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Shares == nil {
+		writeError(w, http.StatusNotFound, "share links not configured")
+		return
+	}
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	if err := h.authorizeShareGate(r, runID); err != nil {
+		respondError(w, err)
+		return
+	}
+	shares, err := h.deps.Shares.ListSharesByRun(r.Context(), runID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	out := make([]shareLinkResponse, 0, len(shares)) // always an array, never null
+	for _, s := range shares {
+		row := shareLinkResponse{
+			Token: s.Token, CreatedBy: s.CreatedBy,
+			CreatedTime: s.CreatedTime.UTC().Format(time.RFC3339),
+		}
+		if s.Expires != nil {
+			v := s.Expires.UTC().Format(time.RFC3339)
+			row.ExpiresAt = &v
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// deleteRunShare revokes one link. The token is a path segment, not a body:
+// the revoke URL is the share URL's management twin.
+func (h *handlers) deleteRunShare(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Shares == nil {
+		writeError(w, http.StatusNotFound, "share links not configured")
+		return
+	}
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	if err := h.authorizeShareGate(r, runID); err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.deps.Shares.DeleteShare(r.Context(), runID, r.PathValue("token")); err != nil {
+		respondError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sharedReport is the public face of a share link: the run report payload
+// IDENTICAL to GET /api/runs/{id}/report -- the same withCriteriaVerdict
+// layer, criteria and failing_criteria included -- served to callers with
+// no session at all (the route sits in publicAPIPath, outside the auth
+// middleware; the token is the entire authorization). Exactly one run's
+// report and nothing else: no execution listing, no shard objects. Unknown
+// and expired tokens answer the same 404, so a guesser learns nothing
+// about which tokens exist.
+func (h *handlers) sharedReport(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Shares == nil {
+		writeError(w, http.StatusNotFound, "share links not configured")
+		return
+	}
+	share, err := h.deps.Shares.GetShareByToken(r.Context(), r.PathValue("token"))
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if share.ExpiredAt(time.Now()) {
+		writeError(w, http.StatusNotFound, "share link expired")
+		return
+	}
+	rep, err := h.deps.Reports.GetReport(r.Context(), share.RunID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.withCriteriaVerdict(r, rep))
 }

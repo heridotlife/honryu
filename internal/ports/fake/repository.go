@@ -116,9 +116,11 @@ type Store struct {
 
 	// Embedded rather than reimplemented: a run's report and its working state
 	// are keyed by run id alone, with no cross-aggregate rule tying them to the
-	// rest of Store the way scenarios and executions tie to each other.
+	// rest of Store the way scenarios and executions tie to each other. The
+	// same holds for share links: they address runs by token, nothing else.
 	*ReportProgress
 	*ReportStore
+	*ShareStore
 }
 
 // NewStore returns an empty in-memory Store.
@@ -156,6 +158,7 @@ func NewStore() *Store {
 		clusterCredentials:   make(map[string][]byte),
 		ReportProgress:       NewReportProgress(),
 		ReportStore:          NewReportStore(),
+		ShareStore:           NewShareStore(),
 	}
 }
 
@@ -199,6 +202,7 @@ var (
 	_ ports.RoleAssignmentRepository  = (*Store)(nil)
 	_ ports.ReportProgress            = (*Store)(nil)
 	_ ports.ReportStore               = (*Store)(nil)
+	_ ports.ShareStore                = (*Store)(nil)
 	_ ports.ReservationRepository     = (*Store)(nil)
 	_ ports.CampaignRepository        = (*Store)(nil)
 	_ ports.CalibrationJobRepository  = (*Store)(nil)

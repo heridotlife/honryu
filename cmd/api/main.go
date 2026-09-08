@@ -69,6 +69,7 @@ type repository interface {
 	ports.RoleAssignmentRepository
 	ports.ReportProgress
 	ports.ReportStore
+	ports.ShareStore
 	ports.IntervalRepository
 	ports.ReservationRepository
 	ports.ScheduleRepository
@@ -175,6 +176,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Usage:        usage,
 		Metrics:      collector,
 		Reports:      repo,
+		Shares:       repo,
 		Series:       repo,
 		Reservations: repo,
 		IngestToken:  cfg.Cluster.IngestToken,
