@@ -251,6 +251,7 @@ func TestListExecutions(t *testing.T) {
 		ID        int64  `json:"id"`
 		Name      string `json:"name"`
 		ProjectID int64  `json:"project_id"`
+		Kind      string `json:"kind"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode body: %v (%s)", err, rec.Body.String())
@@ -260,6 +261,13 @@ func TestListExecutions(t *testing.T) {
 	}
 	if got[0].ID != last || got[2].ID != first {
 		t.Fatalf("order = [%d %d %d], want newest first (last, middle, first)", got[0].ID, got[1].ID, got[2].ID)
+	}
+	// Phase 39: the summary carries Kind too, so list consumers can tell
+	// calibration executions apart without fetching each one.
+	for _, e := range got {
+		if e.Kind != "normal" {
+			t.Errorf("execution %d kind = %q, want normal (created the ordinary way)", e.ID, e.Kind)
+		}
 	}
 
 	// Empty ownership: no visible projects, empty list -- never a 500 or a
@@ -276,6 +284,48 @@ func TestListExecutions(t *testing.T) {
 	var none []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &none); err != nil || len(none) != 0 {
 		t.Fatalf("empty list = %v err=%v, want []", none, err)
+	}
+}
+
+// TestGetExecutionIncludesKind pins phase 39's wire contract on the
+// single-execution GET: the response exposes the execution's Kind
+// ("normal" vs "calibrate_engine") so the SPA can gate calibration UI on
+// it -- before, the frontend saw only the engine and mounted the Capacity
+// card on ordinary executions, whose Calibrate button could only ever
+// earn a 400 from calibrationapp.Trigger.
+func TestGetExecutionIncludesKind(t *testing.T) {
+	t.Parallel()
+	// newCalibrationRouter (calibration_handlers_test.go) wires the
+	// Calibrations dep, so both kinds can be created over HTTP.
+	h, _, _ := newCalibrationRouter(t)
+	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+
+	kindOf := func(executionID int64) string {
+		t.Helper()
+		rec := do(t, h, http.MethodGet, "/api/executions/"+itoa(executionID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get execution %d = %d (%s)", executionID, rec.Code, rec.Body.String())
+		}
+		var got struct {
+			Engine string `json:"engine"`
+			Kind   string `json:"kind"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode execution %d: %v (%s)", executionID, err, rec.Body.String())
+		}
+		return got.Kind
+	}
+
+	normalID := decodeID(t, postForm(t, h, "/api/executions", url.Values{
+		"name": {"soak"}, "project_id": {itoa(projectID)}, "engine": {"jmeter"},
+	}))
+	if kind := kindOf(normalID); kind != "normal" {
+		t.Errorf("ordinary execution kind = %q, want normal", kind)
+	}
+
+	_, calibID, _ := seedCalibration(t, h)
+	if kind := kindOf(calibID); kind != "calibrate_engine" {
+		t.Errorf("calibration execution kind = %q, want calibrate_engine", kind)
 	}
 }
 

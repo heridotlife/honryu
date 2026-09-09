@@ -88,6 +88,9 @@ export interface ExecutionInfo {
   name: string;
   project_id: number;
   engine?: string;
+  /** "normal" | "calibrate_engine" (phase 39); absent on pre-phase39
+   * backends, which only ever produced normal executions. */
+  kind?: string;
   cluster?: string;
   csv_split: boolean;
   created_time: string;
