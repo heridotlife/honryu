@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
+	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
@@ -812,4 +814,125 @@ func TestReportHTTP_InvalidPathParamsAreBadRequest(t *testing.T) {
 			t.Errorf("GET %s = %d, want 400", path, rec.Code)
 		}
 	}
+}
+
+// Phase 37: the run report's APM depth layer. With the execution service
+// wired, the response carries the execution's project_id (the fourth value
+// an APM link-out substitutes) and the exact baggage string the run's load
+// carried, rebuilt from the stored identity -- the trace id doubles as the
+// correlation id so baggage survives the engines; traceparent's parent id
+// does not, and is deliberately not faked. Strictly additive: no execution
+// service (the share path's own tolerance), or a run that predates
+// correlation ids, and both fields simply stay absent.
+func TestRunReport_APMDepthLayer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := fake.NewStore()
+	obj := fake.NewObjectStore()
+	executions := executionapp.NewService(store, obj, 100)
+	h := httpapi.NewRouter(httpapi.Deps{
+		Executions:    executions,
+		Reports:       store,
+		Store:         obj,
+		DefaultOwners: []string{"honryu"},
+	})
+
+	proj, err := projectapp.NewService(store).Create(ctx, "proj", "owner", "123")
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+	exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "")
+	if err != nil {
+		t.Fatalf("Create execution: %v", err)
+	}
+
+	rep := sampleReport(exec.ID, 42)
+	rep.CorrelationID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	if err := store.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ProjectID int64  `json:"project_id"`
+		Baggage   string `json:"baggage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ProjectID != proj.ID {
+		t.Errorf("project_id = %d, want the execution's project %d", got.ProjectID, proj.ID)
+	}
+	// No tenant on the project, so no honryu.tenant entry (omitted, never
+	// rendered empty) -- the same rule Headers applies on the wire.
+	wantBaggage := fmt.Sprintf("honryu.service=%d,honryu.execution=%d,honryu.run=%s",
+		proj.ID, exec.ID, rep.CorrelationID)
+	if got.Baggage != wantBaggage {
+		t.Errorf("baggage = %q, want %q", got.Baggage, wantBaggage)
+	}
+}
+
+// The tolerance half: no execution service wired, or a report with no
+// correlation id, and both phase 37 fields are absent rather than errors --
+// the report predates the layer and must keep serving exactly as before.
+func TestRunReport_APMDepthLayerOmitted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("no execution service wired", func(t *testing.T) {
+		t.Parallel()
+		h, reports, _ := newReportEnv(t)
+		rep := sampleReport(7, 43)
+		rep.CorrelationID = "abc"
+		if err := reports.SaveReport(ctx, rep); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+		rec := do(t, h, http.MethodGet, "/api/runs/43/report")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), `"project_id"`) || strings.Contains(rec.Body.String(), `"baggage"`) {
+			t.Errorf("report without execution service carries the phase 37 fields: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("run predates correlation ids", func(t *testing.T) {
+		t.Parallel()
+		store := fake.NewStore()
+		obj := fake.NewObjectStore()
+		executions := executionapp.NewService(store, obj, 100)
+		h := httpapi.NewRouter(httpapi.Deps{
+			Executions:    executions,
+			Reports:       store,
+			Store:         obj,
+			DefaultOwners: []string{"honryu"},
+		})
+		proj, err := projectapp.NewService(store).Create(ctx, "proj", "owner", "123")
+		if err != nil {
+			t.Fatalf("Create project: %v", err)
+		}
+		exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "")
+		if err != nil {
+			t.Fatalf("Create execution: %v", err)
+		}
+		// sampleReport carries no correlation id: the run predates telemetry.
+		if err := store.SaveReport(ctx, sampleReport(exec.ID, 44)); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+		rec := do(t, h, http.MethodGet, "/api/runs/44/report")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if _, ok := got["baggage"]; ok {
+			t.Errorf("baggage present for a correlation-less run: %v", got["baggage"])
+		}
+	})
 }
