@@ -454,11 +454,10 @@ export default function Tenants() {
                 </p>
               )}
 
-              {members && members.length === 0 && (
-                <p className="text-body-sm text-slate-500 dark:text-slate-400">No role grants in this tenant yet.</p>
-              )}
-
-              {members && members.length > 0 && (
+              {/* The table is the members-table hook the tests (and future
+                  tooling) key on, so it renders whenever the roster has
+                  loaded -- empty rosters included -- rather than vanishing. */}
+              {members !== null && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-body-sm" data-testid="members-table">
                     <thead>
@@ -472,6 +471,13 @@ export default function Tenants() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {members.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="px-3 py-2 text-slate-500 dark:text-slate-400">
+                            No role grants in this tenant yet.
+                          </td>
+                        </tr>
+                      )}
                       {members.map((g) => (
                         <tr key={`${g.subject}-${g.role}`}>
                           <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{g.subject}</td>
