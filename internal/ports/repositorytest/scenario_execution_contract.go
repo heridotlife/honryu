@@ -336,6 +336,37 @@ func RunExecutionRepositoryContract(t *testing.T, newRepo NewRepo) {
 		}
 	})
 
+	// DeleteExecution must take its scenario links with it: the schema has
+	// no FK cascades, so an execution_scenario row left behind keeps
+	// ScenarioInUse true forever and 409s every delete of the linked
+	// scenario (and through it, its project) -- phase 36, hit live.
+	t.Run("DeleteExecutionDropsItsScenarioLinks", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+		scenarioID := mustCreateScenario(t, repo, "smoke", 10)
+		collID := mustCreateExecution(t, repo, "peak", 10)
+		if err := repo.StoreLoadProfile(ctx, collID, false, []loadprofile.Entry{
+			{Name: "smoke", ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 60},
+		}); err != nil {
+			t.Fatalf("StoreLoadProfile: %v", err)
+		}
+
+		if err := repo.DeleteExecution(ctx, collID); err != nil {
+			t.Fatalf("DeleteExecution: %v", err)
+		}
+		inUse, err := repo.ScenarioInUse(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("ScenarioInUse: %v", err)
+		}
+		if inUse {
+			t.Fatal("ScenarioInUse = true after the execution was deleted (orphaned execution_scenario row)")
+		}
+		// The operator-visible symptom: the scenario delete that 409'd.
+		if err := repo.DeleteScenario(ctx, scenarioID); err != nil {
+			t.Fatalf("DeleteScenario after the execution was deleted: %v", err)
+		}
+	})
+
 	// ListExecutionsByProjects is the operator listing: every execution of
 	// every visible project, newest first, regardless of which project any
 	// single execution belongs to. An empty project list must widen to

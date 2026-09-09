@@ -108,8 +108,40 @@ func (r *Repository) ListExecutionsByProjects(ctx context.Context, projectIDs []
 }
 
 // DeleteExecution removes the execution with id, or ports.ErrNotFound.
+// The schema has no FK cascades, so the execution's scenario links go first,
+// in the same transaction -- left behind they survive as orphaned
+// execution_scenario rows that keep ScenarioInUse true forever, blocking
+// every delete of the linked scenario and its project. Other references
+// are deliberately not touched: execution_run is the lifecycle's own state
+// (cleared by teardown's StopRun), and execution_run_history,
+// execution_report, and execution_launch_history are audit history that
+// must outlive the execution -- reports of past runs are retained by
+// design, not garbage.
 func (r *Repository) DeleteExecution(ctx context.Context, id int64) error {
-	return execDelete(ctx, r.db, "DELETE FROM execution WHERE id = ?", id)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("mysql: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM execution_scenario WHERE execution_id = ?", id); err != nil {
+		return fmt.Errorf("mysql: clear execution scenarios: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, "DELETE FROM execution WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("mysql: delete execution: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mysql: delete execution rows: %w", err)
+	}
+	if n == 0 {
+		return ports.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("mysql: commit: %w", err)
+	}
+	return nil
 }
 
 // ExecutionsWithActiveRunOnCluster returns the ids of executions on cluster
