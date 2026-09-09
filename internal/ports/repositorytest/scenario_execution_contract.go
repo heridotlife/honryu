@@ -95,6 +95,14 @@ func RunScenarioRepositoryContract(t *testing.T, newRepo NewRepo) {
 			t.Error("SetScenarioKind on a missing scenario succeeded")
 		}
 
+		// Setting the kind a scenario already has is a no-op UPDATE, and
+		// MySQL reports RowsAffected 0 for those -- exactly as for a missing
+		// row. It must still succeed: re-uploading a same-engine script pins
+		// the scenario to values it already has (phase 36: this 404'd live).
+		if err := repo.SetScenarioKind(ctx, portableID, scenario.KindNative, taurus.ExecutorK6); err != nil {
+			t.Fatalf("SetScenarioKind(unchanged values) = %v, want nil: the scenario exists; 0 rows affected only means the UPDATE changed nothing", err)
+		}
+
 		// An execution's engine selection must survive too, or a run would
 		// silently fall back to the deployment default and measure a workload
 		// nobody asked for. Its target cluster must round-trip for the same

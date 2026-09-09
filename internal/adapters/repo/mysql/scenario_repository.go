@@ -146,8 +146,22 @@ func (r *Repository) SetScenarioKind(ctx context.Context, scenarioID int64, kind
 	if err != nil {
 		return fmt.Errorf("mysql: set scenario kind rows: %w", err)
 	}
+	// MySQL reports RowsAffected 0 for a no-op UPDATE (values already equal)
+	// exactly as for a missing row, so 0 alone cannot mean ErrNotFound:
+	// pinning a scenario to the kind it already has must succeed, not 404.
+	// Verify the row exists before declaring it gone. Deliberately not the
+	// CLIENT_FOUND_ROWS DSN flag -- the DSN is operator-supplied verbatim,
+	// and changing its flags would alter RowsAffected semantics for every
+	// other statement on the pool.
 	if n == 0 {
-		return ports.ErrNotFound
+		var exists bool
+		if err := r.db.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM scenario WHERE id = ?)", scenarioID).Scan(&exists); err != nil {
+			return fmt.Errorf("mysql: set scenario kind check: %w", err)
+		}
+		if !exists {
+			return ports.ErrNotFound
+		}
 	}
 	return nil
 }
