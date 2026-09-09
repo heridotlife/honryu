@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ApiError, errorDetails } from '../api/client';
@@ -9,7 +9,7 @@ import { getExecutionTrend, getErrorSignatures } from '../api/trends';
 import type { ErrorSignatureHistory, SignatureGroupBy, TrendPoint } from '../api/trends';
 import { sortSignatureGroups } from './ReportsTrend';
 import TaurusEditor from '../components/TaurusEditor';
-import CapacityPanel from '../components/CapacityPanel';
+import CapacityPanel, { isCalibrationExecution } from '../components/CapacityPanel';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
 import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { deployExecution, purgeExecution, stopExecution, triggerExecution } from '../api/lifecycle';
@@ -21,6 +21,7 @@ import ClusterBadge from '../components/ui/ClusterBadge';
 import EngineBadge from '../components/ui/EngineBadge';
 import CopyLink from '../components/CopyLink';
 import ActionErrorDetails from '../components/ActionErrorDetails';
+import CalibrateScenarioModal from '../components/CalibrateScenarioModal';
 
 const phaseClasses: Record<Phase, string> = {
   idle: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300',
@@ -439,6 +440,7 @@ function LiveCharts({ series, pct, onPct }: { series: LiveSeriesPoint[]; pct: Li
 export default function Execution() {
   const { id } = useParams<{ id: string }>();
   const { can } = useSession();
+  const navigate = useNavigate();
   const executionId = Number(id);
   const validId = Number.isInteger(executionId) && executionId > 0;
 
@@ -453,6 +455,10 @@ export default function Execution() {
   const [reports, setReports] = useState<Report[] | null>(null);
   const [logsScenario, setLogsScenario] = useState<number | null>(null);
   const [logText, setLogText] = useState<string>('');
+  // Phase 39: which scenario row has its create-calibration dialog open
+  // (null = none). The dialog mints a NEW calibrate_engine execution -- the
+  // only UI path that ever creates one.
+  const [calibrateFor, setCalibrateFor] = useState<number | null>(null);
   // The live stream (SSE subscribe, event window, per-second recompute)
   // lives in the hook; this page keeps only the rolling numbers it feeds.
   const { series, connected, stats, reset: resetLive } = useLiveSeries(executionId, validId);
@@ -563,6 +569,20 @@ export default function Execution() {
 
   const enginesReachable = status?.status.every((s) => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
+  // Phase 39's Calibrate action needs an engine to name (the backend rejects
+  // an engineless calibration) and the session's execution:create.
+  const canCalibrate = !!info?.engine && can('execution', 'create');
+  // A scenario's display name: the config's test name doubles as it (the
+  // NewTest flow names test and scenario the same); the id is the fallback.
+  const scenarioName = (scenarioId: number): string =>
+    info?.load_profile.find((t) => t.scenario_id === scenarioId)?.name ?? `scenario ${scenarioId}`;
+  // The capacity key every calibration surface on this page assumes: the
+  // execution's engine at the house-default pod size (the same defaults
+  // CalibrateScenarioModal pre-fills, phase 39). Absent while info loads
+  // or on engine-less executions.
+  const capacityKey = info?.engine
+    ? { engine: info.engine, cpu: '500m', memory: '512Mi' }
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -687,10 +707,22 @@ export default function Execution() {
                         </span>
                       )}
                     </div>
-                    <div className="text-caption text-slate-500 dark:text-slate-400">
-                      {sc.engines_deployed}/{sc.engines} engines deployed
-                      {engineShortfall(sc) > 0 && (
-                        <span className="text-amber-600 dark:text-amber-400"> · {engineShortfall(sc)} pending</span>
+                    <div className="flex items-center gap-3">
+                      <div className="text-caption text-slate-500 dark:text-slate-400">
+                        {sc.engines_deployed}/{sc.engines} engines deployed
+                        {engineShortfall(sc) > 0 && (
+                          <span className="text-amber-600 dark:text-amber-400"> · {engineShortfall(sc)} pending</span>
+                        )}
+                      </div>
+                      {canCalibrate && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid="calibrate-scenario-btn"
+                          onClick={() => setCalibrateFor(sc.scenario_id)}
+                        >
+                          Calibrate
+                        </Button>
                       )}
                     </div>
                   </li>
@@ -698,11 +730,15 @@ export default function Execution() {
               </ul>
             )}
           </Card>
-          {info?.engine && (
+          {/* Phase 39: the Capacity card mounts ONLY on calibrate_engine
+              executions (isCalibrationExecution). Before Kind rode the wire
+              this gate was just info?.engine, so a normal execution's
+              Calibrate button could only ever earn a 400. */}
+          {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}
               executionId={executionId}
-              keyInfo={{ engine: info.engine, cpu: '500m', memory: '512Mi' }}
+              keyInfo={capacityKey}
               targetQPS={100}
             />
           )}
@@ -759,7 +795,7 @@ export default function Execution() {
                 <TaurusEditor
                   key={status.status[0].scenario_id}
                   scenarioId={status.status[0].scenario_id}
-                  capacityKey={info?.engine ? { engine: info.engine, cpu: '500m', memory: '512Mi' } : undefined}
+                  capacityKey={capacityKey}
                 />
               )}
             </CardContent>
@@ -794,6 +830,19 @@ export default function Execution() {
             )}
           </Card>
         </>
+      )}
+      {/* Phase 39: the create-calibration dialog, per scenario row above.
+          On success it navigates to the fresh execution's page, where the
+          Capacity card (now gated on kind) lives. */}
+      {calibrateFor !== null && info?.engine && (
+        <CalibrateScenarioModal
+          scenarioId={calibrateFor}
+          scenarioName={scenarioName(calibrateFor)}
+          projectId={info.project_id}
+          engine={info.engine}
+          onClose={() => setCalibrateFor(null)}
+          onCreated={(executionId) => navigate(`/executions/${executionId}`)}
+        />
       )}
     </div>
   );

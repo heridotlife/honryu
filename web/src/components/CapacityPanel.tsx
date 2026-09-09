@@ -10,6 +10,7 @@ import {
   type CapacityKey,
   type FanOutStatus,
 } from '../api/calibration';
+import type { ExecutionInfo } from '../api/status';
 
 export interface CapacityPanelProps {
   scenarioId: number;
@@ -78,6 +79,24 @@ export function jobIsActive(job: CalibrationJob): boolean {
   return job.phase === 'pending' || job.phase === 'bracketing' || job.phase === 'bisecting';
 }
 
+/** The minimal execution info the mount gate needs: an engine and a kind. */
+export type CapacityExecutionInfo = Pick<ExecutionInfo, 'engine' | 'kind'>;
+
+/**
+ * The panel's mount gate (phase 39): the Capacity card and its Calibrate
+ * button exist ONLY on calibrate_engine executions -- triggerCalibration
+ * rejects every other kind (calibrationapp.ErrExecutionNotCalibration, a
+ * 400), and before Kind rode the wire the SPA could not tell the two
+ * apart, so any execution with an engine showed a Calibrate button that
+ * could only ever fail. An absent kind (pre-phase39 backend) is treated
+ * as normal: those backends never created calibrate_engine executions.
+ */
+export function isCalibrationExecution(
+  info: CapacityExecutionInfo | null | undefined,
+): boolean {
+  return !!info?.engine && info.kind === 'calibrate_engine';
+}
+
 export default function CapacityPanel({ scenarioId, executionId, keyInfo, targetQPS }: CapacityPanelProps) {
   const [status, setStatus] = useState<FanOutStatus | null>(null);
   const [engines, setEngines] = useState<number | null>(null);
@@ -142,7 +161,7 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
   const copy = status ? fanOutCopy(status) : null;
 
   return (
-    <Card>
+    <Card data-testid="capacity-panel">
       <CardHeader>
         <CardTitle>Capacity</CardTitle>
       </CardHeader>
