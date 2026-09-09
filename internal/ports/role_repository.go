@@ -1,6 +1,9 @@
 package ports
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // RoleGrant is a single persisted assignment of a role to a subject, optionally
 // scoped to a tenant. A nil TenantID is a global (service-provider) grant.
@@ -10,6 +13,17 @@ type RoleGrant struct {
 	RoleName  string
 	TenantID  *int64
 	GrantedBy string
+}
+
+// RoleGrantEntry is a persisted grant as read back from the store: the grant
+// plus the audit metadata the store stamps. It backs tenant rosters
+// (ListTenantRoles), which surface who holds what and who said so.
+type RoleGrantEntry struct {
+	Subject     string
+	Email       string
+	RoleName    string
+	GrantedBy   string
+	GrantedTime time.Time
 }
 
 // RoleGrants is the resolved set of a subject's persisted grants: global role
@@ -29,4 +43,8 @@ type RoleAssignmentRepository interface {
 	RevokeRole(ctx context.Context, subject, roleName string, tenantID *int64) error
 	// RolesFor resolves all grants held by a subject.
 	RolesFor(ctx context.Context, subject string) (RoleGrants, error)
+	// ListTenantRoles returns a tenant's grants -- the roster -- ordered by
+	// subject then role. The global scope is never included. A tenant with no
+	// grants yields an empty slice; tenant existence is the caller's check.
+	ListTenantRoles(ctx context.Context, tenantID int64) ([]RoleGrantEntry, error)
 }

@@ -108,6 +108,16 @@ func (s *Service) RolesFor(ctx context.Context, subject string) (ports.RoleGrant
 	return s.roles.RolesFor(ctx, subject)
 }
 
+// ListTenantRoles returns a tenant's member roster: every grant scoped to
+// that tenant, with who granted it and when. An unknown tenant is
+// ErrNotFound; a known tenant with no grants is an empty roster.
+func (s *Service) ListTenantRoles(ctx context.Context, tenantID int64) ([]ports.RoleGrantEntry, error) {
+	if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	return s.roles.ListTenantRoles(ctx, tenantID)
+}
+
 func (s *Service) validateGrant(ctx context.Context, g ports.RoleGrant) error {
 	role, ok := s.catalog[g.RoleName]
 	if !ok {

@@ -174,6 +174,7 @@ var authzAuditTable = []authzEntry{
 	{method: "PUT", pattern: "/api/tenants/{tenant_id}/quota", decision: "tenant:admin"},
 	{method: "GET", pattern: "/api/tenants/{tenant_id}/quota", decision: "tenant:admin"},
 	{method: "GET", pattern: "/api/tenants/{tenant_id}/reservations", decision: "schedule:list"},
+	{method: "GET", pattern: "/api/tenants/{tenant_id}/roles", decision: "tenant:admin"},
 	{method: "POST", pattern: "/api/tenants/{tenant_id}/roles", decision: "tenant:admin"},
 	{method: "DELETE", pattern: "/api/tenants/{tenant_id}/roles", decision: "tenant:admin",
 		query: url.Values{"subject": {"x"}, "role": {"tenant_editor"}}},

@@ -254,6 +254,7 @@ var routes = []Route{
 	{"GET", "/api/tenants/{tenant_id}/quota", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.getTenantQuota })},
 	{"GET", "/api/tenants/{tenant_id}/reservations", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.tenantReservations })},
 	{"POST", "/api/tenants/{tenant_id}/roles", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.assignTenantRole })},
+	{"GET", "/api/tenants/{tenant_id}/roles", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.listTenantRoles })},
 	{"DELETE", "/api/tenants/{tenant_id}/roles", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.revokeTenantRole })},
 	{"POST", "/api/roles", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.assignGlobalRole })},
 	{"DELETE", "/api/roles", "tenants", hf(func(h *handlers) http.HandlerFunc { return h.revokeGlobalRole })},
