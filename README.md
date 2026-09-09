@@ -197,6 +197,7 @@ has a local-dev default, so `go run ./cmd/api` works with no environment set.
 | `HONRYU_EXECUTOR` | `fake` | `fake`, `jmeter`, or `k6` |
 | `HONRYU_ENGINE_IMAGE` | `honryu/jmeter:latest` | engine container image |
 | `HONRYU_AUTH_MODE` | `none` | `none` (fixed admin) or `oidc` |
+| `HONRYU_APM_LINK_TEMPLATES` | – | JSON array of `{name, urlTemplate}` APM link-outs (`{{correlation_id}}`, `{{execution_id}}`, `{{run_id}}`, `{{project_id}}` placeholders); unknown placeholders fail startup |
 | `HONRYU_ENABLE_RBAC` | `false` | enable tenant-scoped RBAC |
 | `HONRYU_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URL` | – | OIDC ID-token verification (required for `oidc`) |
 | `HONRYU_MAX_ENGINES` | `500` | per-execution engine guardrail |

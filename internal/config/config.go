@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -28,6 +29,7 @@ type Config struct {
 	Auth       AuthConfig
 	Scheduler  SchedulerConfig
 	Calibrator CalibratorConfig
+	APM        APMConfig
 }
 
 // SchedulerConfig configures cmd/scheduler's fire-due-occurrences loop.
@@ -101,6 +103,35 @@ type DemoProfile struct {
 	Email   string             `json:"email,omitempty"`
 	Global  []string           `json:"global,omitempty"`
 	Tenants map[int64][]string `json:"tenants,omitempty"`
+}
+
+// APMConfig carries the deployment's customer-APM link-out templates
+// (HONRYU_APM_LINK_TEMPLATES). Honryu propagates trace context but does not
+// trace (telemetry's header law), so "APM depth" here means surfaces INTO
+// the customer's own APM: each template becomes a button on a run report
+// that deep-links the operator's APM pre-filtered to that run. Empty by
+// default -- a deployment that configures none serves no link-outs at all.
+type APMConfig struct {
+	LinkTemplates []APMLinkTemplate
+}
+
+// APMLinkTemplate is one entry in HONRYU_APM_LINK_TEMPLATES (JSON array).
+// URLTemplate keeps its {{placeholders}} intact through the API; the
+// FRONTEND substitutes per-run values, so the API never needs run context
+// to serve the list. Placeholders are validated at load: unknown ones fail
+// startup rather than rendering a dead link on every run page.
+type APMLinkTemplate struct {
+	Name        string `json:"name"`
+	URLTemplate string `json:"urlTemplate"`
+}
+
+// apmLinkPlaceholders is the closed set a URLTemplate may reference: the
+// per-run identity the report page already holds.
+var apmLinkPlaceholders = map[string]bool{
+	"correlation_id": true,
+	"execution_id":   true,
+	"run_id":         true,
+	"project_id":     true,
 }
 
 // ClusterConfig selects and configures the scheduler and executor used to run
@@ -322,6 +353,13 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		cfg.Auth.Demo.Profiles = profiles
 	}
+	if raw := strEnv(getenv, "APM_LINK_TEMPLATES", ""); raw != "" {
+		var templates []APMLinkTemplate
+		if err := json.Unmarshal([]byte(raw), &templates); err != nil {
+			return Config{}, fmt.Errorf("config: %sAPM_LINK_TEMPLATES must be a JSON array of {name, urlTemplate} entries: %w", envPrefix, err)
+		}
+		cfg.APM.LinkTemplates = templates
+	}
 	if cfg.Scheduler.TickInterval, err = durEnv(getenv, "SCHEDULER_TICK_INTERVAL", cfg.Scheduler.TickInterval); err != nil {
 		return Config{}, err
 	}
@@ -420,6 +458,9 @@ func (c Config) validate() error {
 		}
 	}
 	if err := c.Auth.Demo.validateProfiles(); err != nil {
+		return err
+	}
+	if err := c.APM.validateLinkTemplates(); err != nil {
 		return err
 	}
 	if c.Scheduler.TickInterval <= 0 {
@@ -521,4 +562,36 @@ func oneOf(v string, allowed ...string) bool {
 		}
 	}
 	return false
+}
+
+// apmPlaceholderPattern matches one {{placeholder}} inside a URL template.
+// Single braces (JSON query payloads, like Grafana Explore's) are not
+// placeholders and never match -- only the doubled {{...}} form is.
+var apmPlaceholderPattern = regexp.MustCompile(`\{\{([a-zA-Z_]+)\}\}`)
+
+// validateLinkTemplates checks the APM link-out list the same way demo
+// profiles are checked: names must be present and unique, the template must
+// be non-empty, and every {{placeholder}} must be one the report page can
+// actually substitute -- a typo'd placeholder fails startup here instead of
+// rendering a dead link on every run page.
+func (a APMConfig) validateLinkTemplates() error {
+	seen := make(map[string]bool, len(a.LinkTemplates))
+	for i, t := range a.LinkTemplates {
+		if t.Name == "" {
+			return fmt.Errorf("config: apm link template %d has an empty name", i)
+		}
+		if seen[t.Name] {
+			return fmt.Errorf("config: duplicate apm link template name %q", t.Name)
+		}
+		seen[t.Name] = true
+		if t.URLTemplate == "" {
+			return fmt.Errorf("config: apm link template %q has an empty urlTemplate", t.Name)
+		}
+		for _, m := range apmPlaceholderPattern.FindAllStringSubmatch(t.URLTemplate, -1) {
+			if !apmLinkPlaceholders[m[1]] {
+				return fmt.Errorf("config: apm link template %q uses unknown placeholder %q (supported: correlation_id, execution_id, run_id, project_id)", t.Name, m[1])
+			}
+		}
+	}
+	return nil
 }

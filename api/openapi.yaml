@@ -28,6 +28,11 @@ tags:
       Demo persona sessions: pick a profile, get an HMAC-signed HttpOnly
       cookie, see who you are and what you may do. Only present when the
       deployment enables demo mode
+  - name: apm
+    description: >-
+      Customer-APM link-out templates: deployment-configured URL templates
+      a run page substitutes per-run values into, deep-linking the
+      operator's own APM. Honryu propagates trace context; it does not trace
   - name: projects
     description: Projects, the ownership root
   - name: scenarios
@@ -815,6 +820,30 @@ paths:
                         id: { type: string }
                         name: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/apm-links:
+    get:
+      tags: [apm]
+      summary: The deployment's configured APM link-out templates
+      description: >-
+        Templates verbatim, {{placeholders}} intact -- the frontend
+        substitutes per-run values (correlation_id, execution_id, run_id,
+        project_id), so this endpoint never needs run context. Always an
+        array; empty when the deployment configured none, and run pages
+        render no link-outs. Any authenticated caller may read them.
+      responses:
+        '200':
+          description: Link templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    url_template: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/session:
     post:

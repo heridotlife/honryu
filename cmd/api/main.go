@@ -165,6 +165,14 @@ func run(ctx context.Context, getenv func(string) string) error {
 		return fmt.Errorf("web assets: %w", err)
 	}
 
+	// The deployment's APM link-out templates (phase 37): config's validated
+	// list converted to the adapter's own wire type, same as demo profiles
+	// become session.Profile -- httpapi imports nothing from config.
+	apmLinks := make([]httpapi.APMLinkTemplate, 0, len(cfg.APM.LinkTemplates))
+	for _, t := range cfg.APM.LinkTemplates {
+		apmLinks = append(apmLinks, httpapi.APMLinkTemplate{Name: t.Name, URLTemplate: t.URLTemplate})
+	}
+
 	router := httpapi.NewRouter(httpapi.Deps{
 		Projects:     projectapp.NewService(repo),
 		Scenarios:    scenarios,
@@ -195,6 +203,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Audit:            audit,
 		DefaultOwners:    []string{"honryu"},
 		Sessions:         sessions,
+		APMLinks:         apmLinks,
 		StaticAssets:     webAssets,
 		// The trigger endpoint's bounded readiness wait (Phase 11): a
 		// client may fire deploy->trigger back-to-back without owning the

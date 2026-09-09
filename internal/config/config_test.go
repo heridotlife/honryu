@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Calibrator.HostInScheduler {
 		t.Error("Calibrator.HostInScheduler = true, want false by default")
+	}
+	if len(cfg.APM.LinkTemplates) != 0 {
+		t.Errorf("APM.LinkTemplates = %v, want empty by default", cfg.APM.LinkTemplates)
 	}
 }
 
@@ -258,6 +262,14 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		"bad calibrator tick interval":  {"HONRYU_CALIBRATOR_TICK_INTERVAL": "never"},
 		"zero calibrator tick interval": {"HONRYU_CALIBRATOR_TICK_INTERVAL": "0s"},
 		"bad calibrator host flag":      {"HONRYU_CALIBRATOR_HOST_IN_SCHEDULER": "maybe"},
+		"apm links not json":            {"HONRYU_APM_LINK_TEMPLATES": "{not json"},
+		"apm links not an array":        {"HONRYU_APM_LINK_TEMPLATES": `{"name":"x"}`},
+		"apm template empty name":       {"HONRYU_APM_LINK_TEMPLATES": `[{"name":"","urlTemplate":"https://x/{{run_id}}"}]`},
+		"apm template duplicate name": {
+			"HONRYU_APM_LINK_TEMPLATES": `[{"name":"Grafana","urlTemplate":"https://x/{{run_id}}"},{"name":"Grafana","urlTemplate":"https://y/{{run_id}}"}]`,
+		},
+		"apm template empty url":  {"HONRYU_APM_LINK_TEMPLATES": `[{"name":"Grafana","urlTemplate":""}]`},
+		"apm unknown placeholder": {"HONRYU_APM_LINK_TEMPLATES": `[{"name":"Grafana","urlTemplate":"https://x/{{trace_id}}"}]`},
 	}
 
 	for name, env := range cases {
@@ -291,6 +303,38 @@ func TestConfig_HTTPAddr(t *testing.T) {
 	}
 	if got, want := cfg.HTTP.Addr(), ":1234"; got != want {
 		t.Errorf("HTTP.Addr() = %q, want %q", got, want)
+	}
+}
+
+// Phase 37: the APM link-out list loads as JSON (the demo.profiles route)
+// and keeps its placeholders intact -- the frontend substitutes per run,
+// so config's job is only shape and the closed placeholder set.
+func TestLoad_APMLinkTemplates(t *testing.T) {
+	t.Parallel()
+
+	raw := `[{"name":"Grafana Tempo","urlTemplate":"https://g.example.com/explore?left={\"datasource\":\"tempo\",\"queries\":[{\"query\":\"{{correlation_id}}\"}]}}&e={{execution_id}}&r={{run_id}}&p={{project_id}}"},{"name":"Static wiki","urlTemplate":"https://wiki.example.com/runs"}]`
+	cfg, err := Load(envMap(map[string]string{"HONRYU_APM_LINK_TEMPLATES": raw}))
+	if err != nil {
+		t.Fatalf("Load with apm link templates: unexpected error: %v", err)
+	}
+	if len(cfg.APM.LinkTemplates) != 2 {
+		t.Fatalf("APM.LinkTemplates = %d entries, want 2", len(cfg.APM.LinkTemplates))
+	}
+	got := cfg.APM.LinkTemplates[0]
+	if got.Name != "Grafana Tempo" {
+		t.Errorf("template 0 name = %q, want %q", got.Name, "Grafana Tempo")
+	}
+	// Placeholders survive verbatim: single braces (Grafana's JSON query
+	// payload) are NOT placeholders, only the doubled {{...}} form is.
+	for _, want := range []string{"{{correlation_id}}", "{{execution_id}}", "{{run_id}}", "{{project_id}}", `{"query":"`} {
+		if !strings.Contains(got.URLTemplate, want) {
+			t.Errorf("template 0 urlTemplate %q missing %q", got.URLTemplate, want)
+		}
+	}
+	// A template with no placeholders at all is legal: a static link-out
+	// is odd but never broken.
+	if cfg.APM.LinkTemplates[1].URLTemplate != "https://wiki.example.com/runs" {
+		t.Errorf("template 1 urlTemplate = %q", cfg.APM.LinkTemplates[1].URLTemplate)
 	}
 }
 

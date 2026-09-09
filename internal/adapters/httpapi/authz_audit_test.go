@@ -97,6 +97,11 @@ var authzAuditTable = []authzEntry{
 	{method: "DELETE", pattern: "/api/session", decision: decisionPublic},
 	{method: "GET", pattern: "/api/me", decision: decisionAuthed},
 
+	// Phase 37: the APM link-out templates carry no run data and no
+	// secrets -- a URL shape the operator already chose to serve to every
+	// operator's browser -- so any authenticated caller may read them.
+	{method: "GET", pattern: "/api/apm-links", decision: decisionAuthed},
+
 	{method: "GET", pattern: "/api/projects", decision: decisionScopedList},
 	{method: "POST", pattern: "/api/projects", decision: "project:create",
 		form: url.Values{"name": {"x"}, "owner": {"team-x"}}},
