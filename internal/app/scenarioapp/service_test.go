@@ -172,6 +172,41 @@ func TestFileLifecycle(t *testing.T) {
 	}
 }
 
+// A k6 script is a test file exactly like a JMX plan: uploads classify it
+// with isTestFile (scenario_test_file), so DeleteFile must classify it the
+// same way. It used to classify with isJMX, routing a .js delete at the
+// data-file table -- the record survived as a phantom test file and the
+// delete 404'd (phase 36, hit live deleting k6_mixed.js).
+func TestDeleteFile_K6ScriptIsATestFile(t *testing.T) {
+	t.Parallel()
+	svc, store, obj := newScenarioService(t)
+	ctx := context.Background()
+	p, _ := svc.Create(ctx, "k6", 10)
+
+	if err := svc.UploadFile(ctx, p.ID, "k6_mixed.js", bytes.NewReader([]byte("export default {}"))); err != nil {
+		t.Fatalf("UploadFile js: %v", err)
+	}
+	if err := svc.DeleteFile(ctx, p.ID, "k6_mixed.js"); err != nil {
+		t.Fatalf("DeleteFile js: %v (delete must classify .js with isTestFile, like the upload did)", err)
+	}
+
+	// The test-file slot is free again: the record is gone from
+	// scenario_test_file, and the object with it.
+	files, err := svc.Files(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	if files.TestFile != nil {
+		t.Fatalf("TestFile after delete = %+v, want none", files.TestFile)
+	}
+	if _, err := obj.Download(ctx, "scenario/1/k6_mixed.js"); !errors.Is(err, ports.ErrObjectNotFound) {
+		t.Fatalf("object still present after delete: %v", err)
+	}
+	if _, err := store.ScenarioFilesFor(ctx, p.ID); err != nil {
+		t.Fatalf("ScenarioFilesFor: %v", err)
+	}
+}
+
 func TestSetRequests_ValidFragmentPersists(t *testing.T) {
 	t.Parallel()
 	svc, store, _ := newScenarioService(t)
