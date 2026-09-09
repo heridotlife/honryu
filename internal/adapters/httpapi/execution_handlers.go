@@ -21,6 +21,7 @@ type executionResponse struct {
 	Name        string                 `json:"name"`
 	ProjectID   int64                  `json:"project_id"`
 	Engine      taurus.Executor        `json:"engine,omitempty"`
+	Kind        execution.Kind         `json:"kind"`
 	Cluster     string                 `json:"cluster,omitempty"`
 	CSVSplit    bool                   `json:"csv_split"`
 	CreatedTime time.Time              `json:"created_time"`
@@ -36,6 +37,7 @@ type executionSummary struct {
 	Name        string          `json:"name"`
 	ProjectID   int64           `json:"project_id"`
 	Engine      taurus.Executor `json:"engine,omitempty"`
+	Kind        execution.Kind  `json:"kind"`
 	Cluster     string          `json:"cluster,omitempty"`
 	CreatedTime time.Time       `json:"created_time"`
 }
@@ -65,6 +67,7 @@ func (h *handlers) listExecutions(w http.ResponseWriter, r *http.Request) {
 			Name:        c.Name,
 			ProjectID:   c.ProjectID,
 			Engine:      c.Engine,
+			Kind:        c.Kind,
 			Cluster:     c.Cluster,
 			CreatedTime: c.CreatedTime,
 		})
@@ -102,6 +105,7 @@ func (h *handlers) getExecution(w http.ResponseWriter, r *http.Request) {
 		Name:        c.Name,
 		ProjectID:   c.ProjectID,
 		Engine:      c.Engine,
+		Kind:        c.Kind,
 		Cluster:     c.Cluster,
 		CSVSplit:    c.CSVSplit,
 		CreatedTime: c.CreatedTime,
@@ -297,6 +301,7 @@ func (h *handlers) authorizeExecution(r *http.Request, executionID int64, action
 func toExecutionResponse(c execution.Execution) executionResponse {
 	return executionResponse{
 		Engine:      c.Engine,
+		Kind:        c.Kind,
 		Cluster:     c.Cluster,
 		ID:          c.ID,
 		Name:        c.Name,

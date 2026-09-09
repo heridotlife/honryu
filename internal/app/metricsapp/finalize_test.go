@@ -9,6 +9,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
+	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/ports"
 )
@@ -460,5 +461,91 @@ func TestFinalize_CorrelationIDComesFromTheRunNotTheExecution(t *testing.T) {
 	}
 	if rep.CorrelationID != thisRunsID {
 		t.Fatalf("report correlation = %q, want this run's own %q (not the pending %q)", rep.CorrelationID, thisRunsID, aLaterDeploysID)
+	}
+}
+
+// recorder is a Notifier that records what it was asked to announce, and
+// how many times -- the whole surface the completion hook needs from the
+// webhook use-case's side.
+type recorder struct {
+	calls []recordedRun
+}
+
+type recordedRun struct {
+	projectID int64
+	runID     int64
+}
+
+func (r *recorder) RunCompleted(_ context.Context, projectID int64, rep report.Report) {
+	r.calls = append(r.calls, recordedRun{projectID: projectID, runID: rep.RunID})
+}
+
+// A completed run announces itself through the Notifier with the
+// execution's project (webhooks are registered per project) and the report
+// exactly as stored -- the notification's payload IS the saved report.
+func TestFinalize_AnnouncesCompletionThroughTheNotifier(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	rec := &recorder{}
+	e.svc.WithNotifier(rec)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("notifier saw %d calls, want 1", len(rec.calls))
+	}
+	// setup() builds its execution under project 1.
+	if rec.calls[0].projectID != 1 {
+		t.Errorf("notified project %d, want 1 (the execution's own)", rec.calls[0].projectID)
+	}
+	if rec.calls[0].runID != e.runID {
+		t.Errorf("notified run %d, want %d", rec.calls[0].runID, e.runID)
+	}
+	// The announcement happens after the report is durable: whatever the
+	// notification carries must be readable from the store.
+	if _, err := e.reports.GetReport(ctx, e.runID); err != nil {
+		t.Fatalf("GetReport after notify: %v", err)
+	}
+}
+
+// A run finalised twice (natural completion racing a later Stop, or the
+// orphan sweep arriving after either) notifies once: the second SaveReport
+// is a no-op that keeps the first verdict, and re-announcing would tell a
+// receiver the same run "completed" twice with different outcomes.
+func TestFinalize_DoesNotReannounceAnAlreadyFinalisedRun(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	rec := &recorder{}
+	e.svc.WithNotifier(rec)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("first Finalize: %v", err)
+	}
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("second Finalize: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("notifier saw %d calls, want 1 (first finalisation only)", len(rec.calls))
+	}
+}
+
+// A report that could not be saved is never announced: the notification
+// says a report exists, so it must not precede the report.
+func TestFinalize_NoAnnouncementWhenSaveReportFails(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	rec := &recorder{}
+	e.svc.WithNotifier(rec)
+	e.reports.SaveErr = errors.New("store down")
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err == nil {
+		t.Fatal("Finalize = nil, want the store error")
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("notifier saw %d calls, want none (nothing was saved)", len(rec.calls))
 	}
 }

@@ -116,6 +116,61 @@ export function getCalibrationJob(jobId: number): Promise<CalibrationJob> {
   return apiClient.get(`/calibrations/${jobId}`);
 }
 
+/** calibrationExecutionResponse's shape (the createCalibration handler's
+ * 201 body): the created execution's id plus the spec as PERSISTED -- the
+ * server re-reads what Create stored, so these bounds carry
+ * Spec.WithDefaults' filled-in values, not the request's zero ones. */
+export interface CalibrationExecution {
+  execution_id: number;
+  name: string;
+  project_id: number;
+  engine?: string;
+  cpu: string;
+  memory: string;
+  criterion: string;
+  seed_qps: number;
+  max_qps: number;
+  max_steps: number;
+  hold_seconds: number;
+}
+
+/** What createCalibration needs; the optional bounds mirror the handler's
+ * own form fields -- absent means "keep the domain default". */
+export interface CreateCalibrationInput {
+  projectId: number;
+  name: string;
+  engine: string;
+  criterion: string;
+  cpu: string;
+  memory: string;
+  seedQps?: number;
+  maxQps?: number;
+  maxSteps?: number;
+  holdSeconds?: number;
+}
+
+/**
+ * POST /api/calibrations (phase 39's missing frontend consumer): creates a
+ * CalibrateEngine execution configured for one capacity search. The
+ * scenario is NOT bound here -- that stays the ordinary config flow
+ * (PUT /executions/{id}/config), per the handler's own contract.
+ */
+export function createCalibration(input: CreateCalibrationInput): Promise<CalibrationExecution> {
+  const form = new URLSearchParams({
+    project_id: String(input.projectId),
+    name: input.name,
+    engine: input.engine,
+    criterion: input.criterion,
+    cpu: input.cpu,
+    memory: input.memory,
+  });
+  if (input.seedQps !== undefined) form.set('seed_qps', String(input.seedQps));
+  if (input.maxQps !== undefined) form.set('max_qps', String(input.maxQps));
+  if (input.maxSteps !== undefined) form.set('max_steps', String(input.maxSteps));
+  if (input.holdSeconds !== undefined) form.set('hold_seconds', String(input.holdSeconds));
+  return apiClient.post('/calibrations', form);
+}
+
 /**
  * Starts a fresh search over an already-configured CalibrateEngine
  * execution; the created job is returned (phase pending).

@@ -66,17 +66,22 @@ const statusFixture = (phase: ExecutionStatus['phase']): ExecutionStatus => ({
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-/** Renders /executions/5 with every fetch stubbed; info carries no engine
- * so CapacityPanel stays away. `trend` seeds /executions/5/trend (empty by
- * default so the phase 33 strip stays hidden); null fails the endpoint.
- * `signatures` seeds the phase 37 failure-history endpoint (all-green by
- * default -- the honest demo state); null fails it. `calls` collects every
- * fetched URL so tests can assert refetch behaviour. */
+/** Renders /executions/5 with every fetch stubbed; info is a normal
+ * jmeter execution (engine SET, kind normal -- execution 11's exact shape
+ * from the phase 39 bug report), so CapacityPanel stays away: the card
+ * mounts only on calibrate_engine executions. `infoOver` overrides the
+ * info fixture's fields (e.g. kind: 'calibrate_engine'). `trend` seeds
+ * /executions/5/trend (empty by default so the phase 33 strip stays
+ * hidden); null fails the endpoint. `signatures` seeds the phase 37
+ * failure-history endpoint (all-green by default -- the honest demo
+ * state); null fails it. `calls` collects every fetched URL so tests can
+ * assert refetch behaviour. */
 async function renderExecution(
   phase: ExecutionStatus['phase'] = 'running',
   trend: TrendPoint[] | null = [],
   signatures: ErrorSignatureHistory | null = { execution_id: 5, grouped_by: 'label', groups: [] },
-  calls: string[] = []
+  calls: string[] = [],
+  infoOver: Record<string, unknown> = {}
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -89,7 +94,11 @@ async function renderExecution(
         return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
       }
       if (url.endsWith('/api/executions/5')) {
-        return json({ id: 5, name: 'demo', project_id: 1, csv_split: false, created_time: '2026-09-05T10:00:00Z', load_profile: [], data: [] });
+        return json({
+          id: 5, name: 'demo', project_id: 1, csv_split: false,
+          created_time: '2026-09-05T10:00:00Z', load_profile: [], data: [],
+          engine: 'jmeter', kind: 'normal', ...infoOver,
+        });
       }
       if (url.endsWith('/api/executions/5/status')) {
         return json(statusFixture(phase));
@@ -211,6 +220,24 @@ describe('Execution live section (mounted)', () => {
     });
     expect(container!.querySelector('[data-testid="live-section"]')).toBeNull();
     expect(container!.textContent).not.toContain('Waiting for first events');
+  });
+});
+
+// Phase 39: the Capacity card mounts only on calibrate_engine executions.
+// The bug: it mounted for ANY engine'd execution, so a normal soak's
+// Calibrate button could only ever earn a 400 from calibrationapp.Trigger
+// ("execution 11 is normal"). The default fixture is exactly that shape.
+describe('Execution capacity panel gate (mounted)', () => {
+  it('keeps the Capacity card off a normal execution even with an engine set', async () => {
+    await renderExecution('running');
+    expect(container!.querySelector('[data-testid="capacity-panel"]')).toBeNull();
+  });
+
+  it('mounts the Capacity card on a calibrate_engine execution', async () => {
+    // The fan-out lookup is unstubbed and 500s; that is fine here -- the
+    // panel still mounts (into its error state), which is the assertion.
+    await renderExecution('running', [], undefined, [], { kind: 'calibrate_engine' });
+    expect(container!.querySelector('[data-testid="capacity-panel"]')).not.toBeNull();
   });
 });
 
