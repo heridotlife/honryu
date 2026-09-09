@@ -32,7 +32,7 @@ type apmLinkResponse struct {
 func (h *handlers) apmLinks(w http.ResponseWriter, _ *http.Request) {
 	out := make([]apmLinkResponse, 0, len(h.deps.APMLinks))
 	for _, t := range h.deps.APMLinks {
-		out = append(out, apmLinkResponse{Name: t.Name, URLTemplate: t.URLTemplate})
+		out = append(out, apmLinkResponse(t))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
