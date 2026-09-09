@@ -24,6 +24,10 @@ const allNavItems: NavItem[] = [
   { href: '/reservations', label: 'Reservations', resource: 'schedule', action: 'list' },
   // campaign:list -- only campaign_manager and the admin hold any campaign grant.
   { href: '/campaigns', label: 'Campaigns', resource: 'campaign', action: 'list' },
+  // tenant:admin -- the Tenants console (phase 35): the service provider's
+  // admin (wildcard) and each tenant's own admins (session.ts's
+  // canAdminTenants mirrors this pair exactly).
+  { href: '/tenants', label: 'Tenants', resource: 'tenant', action: 'admin' },
   // system:admin -- clusters are the service provider's fleet (AC4).
   { href: '/clusters', label: 'Clusters', resource: 'system', action: 'admin' },
 ];

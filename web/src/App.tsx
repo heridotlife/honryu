@@ -11,6 +11,7 @@ import Reports from './pages/Reports';
 import Reservations from './pages/Reservations';
 import RunCompare from './pages/RunCompare';
 import SharedReport from './pages/SharedReport';
+import Tenants from './pages/Tenants';
 
 export default function App() {
   return (
@@ -39,6 +40,8 @@ export default function App() {
             <Route path="/reservations" element={<Reservations />} />
 
             <Route path="/campaigns" element={<Campaigns />} />
+            {/* Phase 35: the tenant admin console (quota, members, create). */}
+            <Route path="/tenants" element={<Tenants />} />
             <Route path="/clusters" element={<Clusters />} />
           </Routes>
         </DashboardLayout>
