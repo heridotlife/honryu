@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -28,6 +29,7 @@ type Config struct {
 	Auth       AuthConfig
 	Scheduler  SchedulerConfig
 	Calibrator CalibratorConfig
+	APM        APMConfig
 }
 
 // SchedulerConfig configures cmd/scheduler's fire-due-occurrences loop.
@@ -103,6 +105,35 @@ type DemoProfile struct {
 	Tenants map[int64][]string `json:"tenants,omitempty"`
 }
 
+// APMConfig carries the deployment's customer-APM link-out templates
+// (HONRYU_APM_LINK_TEMPLATES). Honryu propagates trace context but does not
+// trace (telemetry's header law), so "APM depth" here means surfaces INTO
+// the customer's own APM: each template becomes a button on a run report
+// that deep-links the operator's APM pre-filtered to that run. Empty by
+// default -- a deployment that configures none serves no link-outs at all.
+type APMConfig struct {
+	LinkTemplates []APMLinkTemplate
+}
+
+// APMLinkTemplate is one entry in HONRYU_APM_LINK_TEMPLATES (JSON array).
+// URLTemplate keeps its {{placeholders}} intact through the API; the
+// FRONTEND substitutes per-run values, so the API never needs run context
+// to serve the list. Placeholders are validated at load: unknown ones fail
+// startup rather than rendering a dead link on every run page.
+type APMLinkTemplate struct {
+	Name        string `json:"name"`
+	URLTemplate string `json:"urlTemplate"`
+}
+
+// apmLinkPlaceholders is the closed set a URLTemplate may reference: the
+// per-run identity the report page already holds.
+var apmLinkPlaceholders = map[string]bool{
+	"correlation_id": true,
+	"execution_id":   true,
+	"run_id":         true,
+	"project_id":     true,
+}
+
 // ClusterConfig selects and configures the scheduler and executor used to run
 // load tests.
 //
@@ -145,6 +176,13 @@ type ClusterConfig struct {
 	// already finished (their Finals arrived orphaned) -- evidence-based
 	// reports, never invented passes.
 	ReconcileInterval time.Duration
+	// RunReconcileAfter is how old an open run with no report and no engine
+	// pods must be before the reconciliation sweep may close it as aborted:
+	// the engines died without ever reporting (a statefulset lost to a node
+	// kill), so no Final and no measurement can ever arrive. Zero disables
+	// that pass. It never touches runs younger than this, runs that already
+	// finalised, or runs whose engine pods still exist.
+	RunReconcileAfter time.Duration
 	// CredentialKey is the hex-encoded (64 hex digits) app-held key that
 	// encrypts BYOC cluster credentials at rest (AES-256-GCM). Empty disables
 	// the cluster-registry management API (/api/clusters) -- a deployment that
@@ -238,6 +276,11 @@ func Load(getenv func(string) string) (Config, error) {
 			// closed within minutes, quiet enough to be idle in the common
 			// case (the pass is one query when nothing is stranded).
 			ReconcileInterval: time.Minute,
+			// The abandoned-run half of the sweep is deliberately far slower
+			// to act than the stranded-run half: it has no evidence to work
+			// from, only age and absent engines, so it must never race a
+			// legitimately slow run.
+			RunReconcileAfter: 2 * time.Hour,
 		},
 		Auth:       AuthConfig{Mode: "none"},
 		Scheduler:  SchedulerConfig{TickInterval: 30 * time.Second, HorizonInterval: 24 * time.Hour},
@@ -301,6 +344,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.Cluster.ReconcileInterval, err = durEnv(getenv, "RECONCILE_INTERVAL", cfg.Cluster.ReconcileInterval); err != nil {
 		return Config{}, err
 	}
+	if cfg.Cluster.RunReconcileAfter, err = durEnv(getenv, "RUN_RECONCILE_AFTER", cfg.Cluster.RunReconcileAfter); err != nil {
+		return Config{}, err
+	}
 	if cfg.Cluster.AutoPurgeIdle, err = durEnv(getenv, "AUTOPURGE_IDLE", cfg.Cluster.AutoPurgeIdle); err != nil {
 		return Config{}, err
 	}
@@ -321,6 +367,13 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("config: %sDEMO_PROFILES must be a JSON array of profiles: %w", envPrefix, err)
 		}
 		cfg.Auth.Demo.Profiles = profiles
+	}
+	if raw := strEnv(getenv, "APM_LINK_TEMPLATES", ""); raw != "" {
+		var templates []APMLinkTemplate
+		if err := json.Unmarshal([]byte(raw), &templates); err != nil {
+			return Config{}, fmt.Errorf("config: %sAPM_LINK_TEMPLATES must be a JSON array of {name, urlTemplate} entries: %w", envPrefix, err)
+		}
+		cfg.APM.LinkTemplates = templates
 	}
 	if cfg.Scheduler.TickInterval, err = durEnv(getenv, "SCHEDULER_TICK_INTERVAL", cfg.Scheduler.TickInterval); err != nil {
 		return Config{}, err
@@ -422,6 +475,9 @@ func (c Config) validate() error {
 	if err := c.Auth.Demo.validateProfiles(); err != nil {
 		return err
 	}
+	if err := c.APM.validateLinkTemplates(); err != nil {
+		return err
+	}
 	if c.Scheduler.TickInterval <= 0 {
 		return fmt.Errorf("config: %sSCHEDULER_TICK_INTERVAL must be positive", envPrefix)
 	}
@@ -521,4 +577,36 @@ func oneOf(v string, allowed ...string) bool {
 		}
 	}
 	return false
+}
+
+// apmPlaceholderPattern matches one {{placeholder}} inside a URL template.
+// Single braces (JSON query payloads, like Grafana Explore's) are not
+// placeholders and never match -- only the doubled {{...}} form is.
+var apmPlaceholderPattern = regexp.MustCompile(`\{\{([a-zA-Z_]+)\}\}`)
+
+// validateLinkTemplates checks the APM link-out list the same way demo
+// profiles are checked: names must be present and unique, the template must
+// be non-empty, and every {{placeholder}} must be one the report page can
+// actually substitute -- a typo'd placeholder fails startup here instead of
+// rendering a dead link on every run page.
+func (a APMConfig) validateLinkTemplates() error {
+	seen := make(map[string]bool, len(a.LinkTemplates))
+	for i, t := range a.LinkTemplates {
+		if t.Name == "" {
+			return fmt.Errorf("config: apm link template %d has an empty name", i)
+		}
+		if seen[t.Name] {
+			return fmt.Errorf("config: duplicate apm link template name %q", t.Name)
+		}
+		seen[t.Name] = true
+		if t.URLTemplate == "" {
+			return fmt.Errorf("config: apm link template %q has an empty urlTemplate", t.Name)
+		}
+		for _, m := range apmPlaceholderPattern.FindAllStringSubmatch(t.URLTemplate, -1) {
+			if !apmLinkPlaceholders[m[1]] {
+				return fmt.Errorf("config: apm link template %q uses unknown placeholder %q (supported: correlation_id, execution_id, run_id, project_id)", t.Name, m[1])
+			}
+		}
+	}
+	return nil
 }

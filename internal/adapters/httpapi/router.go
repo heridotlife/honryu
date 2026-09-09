@@ -105,6 +105,10 @@ type Deps struct {
 	// Optional; nil disables the /api/session endpoints (404), which is what
 	// every non-demo deployment wants.
 	Sessions SessionService
+	// APMLinks is the deployment's customer-APM link-out templates served by
+	// GET /api/apm-links. Empty (the default) serves an empty array: no
+	// deployment-wide APM is configured, and run pages render no link-outs.
+	APMLinks []APMLinkTemplate
 	// TriggerReadyPoll is how often POST /trigger retries while a just-deployed
 	// execution's engine pods are still starting up. Zero means the default
 	// (2s, matching calibrationapp's own readiness loop).
@@ -183,6 +187,8 @@ var routes = []Route{
 	{"POST", "/api/session", "session", hf(func(h *handlers) http.HandlerFunc { return h.createSession })},
 	{"DELETE", "/api/session", "session", hf(func(h *handlers) http.HandlerFunc { return h.deleteSession })},
 	{"GET", "/api/me", "session", hf(func(h *handlers) http.HandlerFunc { return h.me })},
+
+	{"GET", "/api/apm-links", "apm", hf(func(h *handlers) http.HandlerFunc { return h.apmLinks })},
 
 	{"GET", "/api/projects", "projects", hf(func(h *handlers) http.HandlerFunc { return h.listProjects })},
 	{"POST", "/api/projects", "projects", hf(func(h *handlers) http.HandlerFunc { return h.createProject })},

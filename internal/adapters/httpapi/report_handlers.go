@@ -19,6 +19,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/reportapp"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/report"
+	"github.com/heridotlife/honryu/internal/domain/telemetry"
 )
 
 // authorizeReport verifies the caller may read reports derived from
@@ -57,13 +58,27 @@ func (h *handlers) authorizeRunShard(r *http.Request, runID int64) error {
 // runReportResponse is the wire shape of GET /api/runs/{run_id}/report: the
 // stored report's every field verbatim (the embedded domain type serializes
 // flattened), plus the execution's configured pass/fail criteria and which of
-// them this run tripped -- the verdict-at-a-glance layer (Phase 29). Both
-// added arrays are always arrays, the series endpoint's own rule: an empty
-// verdict renders as nothing, not as null.
+// them this run tripped -- the verdict-at-a-glance layer (Phase 29) -- and the
+// APM depth layer (phase 37): the execution's project id and the exact
+// baggage string the run's load carried. Both added arrays are always
+// arrays, the series endpoint's own rule: an empty verdict renders as
+// nothing, not as null.
 type runReportResponse struct {
 	report.Report
 	Criteria        []string                   `json:"criteria"`
 	FailingCriteria []failingCriterionResponse `json:"failing_criteria"`
+	// ProjectID is the execution's project (phase 37): the fourth per-run
+	// value an APM link-out substitutes ({{project_id}}), served on the
+	// report so the page needs no second fetch. Zero = unknown (no execution
+	// service wired, or the read failed) and every placeholder-substituting
+	// consumer must treat it as absent, same tolerance as the criteria layer.
+	ProjectID int64 `json:"project_id,omitempty"`
+	// Baggage is the exact W3C baggage header VALUE the run's load carried
+	// (phase 37), rebuilt from the stored identity -- a run's trace id is its
+	// correlation id, so baggage is reproducible after the engines are gone,
+	// while traceparent's parent-span id is not and is deliberately absent.
+	// Empty when the run predates correlation ids.
+	Baggage string `json:"baggage,omitempty"`
 }
 
 // runReport returns a run's stored report -- the durable record of what it
@@ -113,6 +128,24 @@ func (h *handlers) withCriteriaVerdict(r *http.Request, rep report.Report) runRe
 	}
 	if out.Criteria == nil {
 		out.Criteria = []string{}
+	}
+	// The APM depth layer (phase 37), with the same tolerance as criteria:
+	// the report existed and was authorized before any of this, so a failed
+	// execution read strips project_id/baggage rather than failing the read.
+	// Strictly additive -- deployments without an execution service wired
+	// (the share path's own precedent) keep serving reports as before.
+	if h.deps.Executions != nil {
+		if c, err := h.deps.Executions.Get(r.Context(), rep.ExecutionID); err == nil {
+			out.ProjectID = c.ProjectID
+			if rep.CorrelationID != "" {
+				out.Baggage = telemetry.Baggage(telemetry.Identity{
+					TenantID:         c.TenantID,
+					ProjectID:        c.ProjectID,
+					ExecutionID:      rep.ExecutionID,
+					RunCorrelationID: rep.CorrelationID,
+				})
+			}
+		}
 	}
 	return out
 }

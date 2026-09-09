@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ApiError, errorDetails } from '../api/client';
 import { getExecutionInfo, getExecutionStatus, getScenarioPodLog } from '../api/status';
 import { listExecutionReports, type Report } from '../api/reports';
-import { getExecutionTrend } from '../api/trends';
-import type { TrendPoint } from '../api/trends';
+import { getExecutionTrend, getErrorSignatures } from '../api/trends';
+import type { ErrorSignatureHistory, SignatureGroupBy, TrendPoint } from '../api/trends';
+import { sortSignatureGroups } from './ReportsTrend';
 import TaurusEditor from '../components/TaurusEditor';
 import CapacityPanel from '../components/CapacityPanel';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
@@ -230,6 +231,148 @@ const latencyField: Record<LivePercentile, 'p50' | 'p95' | 'p99'> = {
   '95': 'p95',
   '99': 'p99',
 };
+
+/**
+ * Failure history across runs (phase 37): the execution's error-signature
+ * history from the phase 9 endpoint, surfaced on the execution page beside
+ * the per-run record so "this label keeps failing" reads before opening any
+ * single report. Group-by mirrors ReportsTrend's SignatureSection (label |
+ * response code); per the domain docs a group's run count is NEVER summed
+ * from its rows (a run hitting two response codes under one label would
+ * double-count) -- the group row shows only the safe total, and the
+ * runs-affected column belongs to the leaf rows it expands to.
+ */
+function FailureHistoryCard({ executionId }: { executionId: number }) {
+  const [by, setBy] = useState<SignatureGroupBy>('label');
+  const [history, setHistory] = useState<ErrorSignatureHistory | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    setHistory(null);
+    setError(null);
+    getErrorSignatures(executionId, by)
+      .then((h) => {
+        if (!cancelled) setHistory(h);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : 'Failed to load failure history.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [executionId, by]);
+
+  // A new grouping axis re-collapses everything: keys from one axis are not
+  // keys under the other (a label is not a response code).
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [by]);
+
+  const groups = history ? sortSignatureGroups(history.groups) : [];
+  const toggle = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <Card padding="none" data-testid="signature-history">
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
+        <CardTitle>Failure history across runs</CardTitle>
+        <div
+          role="group"
+          aria-label="Group failures by"
+          className="flex gap-1 rounded-lg border border-slate-200 p-1 dark:border-slate-700"
+        >
+          {(
+            [
+              ['label', 'by label', 'signature-group-by-label'],
+              ['code', 'by response code', 'signature-group-by-code'],
+            ] as const
+          ).map(([axis, label, testid]) => (
+            <button
+              key={axis}
+              type="button"
+              data-testid={testid}
+              aria-pressed={by === axis}
+              onClick={() => setBy(axis)}
+              className={`min-h-[32px] rounded-md px-3 py-1 text-caption font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 ${
+                by === axis
+                  ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </CardHeader>
+      {error ? (
+        <p className="text-body-sm p-6 text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      ) : history === null ? (
+        <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">Loading failure history…</p>
+      ) : groups.length === 0 ? (
+        <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">
+          No failures recorded across this execution&apos;s runs.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-body-sm">
+            <thead>
+              <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                <th scope="col" className="px-4 py-2 font-medium">Key</th>
+                <th scope="col" className="px-3 py-2 font-medium">Total failures</th>
+                <th scope="col" className="px-4 py-2 font-medium">Runs affected</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {groups.map((g) => (
+                <Fragment key={g.key}>
+                  <tr>
+                    <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{g.key}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{g.total_count}</td>
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        aria-expanded={expanded.has(g.key)}
+                        onClick={() => toggle(g.key)}
+                        className="rounded text-caption font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
+                      >
+                        {expanded.has(g.key) ? 'Hide' : 'Show'} {g.rows.length === 1 ? 'signature' : 'signatures'} ({g.rows.length})
+                      </button>
+                    </td>
+                  </tr>
+                  {expanded.has(g.key) &&
+                    g.rows.map((row, i) => (
+                      <tr key={i} className="bg-slate-50 dark:bg-slate-800/40">
+                        <td className="px-8 py-2 text-caption text-slate-700 dark:text-slate-300">
+                          {row.side} | {row.response_code ?? '—'} | {row.label}
+                        </td>
+                        <td className="px-3 py-2 text-caption whitespace-nowrap">{row.total_count}</td>
+                        <td className="px-4 py-2 text-caption whitespace-nowrap">
+                          {row.run_count} {row.run_count === 1 ? 'run' : 'runs'}
+                        </td>
+                      </tr>
+                    ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 /** Shared pill styling for the percentile selector (Reports' pctPill, same house style). */
 function pctPill(selected: boolean): string {
@@ -599,6 +742,10 @@ export default function Execution() {
               </ul>
             )}
           </Card>
+          {/* Cross-run failure history (phase 37): beside the per-run record
+              -- a repeatedly failing label reads here without opening any
+              single report. */}
+          <FailureHistoryCard executionId={executionId} />
           <Card>
             <CardHeader>
               <CardTitle>Scenario editor</CardTitle>

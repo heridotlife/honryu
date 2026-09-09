@@ -186,6 +186,7 @@ has a local-dev default, so `go run ./cmd/api` works with no environment set.
 | `HONRYU_HTTP_TRIGGER_READY_POLL` | `2s` | trigger's engine-readiness poll interval |
 | `HONRYU_HTTP_TRIGGER_READY_TIMEOUT` | `2m` | trigger's bounded wait for just-deployed engines |
 | `HONRYU_RECONCILE_INTERVAL` | `1m` | stranded-run sweep interval (`0` disables) |
+| `HONRYU_RUN_RECONCILE_AFTER` | `2h` | age at which an open, unreported, engine-less run may be reconciled as aborted (`0` disables) |
 | `HONRYU_DB_DRIVER` | `fake` | `fake` (in-memory) or `mysql` |
 | `HONRYU_DB_DSN` | – | MySQL DSN (required when driver is `mysql`) |
 | `HONRYU_STORAGE_DRIVER` | `local` | `local` or `nexus` |
@@ -197,6 +198,7 @@ has a local-dev default, so `go run ./cmd/api` works with no environment set.
 | `HONRYU_EXECUTOR` | `fake` | `fake`, `jmeter`, or `k6` |
 | `HONRYU_ENGINE_IMAGE` | `honryu/jmeter:latest` | engine container image |
 | `HONRYU_AUTH_MODE` | `none` | `none` (fixed admin) or `oidc` |
+| `HONRYU_APM_LINK_TEMPLATES` | – | JSON array of `{name, urlTemplate}` APM link-outs (`{{correlation_id}}`, `{{execution_id}}`, `{{run_id}}`, `{{project_id}}` placeholders); unknown placeholders fail startup |
 | `HONRYU_ENABLE_RBAC` | `false` | enable tenant-scoped RBAC |
 | `HONRYU_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URL` | – | OIDC ID-token verification (required for `oidc`) |
 | `HONRYU_MAX_ENGINES` | `500` | per-execution engine guardrail |

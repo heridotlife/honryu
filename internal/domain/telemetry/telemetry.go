@@ -48,6 +48,27 @@ type Identity struct {
 	RunCorrelationID string
 }
 
+// Baggage renders the W3C baggage header VALUE the run's load carried:
+// honryu.tenant=…,honryu.service=…,honryu.execution=…,honryu.run=… — the
+// paste-into-your-APM-query string. Split out of Headers (phase 37) because
+// a stored report carries the Identity fields but never the parent-span id
+// traceparent needs: a run's trace id doubles as its correlation id and is
+// stored, its parent id does not outlive the deploy, so the report surface
+// can render baggage exactly and cannot render traceparent at all. A nil
+// TenantID omits the honryu.tenant entry rather than rendering it empty.
+func Baggage(id Identity) string {
+	entries := make([]string, 0, 4)
+	if id.TenantID != nil {
+		entries = append(entries, "honryu.tenant="+strconv.FormatInt(*id.TenantID, 10))
+	}
+	entries = append(entries,
+		"honryu.service="+strconv.FormatInt(id.ProjectID, 10),
+		"honryu.execution="+strconv.FormatInt(id.ExecutionID, 10),
+		"honryu.run="+id.RunCorrelationID,
+	)
+	return strings.Join(entries, ",")
+}
+
 // Headers renders the trace-context headers generated load carries:
 //
 //	traceparent: 00-<trace id>-<parent id>-00   (W3C, sampled flag always off)
@@ -57,17 +78,8 @@ type Identity struct {
 // Both values are identical for every scenario and shard of one Deploy call:
 // one deploy is one run in practice, so one identity covers all of it.
 func Headers(tc TraceContext, id Identity) map[string]string {
-	baggage := make([]string, 0, 4)
-	if id.TenantID != nil {
-		baggage = append(baggage, "honryu.tenant="+strconv.FormatInt(*id.TenantID, 10))
-	}
-	baggage = append(baggage,
-		"honryu.service="+strconv.FormatInt(id.ProjectID, 10),
-		"honryu.execution="+strconv.FormatInt(id.ExecutionID, 10),
-		"honryu.run="+id.RunCorrelationID,
-	)
 	return map[string]string{
 		"traceparent": fmt.Sprintf("00-%s-%s-00", tc.TraceID, tc.ParentID),
-		"baggage":     strings.Join(baggage, ","),
+		"baggage":     Baggage(id),
 	}
 }

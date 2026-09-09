@@ -25,7 +25,7 @@ import type { SeriesPoint } from '../api/series';
 import HeroChart from '../components/charts/HeroChart';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { useSession } from '../hooks/useSession';
-import { formatApmLink, loadApmTemplate, saveApmTemplate } from '../api/apm';
+import { formatApmLink, getApmLinks, loadApmTemplate, saveApmTemplate, substituteApmLink, type ApmLinkTemplate } from '../api/apm';
 import { SignatureSection, TrendSection } from './ReportsTrend';
 
 /** Validates the shard viewer's input: shards are 0-indexed non-negative integers; anything else is null. */
@@ -1122,6 +1122,25 @@ export function ReportWorkspace({
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [apmTemplate] = useState<string>(() => loadApmTemplate());
+  // Phase 37: the deployment's APM link-out templates, fetched once per
+  // mount -- they are deployment config, not run data. null = not fetched
+  // or failed (the public share page has no session: the fetch 401s and no
+  // link-outs render, invisible by design, exactly like an unconfigured
+  // deployment).
+  const [apmLinks, setApmLinks] = useState<ApmLinkTemplate[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getApmLinks()
+      .then((links) => {
+        if (alive) setApmLinks(links);
+      })
+      .catch(() => {
+        if (alive) setApmLinks(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const urlTab = searchParams.get('tab');
   const tab = urlTab !== null && RUN_TABS.some((t) => t.id === urlTab) ? urlTab : 'overview';
@@ -1364,6 +1383,65 @@ export function ReportWorkspace({
                     <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
                       The trace id this run&apos;s load carried (traceparent/baggage); paste it into your APM to see exactly this run&apos;s traffic.
                     </p>
+                    {/* Phase 37: the raw baggage header string, next to the id
+                        it rode with -- the paste-ready form for APMs that
+                        query baggage entries (several OTel-based ones promote
+                        them to span attributes). Rebuilt server-side from the
+                        run's stored identity, so it matches the wire even
+                        though the engines are long gone. */}
+                    {report.baggage && (
+                      <div className="mt-3 border-t border-slate-200 pt-3 dark:border-slate-700" data-testid="run-baggage">
+                        <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Trace baggage</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-3">
+                          <code className="rounded-md bg-slate-100 px-2 py-1 font-mono text-caption break-all text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+                            {report.baggage}
+                          </code>
+                          <CopyButton value={report.baggage} label="Copy baggage" />
+                        </div>
+                        <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
+                          The exact W3C baggage header this run&apos;s requests carried.
+                        </p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Phase 37: deployment-configured APM link-outs (Helm&apos;s
+                  apm.linkTemplates). Each button substitutes this run&apos;s
+                  values into the operator&apos;s own APM URL -- Honryu
+                  propagates, it does not trace, and these deep links are the
+                  depth. A template whose placeholders this report cannot
+                  fill (a correlation-less run, an unresolvable project)
+                  renders no button: a dead link is worse than none. Nothing
+                  at all when no templates are configured. */}
+              {apmLinks !== null && apmLinks.length > 0 && (
+                <Card data-testid="apm-links">
+                  <CardHeader>
+                    <CardTitle>APM</CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap items-center gap-2">
+                    {apmLinks.map((t) => {
+                      const href = substituteApmLink(t.url_template, {
+                        correlation_id: report.correlation_id,
+                        execution_id: report.execution_id,
+                        run_id: report.run_id,
+                        project_id: report.project_id,
+                      });
+                      return href ? (
+                        <a
+                          key={t.name}
+                          href={href}
+                          target="_blank"
+                          rel="noreferrer"
+                          data-testid={`apm-link-${t.name}`}
+                          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          <ExternalLink aria-hidden className="h-3.5 w-3.5" />
+                          {t.name}
+                        </a>
+                      ) : null;
+                    })}
                   </CardContent>
                 </Card>
               )}

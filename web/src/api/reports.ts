@@ -64,6 +64,13 @@ export interface Report {
   cluster?: string;
   /** Trace id the run's load carried (traceparent/baggage); absent on runs that predate it. */
   correlation_id?: string;
+  /** The execution's project (phase 37): the {{project_id}} an APM link-out
+   * substitutes. Absent when the server could not resolve the execution. */
+  project_id?: number;
+  /** The exact W3C baggage header value the run's load carried (phase 37),
+   * e.g. "honryu.service=1,honryu.execution=2,honryu.run=<trace id>";
+   * absent on runs that predate correlation ids. */
+  baggage?: string;
   started_at: string;
   ended_at: string;
   outcome: Outcome;

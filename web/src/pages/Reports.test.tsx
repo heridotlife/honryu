@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, default as Reports } from './Reports';
 import type { Report } from '../api/reports';
+import type { ApmLinkTemplate } from '../api/apm';
 import type { SeriesPoint } from '../api/series';
 import { SessionProvider } from '../hooks/useSession';
 import { can as canOn } from '../api/session';
@@ -66,7 +67,8 @@ async function renderReportDetail(
   calls: string[] = [],
   report: Report = reportFixture,
   siblings: Report[] | null = null,
-  baselineReports: Record<number, Report> = {}
+  baselineReports: Record<number, Report> = {},
+  apmLinks: ApmLinkTemplate[] = []
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -91,6 +93,12 @@ async function renderReportDetail(
         if (url === `/api/runs/${id}/report`) {
           return json(rep);
         }
+      }
+      // Phase 37: the deployment's APM link-outs, fetched once by the run
+      // workspace (empty by default -- an unconfigured deployment renders
+      // no link-outs, and existing tests keep their old assertions).
+      if (url.endsWith('/api/apm-links')) {
+        return json(apmLinks);
       }
       return json({ message: `no stub for ${url}` }, 500);
     })
@@ -807,5 +815,65 @@ describe('ReportDetail per-label p95 diff (phase 33, mounted)', () => {
 
     expect(container!.querySelector('[data-testid="compare-card"]')).not.toBeNull();
     expect(container!.querySelector('[data-testid="compare-labels"]')).toBeNull();
+  });
+});
+
+// Phase 37: the run workspace's APM depth surfaces, mounted. Deployment
+// templates become external anchors with every {{placeholder}} substituted
+// from the report; the baggage header string rides along under the
+// correlation id; and an unconfigured (or unreachable) endpoint renders
+// nothing at all -- invisible by design.
+describe('ReportDetail APM link-outs (mounted)', () => {
+  const apmReport: Report = {
+    ...reportFixture,
+    correlation_id: '4bf92f3577b34da6a3ce929d0e0e4736',
+    project_id: 3,
+    baggage: 'honryu.service=3,honryu.execution=1,honryu.run=4bf92f3577b34da6a3ce929d0e0e4736',
+  };
+  const templates: ApmLinkTemplate[] = [
+    {
+      name: 'Grafana Tempo',
+      url_template: 'https://g.example.com/t/{{correlation_id}}?e={{execution_id}}&r={{run_id}}&p={{project_id}}',
+    },
+    { name: 'Wiki', url_template: 'https://wiki.example.com/runs' },
+  ];
+
+  it('renders a substituted external anchor per configured template', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], apmReport, null, {}, templates);
+
+    const link = container!.querySelector('[data-testid="apm-link-Grafana Tempo"]') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('https://g.example.com/t/4bf92f3577b34da6a3ce929d0e0e4736?e=1&r=9&p=3');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noreferrer');
+    expect(link.textContent).toContain('Grafana Tempo');
+    // A static template (no placeholders) renders as-is.
+    const wiki = container!.querySelector('[data-testid="apm-link-Wiki"]') as HTMLAnchorElement;
+    expect(wiki.getAttribute('href')).toBe('https://wiki.example.com/runs');
+  });
+
+  it('surfaces the raw baggage string under the correlation id', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], apmReport, null, {}, templates);
+
+    const baggage = container!.querySelector('[data-testid="run-baggage"]');
+    expect(baggage?.textContent).toContain('honryu.service=3,honryu.execution=1,honryu.run=4bf92f3577b34da6a3ce929d0e0e4736');
+    expect(baggage?.querySelector('button')?.getAttribute('aria-label')).toBe('Copy baggage');
+  });
+
+  it('renders no link-outs when no templates are configured', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], apmReport);
+
+    expect(container!.querySelector('[data-testid="apm-links"]')).toBeNull();
+    expect(container!.querySelector('[data-testid^="apm-link-"]')).toBeNull();
+  });
+
+  it('omits a template whose placeholders the report cannot fill', async () => {
+    // No correlation_id: the run predates telemetry, so a template that
+    // needs it renders no button -- no dead links.
+    const oldReport: Report = { ...reportFixture, project_id: 3 };
+    await renderReportDetail(() => json({ points: [] }), [], oldReport, null, {}, templates);
+
+    expect(container!.querySelector('[data-testid="apm-link-Grafana Tempo"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="apm-link-Wiki"]')).not.toBeNull();
   });
 });
