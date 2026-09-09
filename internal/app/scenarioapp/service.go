@@ -245,7 +245,10 @@ func (s *Service) DeleteFile(ctx context.Context, scenarioID int64, filename str
 	if err := validateFilename(filename); err != nil {
 		return err
 	}
-	isTest := isJMX(filename)
+	// The same classification the upload used: isTestFile, not isJMX -- a
+	// k6 script is a test file too, and classifying it as data deleted from
+	// the wrong table, leaving the record behind and 404ing the delete.
+	isTest := isTestFile(filename)
 	if err := s.repo.DeleteScenarioFile(ctx, scenarioID, filename, isTest); err != nil {
 		return err
 	}

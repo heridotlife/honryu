@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Execution from './Execution';
 import { SessionProvider } from '../hooks/useSession';
 import type { EngineMetric, ExecutionStatus } from '../api/status';
-import type { TrendPoint } from '../api/trends';
+import type { ErrorSignatureHistory, TrendPoint } from '../api/trends';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,14 +68,23 @@ let root: Root | null = null;
 
 /** Renders /executions/5 with every fetch stubbed; info carries no engine
  * so CapacityPanel stays away. `trend` seeds /executions/5/trend (empty by
- * default so the phase 33 strip stays hidden); null fails the endpoint. */
-async function renderExecution(phase: ExecutionStatus['phase'] = 'running', trend: TrendPoint[] | null = []) {
+ * default so the phase 33 strip stays hidden); null fails the endpoint.
+ * `signatures` seeds the phase 37 failure-history endpoint (all-green by
+ * default -- the honest demo state); null fails it. `calls` collects every
+ * fetched URL so tests can assert refetch behaviour. */
+async function renderExecution(
+  phase: ExecutionStatus['phase'] = 'running',
+  trend: TrendPoint[] | null = [],
+  signatures: ErrorSignatureHistory | null = { execution_id: 5, grouped_by: 'label', groups: [] },
+  calls: string[] = []
+) {
   container = document.createElement('div');
   document.body.appendChild(container);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      calls.push(url);
       if (url.endsWith('/api/me')) {
         return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
       }
@@ -90,6 +99,9 @@ async function renderExecution(phase: ExecutionStatus['phase'] = 'running', tren
       }
       if (url.includes('/api/executions/5/trend')) {
         return trend === null ? json({ message: 'trend backend down' }, 500) : json({ execution_id: 5, points: trend });
+      }
+      if (url.includes('/api/executions/5/error-signatures')) {
+        return signatures === null ? json({ message: 'signatures backend down' }, 500) : json(signatures);
       }
       return json({ message: `no stub for ${url}` }, 500);
     })
@@ -270,6 +282,79 @@ describe('Execution trend strip (mounted)', () => {
 // The Execution page is deep-linkable (/executions/{id}); its CopyLink
 // (task 4) hands that URL to a colleague. Same mounted harness as the live
 // section, plus the clipboard stub CopyLink.test.tsx uses.
+describe('Execution failure history (mounted)', () => {
+  const signatureHistory = (over: Partial<ErrorSignatureHistory> = {}): ErrorSignatureHistory => ({
+    execution_id: 5,
+    grouped_by: 'label',
+    groups: [
+      {
+        key: 'GET /orders',
+        total_count: 12,
+        rows: [
+          { label: 'GET /orders', response_code: '503', side: 'target', total_count: 9, run_count: 3 },
+          { label: 'GET /orders', response_code: '500', side: 'target', total_count: 3, run_count: 2 },
+        ],
+      },
+    ],
+    ...over,
+  });
+
+  it('renders the all-green empty state (demo data has no failures)', async () => {
+    await renderExecution('idle');
+
+    const card = container!.querySelector('[data-testid="signature-history"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("No failures recorded across this execution's runs.");
+    // The default axis is label.
+    expect(card!.querySelector('[data-testid="signature-group-by-label"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(card!.querySelector('[data-testid="signature-group-by-code"]')?.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('lists groups and reveals leaf signature rows on expand', async () => {
+    await renderExecution('idle', [], signatureHistory());
+
+    const card = container!.querySelector('[data-testid="signature-history"]')!;
+    // Group row: key and the safe re-summed total. The group row carries no
+    // run count on purpose -- summing leaf run_counts double-counts a run
+    // that hit two codes under one label.
+    expect(card.textContent).toContain('GET /orders');
+    expect(card.textContent).toContain('12');
+    // Leaf rows are hidden until the group expands.
+    const toggle = card.querySelector('button[aria-expanded]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(card.textContent).not.toContain('target | 503 |');
+
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(card.textContent).toContain('target | 503 | GET /orders');
+    expect(card.textContent).toContain('9');
+    expect(card.textContent).toContain('3 runs');
+  });
+
+  it('switching the group-by axis refetches with by=code and re-collapses', async () => {
+    const calls: string[] = [];
+    await renderExecution('idle', [], signatureHistory(), calls);
+    expect(calls.some((u) => u.endsWith('/api/executions/5/error-signatures'))).toBe(true);
+
+    const code = container!.querySelector('[data-testid="signature-group-by-code"]') as HTMLButtonElement;
+    await act(async () => {
+      code.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    // The non-default axis rides the query string (trends.ts contract).
+    expect(calls.some((u) => u.endsWith('/api/executions/5/error-signatures?by=code'))).toBe(true);
+    expect(code.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('surfaces a failed endpoint as an alert, not a crash', async () => {
+    await renderExecution('idle', [], null);
+
+    const card = container!.querySelector('[data-testid="signature-history"]')!;
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('signatures backend down');
+  });
+});
+
 describe('Execution copy-link (mounted)', () => {
   it('renders near the heading and copies the page URL on click', async () => {
     const writeText = vi.fn(async () => undefined);

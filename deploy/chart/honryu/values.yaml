@@ -129,6 +129,24 @@ demo:
   # typo here fails the pod, not the persona's first request.
   profiles: []
 
+# Customer-APM link-outs (phase 37). Honryu propagates trace context but
+# does not trace: "APM depth" is surfaces INTO the deployment's own APM.
+# Each entry renders a button on every run report that deep-links the APM
+# pre-filtered to that run. OFF by default (empty list); rendered into
+# HONRYU_APM_LINK_TEMPLATES as JSON only when non-empty:
+#   apm:
+#     linkTemplates:
+#       - name: "Grafana Tempo"
+#         # Supported placeholders: {{correlation_id}}, {{execution_id}},
+#         # {{run_id}}, {{project_id}} -- substituted client-side per run.
+#         # Unknown placeholders fail API startup, so a typo here fails the
+#         # pod, not every run page. Single braces (JSON in the query string)
+#         are not placeholders.
+#         urlTemplate: >-
+#           https://grafana.example.com/explore?left={"datasource":"tempo","queries":[{"query":"{{correlation_id}}"}]}
+apm:
+  linkTemplates: []
+
 # Non-secret configuration shared by every component that embeds
 # cmd.config.Load (api, scheduler, calibrator all read a near-identical
 # env shape) -- rendered into one ConfigMap so it is set once, not

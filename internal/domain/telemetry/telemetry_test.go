@@ -137,3 +137,29 @@ func TestHeaders_WellFormedIds(t *testing.T) {
 		t.Errorf("parent id %q is not 16 lowercase hex", parts[2])
 	}
 }
+
+// Baggage is Headers' baggage half on its own (phase 37): the report surface
+// renders it from the stored identity alone, so it must match what Headers
+// put on the wire at deploy time -- same entries, same order, tenant entry
+// omitted (never emptied) without a tenant.
+func TestBaggage_MatchesHeaders(t *testing.T) {
+	t.Parallel()
+
+	withTenant := telemetry.Identity{
+		TenantID:         tenant(7),
+		ProjectID:        42,
+		ExecutionID:      99,
+		RunCorrelationID: "4bf92f3577b34da6a3ce929d0e0e4736",
+	}
+	withoutTenant := withTenant
+	withoutTenant.TenantID = nil
+
+	for _, id := range []telemetry.Identity{withTenant, withoutTenant} {
+		if got, want := telemetry.Baggage(id), telemetry.Headers(telemetry.TraceContext{TraceID: "x", ParentID: "y"}, id)["baggage"]; got != want {
+			t.Errorf("Baggage(%+v) = %q, want the Headers baggage half %q", id, got, want)
+		}
+	}
+	if got, want := telemetry.Baggage(withoutTenant), "honryu.service=42,honryu.execution=99,honryu.run=4bf92f3577b34da6a3ce929d0e0e4736"; got != want {
+		t.Errorf("Baggage without tenant = %q, want %q", got, want)
+	}
+}

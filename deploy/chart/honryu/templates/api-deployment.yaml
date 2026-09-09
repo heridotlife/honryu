@@ -83,6 +83,13 @@ spec:
             - name: HONRYU_DEMO_PROFILES
               value: {{ .Values.demo.profiles | toJson | quote }}
             {{- end }}
+            {{- if .Values.apm.linkTemplates }}
+            # Customer-APM link-out templates (phase 37). Gated on the list
+            # being non-empty so a default install renders exactly the env
+            # it always did -- the demo.profiles precedent.
+            - name: HONRYU_APM_LINK_TEMPLATES
+              value: {{ .Values.apm.linkTemplates | toJson | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
