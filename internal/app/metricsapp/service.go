@@ -51,6 +51,12 @@ type Service struct {
 	bus      ports.EventBus
 	progress ports.ReportProgress
 	reports  ports.ReportStore
+	// notifier is the run-completion hook: after a run's report is saved
+	// it receives the report and the execution's project, and fans a
+	// run.completed event out to the project's registered webhooks. The
+	// webhookapp service implements it; a no-op default is used when none
+	// is wired (e.g. deployments and tests that do not want notifications).
+	notifier Notifier
 	// seen deduplicates intervals a pod pushed more than once, for the live
 	// view only. The permanent record's exactness comes from ReportProgress's
 	// own per-shard sequence, which survives a restart this map does not.
@@ -58,9 +64,35 @@ type Service struct {
 	now  func() time.Time
 }
 
+// Notifier is the outbound notification a completed run produces. It has
+// no error return on purpose: a notification is best-effort and must
+// never be able to fail the run it reports -- the webhook use-case drops,
+// retries, and logs entirely on its own side of this interface.
+type Notifier interface {
+	// RunCompleted is called once per run, after the run's report has been
+	// saved, with the execution's project (webhooks are registered per
+	// project) and the report as stored.
+	RunCompleted(ctx context.Context, projectID int64, rep report.Report)
+}
+
+// noopNotifier is the default Notifier: nothing is notified.
+type noopNotifier struct{}
+
+func (noopNotifier) RunCompleted(context.Context, int64, report.Report) {}
+
 // NewService wires the metric service.
 func NewService(repo Repo, sink ports.MetricsSink, bus ports.EventBus, progress ports.ReportProgress, reports ports.ReportStore) *Service {
-	return &Service{repo: repo, sink: sink, bus: bus, progress: progress, reports: reports, seen: newSeen(), now: time.Now}
+	return &Service{repo: repo, sink: sink, bus: bus, progress: progress, reports: reports, notifier: noopNotifier{}, seen: newSeen(), now: time.Now}
+}
+
+// WithNotifier overrides the run-completion hook. A nil notifier is
+// ignored, so WithNotifier(nil) disables nothing. Returns the receiver for
+// chaining.
+func (s *Service) WithNotifier(n Notifier) *Service {
+	if n != nil {
+		s.notifier = n
+	}
+	return s
 }
 
 // WithNow overrides the clock a finalised report is stamped with. Returns the
@@ -152,6 +184,20 @@ func (s *Service) stopOutcome(ctx context.Context, runID int64) (taurus.Outcome,
 // prior Discard failure still cleans up rather than short-circuiting on an
 // early "already finalised" check the way a return-before-Discard would.
 func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcome taurus.Outcome) error {
+	// A run already finalised has already notified (and its report is the
+	// one that survived): only the first finalisation announces the
+	// completion. Checked before SaveReport rather than after, because
+	// SaveReport's first-write-wins is exactly the same race viewed from
+	// the store -- the loser here is the loser there too. The window
+	// between check and save can still let two truly concurrent
+	// finalisations both announce; that duplicate is benign (a receiver
+	// sees one run twice with the same run_id) and the alternative -- a
+	// store round-trip that reports which write won -- is not worth a port
+	// change for a best-effort notification.
+	alreadyFinalised := false
+	if _, err := s.reports.GetReport(ctx, runID); err == nil {
+		alreadyFinalised = true
+	}
 	snapshot, err := s.progress.Snapshot(ctx, runID)
 	if err != nil {
 		return err
@@ -203,6 +249,16 @@ func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcom
 	rep := report.Restore(snapshot).Report(meta)
 	if err := s.reports.SaveReport(ctx, rep); err != nil {
 		return err
+	}
+	// Announce the completion after the report is durable and before the
+	// working state goes -- the notification's payload IS the stored
+	// report. This is the one shared entry point every finalisation path
+	// reaches (natural completion, Stop/Purge, the orphan sweep: they all
+	// land in finalize), so a webhook-registered project is notified no
+	// matter how its run ended. Best-effort by interface: RunCompleted has
+	// no error to propagate onto the run.
+	if !alreadyFinalised {
+		s.notifier.RunCompleted(ctx, exe.ProjectID, rep)
 	}
 	return s.progress.Discard(ctx, runID)
 }
