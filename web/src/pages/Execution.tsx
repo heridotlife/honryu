@@ -9,7 +9,7 @@ import { getExecutionTrend, getErrorSignatures } from '../api/trends';
 import type { ErrorSignatureHistory, SignatureGroupBy, TrendPoint } from '../api/trends';
 import { sortSignatureGroups } from './ReportsTrend';
 import TaurusEditor from '../components/TaurusEditor';
-import CapacityPanel from '../components/CapacityPanel';
+import CapacityPanel, { isCalibrationExecution } from '../components/CapacityPanel';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
 import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { deployExecution, purgeExecution, stopExecution, triggerExecution } from '../api/lifecycle';
@@ -563,6 +563,13 @@ export default function Execution() {
 
   const enginesReachable = status?.status.every((s) => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
+  // The capacity key every calibration surface on this page assumes: the
+  // execution's engine at the house-default pod size (the same defaults
+  // CalibrateScenarioModal pre-fills, phase 39). Absent while info loads
+  // or on engine-less executions.
+  const capacityKey = info?.engine
+    ? { engine: info.engine, cpu: '500m', memory: '512Mi' }
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -698,11 +705,15 @@ export default function Execution() {
               </ul>
             )}
           </Card>
-          {info?.engine && (
+          {/* Phase 39: the Capacity card mounts ONLY on calibrate_engine
+              executions (isCalibrationExecution). Before Kind rode the wire
+              this gate was just info?.engine, so a normal execution's
+              Calibrate button could only ever earn a 400. */}
+          {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}
               executionId={executionId}
-              keyInfo={{ engine: info.engine, cpu: '500m', memory: '512Mi' }}
+              keyInfo={capacityKey}
               targetQPS={100}
             />
           )}
@@ -759,7 +770,7 @@ export default function Execution() {
                 <TaurusEditor
                   key={status.status[0].scenario_id}
                   scenarioId={status.status[0].scenario_id}
-                  capacityKey={info?.engine ? { engine: info.engine, cpu: '500m', memory: '512Mi' } : undefined}
+                  capacityKey={capacityKey}
                 />
               )}
             </CardContent>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fanOutCopy, jobIsActive, jobProgressLine } from './CapacityPanel';
+import { fanOutCopy, isCalibrationExecution, jobIsActive, jobProgressLine } from './CapacityPanel';
 import type { CalibrationJob } from '../api/calibration';
 
 // R7's contract: the number only exists alongside "ok"; every other status
@@ -68,5 +68,26 @@ describe('jobIsActive', () => {
     expect(jobIsActive(mk('bisecting'))).toBe(true);
     expect(jobIsActive(mk('done'))).toBe(false);
     expect(jobIsActive(mk('failed'))).toBe(false);
+  });
+});
+
+// Phase 39's mount gate: the Capacity card exists only on calibrate_engine
+// executions -- the bug was mounting it for ANY engine'd execution, so a
+// normal soak's Calibrate button could only ever earn a 400.
+describe('isCalibrationExecution', () => {
+  it('mounts only for a calibrate_engine execution with an engine', () => {
+    expect(isCalibrationExecution({ engine: 'jmeter', kind: 'calibrate_engine' })).toBe(true);
+  });
+
+  it('does not mount when kind is normal or absent (pre-phase39 backend)', () => {
+    expect(isCalibrationExecution({ engine: 'jmeter', kind: 'normal' })).toBe(false);
+    expect(isCalibrationExecution({ engine: 'jmeter' })).toBe(false);
+    expect(isCalibrationExecution({ engine: 'jmeter', kind: '' })).toBe(false);
+  });
+
+  it('does not mount while info is unloaded, or without an engine', () => {
+    expect(isCalibrationExecution(null)).toBe(false);
+    expect(isCalibrationExecution(undefined)).toBe(false);
+    expect(isCalibrationExecution({ kind: 'calibrate_engine' })).toBe(false);
   });
 });
