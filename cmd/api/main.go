@@ -50,6 +50,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
+	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/config"
 	"github.com/heridotlife/honryu/internal/ports"
 	"github.com/heridotlife/honryu/internal/ports/fake"
@@ -70,6 +71,7 @@ type repository interface {
 	ports.ReportProgress
 	ports.ReportStore
 	ports.ShareStore
+	ports.WebhookStore
 	ports.IntervalRepository
 	ports.ReservationRepository
 	ports.ScheduleRepository
@@ -120,7 +122,12 @@ func run(ctx context.Context, getenv func(string) string) error {
 	}
 	sink := promsink.New(prometheus.DefaultRegisterer)
 	bus := eventbus.New()
-	collector := metricsapp.NewService(repo, sink, bus, repo, repo)
+	// Webhooks are wired before the metrics service so completed runs can
+	// be announced the moment their report is saved (phase 38): the
+	// webhook use-case is the metrics service's Notifier, which delivers
+	// on background workers and never delays the run.
+	webhooks := webhookapp.NewService(repo)
+	collector := metricsapp.NewService(repo, sink, bus, repo, repo).WithNotifier(webhooks)
 	// Nothing to resume after a restart: pods push, so a run already under way
 	// simply keeps sending to whichever controller is listening.
 	usage := usageapp.NewService(repo)
