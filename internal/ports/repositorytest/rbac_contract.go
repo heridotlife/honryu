@@ -163,4 +163,39 @@ func RunRoleAssignmentRepositoryContract(t *testing.T, newRepo NewRoleRepo) {
 			t.Fatalf("expected empty, got %+v", got)
 		}
 	})
+
+	t.Run("list tenant roles is scoped and stamped", func(t *testing.T) {
+		repo := newRepo(t)
+		other := int64(9)
+		_ = repo.AssignRole(ctx, ports.RoleGrant{Subject: "alice", Email: "a@x", RoleName: "tenant_admin", TenantID: &tid, GrantedBy: "root"})
+		_ = repo.AssignRole(ctx, ports.RoleGrant{Subject: "bob", RoleName: "tenant_editor", TenantID: &other})
+		_ = repo.AssignRole(ctx, ports.RoleGrant{Subject: "root", RoleName: "service_provider_admin"})
+
+		entries, err := repo.ListTenantRoles(ctx, tid)
+		if err != nil {
+			t.Fatalf("ListTenantRoles: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("entries = %+v, want only alice's grant (bob is elsewhere, root is global)", entries)
+		}
+		e := entries[0]
+		if e.Subject != "alice" || e.Email != "a@x" || e.RoleName != "tenant_admin" || e.GrantedBy != "root" {
+			t.Fatalf("entry = %+v", e)
+		}
+		if e.GrantedTime.IsZero() {
+			t.Fatal("GrantedTime not stamped")
+		}
+
+		// A tenant with no grants lists as an empty slice, not nil and not an
+		// error -- the roster is empty, the tenant is not missing (existence is
+		// the caller's check).
+		lonely := int64(11)
+		none, err := repo.ListTenantRoles(ctx, lonely)
+		if err != nil {
+			t.Fatalf("ListTenantRoles(lonely): %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("lonely tenant entries = %+v, want empty", none)
+		}
+	})
 }

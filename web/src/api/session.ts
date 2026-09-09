@@ -81,3 +81,14 @@ export function can(
   }
   return actions.includes(action) || actions.includes('*');
 }
+
+/**
+ * Whether the session may administer tenants (phase 35's Tenants page and
+ * nav link). True for the service-provider admin's wildcard and for any
+ * holder of tenant:admin -- which the permission map grants a tenant's own
+ * admins. Mirrors the backend's tenantAdminGate exactly: what the nav
+ * shows, the routes behind it would let through.
+ */
+export function canAdminTenants(permissions: Record<string, string[]> | null | undefined): boolean {
+  return can(permissions, 'tenant', 'admin');
+}

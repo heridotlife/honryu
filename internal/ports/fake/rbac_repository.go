@@ -3,10 +3,18 @@ package fake
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/tenant"
 	"github.com/heridotlife/honryu/internal/ports"
 )
+
+// grantRecord is one stored role assignment plus its recorded time, the
+// fake's stand-in for role_grant's granted_at column.
+type grantRecord struct {
+	g  ports.RoleGrant
+	at time.Time
+}
 
 // --- Tenants ----------------------------------------------------------------
 
@@ -71,11 +79,11 @@ func (s *Store) AssignRole(_ context.Context, g ports.RoleGrant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.grants {
-		if sameGrant(existing, g.Subject, g.RoleName, g.TenantID) {
+		if sameGrant(existing.g, g.Subject, g.RoleName, g.TenantID) {
 			return nil
 		}
 	}
-	s.grants = append(s.grants, g)
+	s.grants = append(s.grants, grantRecord{g: g, at: s.now()})
 	return nil
 }
 
@@ -85,7 +93,7 @@ func (s *Store) RevokeRole(_ context.Context, subject, roleName string, tenantID
 	defer s.mu.Unlock()
 	kept := s.grants[:0:0]
 	for _, existing := range s.grants {
-		if sameGrant(existing, subject, roleName, tenantID) {
+		if sameGrant(existing.g, subject, roleName, tenantID) {
 			continue
 		}
 		kept = append(kept, existing)
@@ -99,7 +107,8 @@ func (s *Store) RolesFor(_ context.Context, subject string) (ports.RoleGrants, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := ports.RoleGrants{}
-	for _, g := range s.grants {
+	for _, rec := range s.grants {
+		g := rec.g
 		if g.Subject != subject {
 			continue
 		}
@@ -111,6 +120,32 @@ func (s *Store) RolesFor(_ context.Context, subject string) (ports.RoleGrants, e
 			out.Tenants = make(map[int64][]string)
 		}
 		out.Tenants[*g.TenantID] = append(out.Tenants[*g.TenantID], g.RoleName)
+	}
+	return out, nil
+}
+
+// ListTenantRoles returns a tenant's grants ordered by subject then role.
+func (s *Store) ListTenantRoles(_ context.Context, tenantID int64) ([]ports.RoleGrantEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []ports.RoleGrantEntry
+	for _, rec := range s.grants {
+		if rec.g.TenantID == nil || *rec.g.TenantID != tenantID {
+			continue
+		}
+		out = append(out, ports.RoleGrantEntry{
+			Subject: rec.g.Subject, Email: rec.g.Email, RoleName: rec.g.RoleName,
+			GrantedBy: rec.g.GrantedBy, GrantedTime: rec.at,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Subject != out[j].Subject {
+			return out[i].Subject < out[j].Subject
+		}
+		return out[i].RoleName < out[j].RoleName
+	})
+	if out == nil {
+		out = []ports.RoleGrantEntry{}
 	}
 	return out, nil
 }

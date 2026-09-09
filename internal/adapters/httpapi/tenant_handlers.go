@@ -218,6 +218,42 @@ func (h *handlers) assignTenantRole(w http.ResponseWriter, r *http.Request) {
 	h.assignRole(w, r, &id)
 }
 
+// roleGrantResponse is the JSON wire shape for one entry of a tenant's
+// member roster.
+type roleGrantResponse struct {
+	Subject     string    `json:"subject"`
+	Email       string    `json:"email"`
+	Role        string    `json:"role"`
+	GrantedBy   string    `json:"granted_by"`
+	GrantedTime time.Time `json:"granted_time"`
+}
+
+// listTenantRoles returns a tenant's member roster: the grants scoped to
+// that tenant, each with who granted it and when.
+func (h *handlers) listTenantRoles(w http.ResponseWriter, r *http.Request) {
+	if !h.tenantAdminGate(w, r) {
+		return
+	}
+	id, ok := pathInt(r, "tenant_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid tenant id")
+		return
+	}
+	entries, err := h.deps.Tenants.ListTenantRoles(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	out := make([]roleGrantResponse, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, roleGrantResponse{
+			Subject: e.Subject, Email: e.Email, Role: e.RoleName,
+			GrantedBy: e.GrantedBy, GrantedTime: e.GrantedTime,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *handlers) assignGlobalRole(w http.ResponseWriter, r *http.Request) {
 	if !h.tenantAdminGate(w, r) {
 		return

@@ -141,6 +141,31 @@ func (r *Repository) RolesFor(ctx context.Context, subject string) (ports.RoleGr
 	return out, nil
 }
 
+// ListTenantRoles returns a tenant's grants ordered by subject then role.
+// The global scope (tenant_id 0) is never included.
+func (r *Repository) ListTenantRoles(ctx context.Context, tenantID int64) ([]ports.RoleGrantEntry, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT subject, email, role_name, granted_by, granted_at FROM role_grant WHERE tenant_id = ? ORDER BY subject, role_name",
+		tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []ports.RoleGrantEntry{}
+	for rows.Next() {
+		var e ports.RoleGrantEntry
+		if err := rows.Scan(&e.Subject, &e.Email, &e.RoleName, &e.GrantedBy, &e.GrantedTime); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // scopeValue maps a nil tenant scope to the global sentinel.
 func scopeValue(tenantID *int64) int64 {
 	if tenantID == nil {
