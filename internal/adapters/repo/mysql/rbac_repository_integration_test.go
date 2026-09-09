@@ -56,6 +56,7 @@ func TestMySQLRBAC_ErrorsWhenDBClosed(t *testing.T) {
 		"AssignRole":      func() error { return repo.AssignRole(ctx, ports.RoleGrant{Subject: "a", RoleName: "r"}) },
 		"RevokeRole":      func() error { return repo.RevokeRole(ctx, "a", "r", &tid) },
 		"RolesFor":        func() error { _, e := repo.RolesFor(ctx, "a"); return e },
+		"ListTenantRoles": func() error { _, e := repo.ListTenantRoles(ctx, 1); return e },
 	}
 	for name, op := range ops {
 		if err := op(); err == nil {

@@ -74,7 +74,9 @@ type Store struct {
 
 	tenantSeq int64
 	tenants   map[int64]tenant.Tenant
-	grants    []ports.RoleGrant // role assignments, deduped by subject/role/tenant
+	// grants holds role assignments, deduped by subject/role/tenant, with
+	// the store's stamp for when each was recorded.
+	grants []grantRecord
 
 	reservationSeq int64
 	reservations   map[int64]reservation.Reservation

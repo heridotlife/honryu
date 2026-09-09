@@ -116,6 +116,9 @@ func (errRoles) RevokeRole(context.Context, string, string, *int64) error { retu
 func (errRoles) RolesFor(context.Context, string) (ports.RoleGrants, error) {
 	return ports.RoleGrants{}, errBoom
 }
+func (errRoles) ListTenantRoles(context.Context, int64) ([]ports.RoleGrantEntry, error) {
+	return nil, errBoom
+}
 
 func TestService_GrantLookupErrorPropagates(t *testing.T) {
 	t.Parallel()

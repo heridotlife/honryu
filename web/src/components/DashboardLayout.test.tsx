@@ -103,6 +103,7 @@ describe('navItemsFor', () => {
       '/executions',
       '/reservations',
       '/campaigns',
+      '/tenants',
       '/clusters',
     ]);
   });

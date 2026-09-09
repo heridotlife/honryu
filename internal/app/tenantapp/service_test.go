@@ -167,3 +167,43 @@ func TestAssignRoleValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestListTenantRoles pins the roster use-case: entries come back for the
+// named tenant only (never the global scope), and an unknown tenant is
+// ErrNotFound rather than a silent empty list.
+func TestListTenantRoles(t *testing.T) {
+	t.Parallel()
+	svc, _ := newSvc(t)
+	ctx := t.Context()
+	acme, _ := svc.Create(ctx, "acme", "Acme")
+	if _, err := svc.Create(ctx, "globex", "Globex"); err != nil {
+		t.Fatalf("Create globex: %v", err)
+	}
+
+	if err := svc.AssignRole(ctx, ports.RoleGrant{Subject: "alice", Email: "a@x", RoleName: rbac.RoleTenantAdmin, TenantID: &acme.ID, GrantedBy: "root"}); err != nil {
+		t.Fatalf("AssignRole: %v", err)
+	}
+	if err := svc.AssignRole(ctx, ports.RoleGrant{Subject: "root", RoleName: rbac.RoleServiceProviderAdmin}); err != nil {
+		t.Fatalf("AssignRole global: %v", err)
+	}
+
+	entries, err := svc.ListTenantRoles(ctx, acme.ID)
+	if err != nil {
+		t.Fatalf("ListTenantRoles: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want only alice's grant (global scope excluded)", entries)
+	}
+	got := entries[0]
+	if got.Subject != "alice" || got.Email != "a@x" || got.RoleName != rbac.RoleTenantAdmin || got.GrantedBy != "root" {
+		t.Fatalf("entry = %+v", got)
+	}
+	if got.GrantedTime.IsZero() {
+		t.Fatal("GrantedTime not stamped")
+	}
+
+	missing := int64(999)
+	if _, err := svc.ListTenantRoles(ctx, missing); !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("ListTenantRoles(unknown) = %v, want ErrNotFound", err)
+	}
+}

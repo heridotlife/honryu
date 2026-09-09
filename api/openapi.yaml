@@ -329,6 +329,15 @@ components:
         display_name: { type: string }
         status: { type: string }
         created_time: { type: string, format: date-time }
+    RoleGrant:
+      type: object
+      description: One grant of a tenant-scoped role, with the audit trail of who granted it and when.
+      properties:
+        subject: { type: string }
+        email: { type: string }
+        role: { type: string }
+        granted_by: { type: string }
+        granted_time: { type: string, format: date-time }
     Reservation:
       type: object
       description: A tenant's claim on engine capacity for a bounded window -- the reservation calendar's unit.
@@ -2418,6 +2427,20 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/tenants/{tenant_id}/roles:
+    get:
+      tags: [tenants]
+      summary: List a tenant's role grants (member roster)
+      parameters: [{ $ref: '#/components/parameters/TenantID' }]
+      responses:
+        '200':
+          description: Role grants scoped to the tenant
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RoleGrant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [tenants]
       summary: Grant a role within a tenant
