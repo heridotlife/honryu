@@ -186,6 +186,7 @@ has a local-dev default, so `go run ./cmd/api` works with no environment set.
 | `HONRYU_HTTP_TRIGGER_READY_POLL` | `2s` | trigger's engine-readiness poll interval |
 | `HONRYU_HTTP_TRIGGER_READY_TIMEOUT` | `2m` | trigger's bounded wait for just-deployed engines |
 | `HONRYU_RECONCILE_INTERVAL` | `1m` | stranded-run sweep interval (`0` disables) |
+| `HONRYU_RUN_RECONCILE_AFTER` | `2h` | age at which an open, unreported, engine-less run may be reconciled as aborted (`0` disables) |
 | `HONRYU_DB_DRIVER` | `fake` | `fake` (in-memory) or `mysql` |
 | `HONRYU_DB_DSN` | – | MySQL DSN (required when driver is `mysql`) |
 | `HONRYU_STORAGE_DRIVER` | `local` | `local` or `nexus` |

@@ -73,6 +73,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if len(cfg.APM.LinkTemplates) != 0 {
 		t.Errorf("APM.LinkTemplates = %v, want empty by default", cfg.APM.LinkTemplates)
 	}
+	if cfg.Cluster.RunReconcileAfter != 2*time.Hour {
+		t.Errorf("Cluster.RunReconcileAfter = %s, want 2h", cfg.Cluster.RunReconcileAfter)
+	}
 }
 
 func TestLoad_AuthOverrides(t *testing.T) {
@@ -167,6 +170,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"HONRYU_SCHEDULER_HORIZON_INTERVAL":   "12h",
 		"HONRYU_CALIBRATOR_TICK_INTERVAL":     "15s",
 		"HONRYU_CALIBRATOR_HOST_IN_SCHEDULER": "true",
+		"HONRYU_RUN_RECONCILE_AFTER":          "90m",
 	}))
 	if err != nil {
 		t.Fatalf("Load with overrides: unexpected error: %v", err)
@@ -211,6 +215,9 @@ func TestLoad_Overrides(t *testing.T) {
 	if !cfg.Calibrator.HostInScheduler {
 		t.Error("Calibrator.HostInScheduler = false, want true")
 	}
+	if cfg.Cluster.RunReconcileAfter != 90*time.Minute {
+		t.Errorf("Cluster.RunReconcileAfter = %s, want 90m", cfg.Cluster.RunReconcileAfter)
+	}
 }
 
 func TestLoad_ValidationErrors(t *testing.T) {
@@ -248,6 +255,7 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		"non-numeric port":              {"HONRYU_ENGINE_PORT": "eighty"},
 		"bad purge interval":            {"HONRYU_AUTOPURGE_INTERVAL": "soon"},
 		"bad purge idle":                {"HONRYU_AUTOPURGE_IDLE": "forever"},
+		"bad run reconcile after":       {"HONRYU_RUN_RECONCILE_AFTER": "eventually"},
 		"unknown auth mode":             {"HONRYU_AUTH_MODE": "ldap"},
 		"bad enable rbac":               {"HONRYU_ENABLE_RBAC": "maybe"},
 		"oidc without issuer":           {"HONRYU_AUTH_MODE": "oidc", "HONRYU_OIDC_JWKS_URL": "https://x/jwks"},

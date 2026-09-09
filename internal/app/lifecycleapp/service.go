@@ -24,6 +24,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
+	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/reservation"
 	"github.com/heridotlife/honryu/internal/domain/run"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -57,6 +58,11 @@ type Repo interface {
 	// PendingCorrelationID returns the id the latest Deploy minted, which
 	// Trigger stamps onto the run it starts.
 	PendingCorrelationID(ctx context.Context, executionID int64) (string, error)
+	// GetReport returns a run's stored report, or ports.ErrNotFound when the
+	// run never got one. The abandoned-run sweep uses it to leave runs that
+	// already finalised -- natural completion, teardown outstanding --
+	// untouched.
+	GetReport(ctx context.Context, runID int64) (report.Report, error)
 	ports.OrphanRepository
 	ports.RunRepository
 }
@@ -174,7 +180,8 @@ type Service struct {
 	usage         Usage
 	quota         Quota
 	freeze        Freeze
-	// now is the reservation window's clock, overridable for deterministic tests.
+	// now is the reservation window's clock and the abandoned-run sweep's
+	// age threshold, overridable for deterministic tests.
 	now func() time.Time
 	// traceContext mints the trace identity a deploy's load carries, once per
 	// Deploy call. Overridable for deterministic tests, like now.
@@ -242,8 +249,8 @@ func (s *Service) WithFreeze(f Freeze) *Service {
 	return s
 }
 
-// WithNow overrides the clock a reservation window is measured from. Returns
-// the receiver for chaining.
+// WithNow overrides the clock a reservation window is measured from and
+// the abandoned-run sweep ages runs by. Returns the receiver for chaining.
 func (s *Service) WithNow(now func() time.Time) *Service {
 	if now != nil {
 		s.now = now
@@ -597,6 +604,81 @@ func orphansCoverProfile(orphans []ports.OrphanCompletion, profile []loadprofile
 		}
 	}
 	return len(profile) > 0
+}
+
+// ReconcileAbandoned closes runs whose engines died without ever reporting:
+// the run row stands open, no report exists for it, and no engine pods
+// remain -- a statefulset lost to a node kill or a failed PreStopHook (phase
+// 36). Nothing else can close such a run: the stranded-run pass above needs
+// Finals that never arrived, natural completion needs measurements that
+// never came, and teardown needs an operator to notice. Until it is closed
+// the execution wedges -- every Trigger 409s on the open run row, and a
+// purge clears the run with no report ever landing.
+//
+// A run qualifies only when all of:
+//
+//   - older than after -- never touch a run younger than the threshold; its
+//     engines may be slow to report or a deploy mid-flight;
+//   - no stored report -- a run that already finalised keeps its verdict;
+//     only its teardown is outstanding;
+//   - no live engine pods (pool size 0) -- a run whose engines exist may
+//     genuinely still be running.
+//
+// Qualifying runs are closed the way teardown would, with a synthetic
+// aborted report -- audit evidence that the sweep ended the run, never an
+// invented pass -- and then StopRun, so the execution can deploy and trigger
+// again. after must be positive; zero or negative disables the pass.
+// Returns the runs it closed so the caller can log every reconciliation
+// action. Idempotent by construction: a closed run is no longer open, and
+// SaveReport keeps the first report for a run anyway.
+func (s *Service) ReconcileAbandoned(ctx context.Context, after time.Duration) ([]ports.OpenRun, error) {
+	if after <= 0 {
+		return nil, nil
+	}
+	open, err := s.repo.OpenRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var closed []ports.OpenRun
+	for _, orun := range open {
+		if s.now().Sub(orun.StartedTime) < after {
+			continue
+		}
+		if _, err := s.repo.GetReport(ctx, orun.RunID); err == nil {
+			continue
+		} else if !errors.Is(err, ports.ErrNotFound) {
+			return nil, err
+		}
+		coll, err := s.repo.GetExecution(ctx, orun.ExecutionID)
+		if err != nil {
+			// An execution deleted under an open run leaves a run row nothing
+			// names any more; skip rather than error on every pass, and leave
+			// it -- nothing can wedge behind a missing execution.
+			if errors.Is(err, ports.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		scenarios, err := s.repo.LoadProfileFor(ctx, orun.ExecutionID)
+		if err != nil {
+			return nil, err
+		}
+		status, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(coll.Cluster), orun.ExecutionID, planRefs(scenarios))
+		if err != nil {
+			return nil, err
+		}
+		if status.PoolSize > 0 {
+			continue
+		}
+		if err := s.metrics.Finalize(ctx, orun.ExecutionID, orun.RunID); err != nil {
+			return nil, err
+		}
+		if err := s.repo.StopRun(ctx, orun.ExecutionID); err != nil {
+			return nil, err
+		}
+		closed = append(closed, orun)
+	}
+	return closed, nil
 }
 
 // shardKey identifies one engine pod of one scenario.

@@ -176,6 +176,13 @@ type ClusterConfig struct {
 	// already finished (their Finals arrived orphaned) -- evidence-based
 	// reports, never invented passes.
 	ReconcileInterval time.Duration
+	// RunReconcileAfter is how old an open run with no report and no engine
+	// pods must be before the reconciliation sweep may close it as aborted:
+	// the engines died without ever reporting (a statefulset lost to a node
+	// kill), so no Final and no measurement can ever arrive. Zero disables
+	// that pass. It never touches runs younger than this, runs that already
+	// finalised, or runs whose engine pods still exist.
+	RunReconcileAfter time.Duration
 	// CredentialKey is the hex-encoded (64 hex digits) app-held key that
 	// encrypts BYOC cluster credentials at rest (AES-256-GCM). Empty disables
 	// the cluster-registry management API (/api/clusters) -- a deployment that
@@ -269,6 +276,11 @@ func Load(getenv func(string) string) (Config, error) {
 			// closed within minutes, quiet enough to be idle in the common
 			// case (the pass is one query when nothing is stranded).
 			ReconcileInterval: time.Minute,
+			// The abandoned-run half of the sweep is deliberately far slower
+			// to act than the stranded-run half: it has no evidence to work
+			// from, only age and absent engines, so it must never race a
+			// legitimately slow run.
+			RunReconcileAfter: 2 * time.Hour,
 		},
 		Auth:       AuthConfig{Mode: "none"},
 		Scheduler:  SchedulerConfig{TickInterval: 30 * time.Second, HorizonInterval: 24 * time.Hour},
@@ -330,6 +342,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Cluster.ReconcileInterval, err = durEnv(getenv, "RECONCILE_INTERVAL", cfg.Cluster.ReconcileInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cluster.RunReconcileAfter, err = durEnv(getenv, "RUN_RECONCILE_AFTER", cfg.Cluster.RunReconcileAfter); err != nil {
 		return Config{}, err
 	}
 	if cfg.Cluster.AutoPurgeIdle, err = durEnv(getenv, "AUTOPURGE_IDLE", cfg.Cluster.AutoPurgeIdle); err != nil {

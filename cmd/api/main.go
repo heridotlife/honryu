@@ -439,10 +439,14 @@ func setupLogging(cfg config.LogConfig) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// startReconcile launches the stranded-run sweep unless it is disabled
+// startReconcile launches the reconciliation sweep unless it is disabled
 // (interval zero). It stops when ctx is cancelled. Each pass finalizes open
 // runs whose engines already finished -- nothing else ever will, and the
-// report it writes is evidence-based.
+// report it writes is evidence-based -- and then closes abandoned runs:
+// ones older than RunReconcileAfter with no report and no engine pods left
+// behind them (a statefulset lost without reporting), which no evidence
+// path can ever reach. Every abandoned-run closure is logged, so an
+// operator can tell a sweep-closed run from one its engines finished.
 func startReconcile(ctx context.Context, lifecycle *lifecycleapp.Service, cfg config.ClusterConfig) {
 	if cfg.ReconcileInterval <= 0 {
 		return
@@ -457,6 +461,14 @@ func startReconcile(ctx context.Context, lifecycle *lifecycleapp.Service, cfg co
 			case <-ticker.C:
 				if err := lifecycle.Reconcile(ctx); err != nil {
 					slog.Warn("stranded-run reconcile", "error", err)
+				}
+				closed, err := lifecycle.ReconcileAbandoned(ctx, cfg.RunReconcileAfter)
+				if err != nil {
+					slog.Warn("abandoned-run reconcile", "error", err)
+				}
+				for _, r := range closed {
+					slog.Info("reconciled abandoned run: no report and no engine pods after threshold, closed as aborted",
+						"execution_id", r.ExecutionID, "run_id", r.RunID, "started_at", r.StartedTime)
 				}
 			}
 		}
