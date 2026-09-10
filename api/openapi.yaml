@@ -35,6 +35,10 @@ tags:
       operator's own APM. Honryu propagates trace context; it does not trace
   - name: projects
     description: Projects, the ownership root
+  - name: webhooks
+    description: >-
+      Run-completion webhook endpoints registered per project: every finished run (pass or fail) is POSTed to each
+      enabled endpoint, signed with HMAC when a secret is set
   - name: scenarios
     description: Reusable workload definitions
   - name: executions
@@ -100,6 +104,11 @@ components:
       schema: { type: string }
     ScheduleID:
       name: schedule_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    WebhookID:
+      name: webhook_id
       in: path
       required: true
       schema: { type: integer, format: int64 }
@@ -267,6 +276,18 @@ components:
         id: { type: integer, format: int64 }
         name: { type: string }
         project_id: { type: integer, format: int64 }
+        created_time: { type: string, format: date-time }
+    Webhook:
+      type: object
+      description: >-
+        A registered receiver. The signing secret is write-only: it appears
+        here only as has_secret, never as a value.
+      properties:
+        id: { type: integer, format: int64 }
+        url: { type: string }
+        has_secret: { type: boolean }
+        enabled: { type: boolean }
+        created_by: { type: string }
         created_time: { type: string, format: date-time }
     LoadProfileEntry:
       description: One scenario's load configuration; maps onto a Taurus execution block.
@@ -965,6 +986,94 @@ paths:
         '204': { $ref: '#/components/responses/NoContent' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/projects/{project_id}/webhooks:
+    post:
+      tags: [webhooks]
+      summary: Register a run-completion webhook for a project
+      description: |
+        The URL must be https; registration is where that is refused
+        (400), never silent. The secret is write-only: it signs every
+        delivery (X-Honryu-Signature, HMAC-SHA256 over the raw body) and
+        no response ever carries it back.
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string }
+                secret: { type: string }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Webhook' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [webhooks]
+      summary: List a project's webhooks
+      description: Registration order, enabled and paused alike.
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses:
+        '200':
+          description: The project's webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Webhook' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/projects/{project_id}/webhooks/{webhook_id}:
+    delete:
+      tags: [webhooks]
+      summary: Delete one of a project's webhooks
+      description: Scoped by project; a webhook id under a foreign project is a 404.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectID' }
+        - { $ref: '#/components/parameters/WebhookID' }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/projects/{project_id}/webhooks/{webhook_id}/enabled:
+    put:
+      tags: [webhooks]
+      summary: Pause or resume one of a project's webhooks
+      description: A paused webhook is skipped by delivery; pause/resume is a plain state update.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectID' }
+        - { $ref: '#/components/parameters/WebhookID' }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/scenarios:
     post:

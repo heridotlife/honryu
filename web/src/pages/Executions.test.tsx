@@ -42,6 +42,12 @@ const executionsFixture = [
   { id: 3, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
 ];
 
+// Phase 40: the Webhooks card mounts whenever a project is selected, so
+// the page-level stub must answer its registry route too.
+const webhooksFixture = [
+  { id: 11, url: 'https://hooks.example.com/runs', has_secret: true, enabled: true, created_by: 'op', created_time: '2026-09-03T00:00:00Z' },
+];
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -68,6 +74,12 @@ async function renderExecutionsList(storedProject: string | null = null) {
       }
       if (url.endsWith('/api/projects')) {
         return json(projectsFixture);
+      }
+      if (url.endsWith('/api/projects/1/webhooks')) {
+        return json(webhooksFixture);
+      }
+      if (url.endsWith('/webhooks')) {
+        return json([]);
       }
       return json({ message: `no stub for ${url}` }, 500);
     })
@@ -135,5 +147,30 @@ describe('Executions project filter (phase 32)', () => {
     expect(container!.querySelector('a[href="/executions/7"]')).not.toBeNull();
     expect(container!.querySelector('a[href="/executions/3"]')).not.toBeNull();
     expect(container!.querySelector('[data-testid="filter-project"]')).toBeNull();
+  });
+});
+
+// Phase 40: the Webhooks card is the project-scoped registry surface on
+// this page -- present only once a project is selected AND the caller may
+// update projects, the same grant the backend's webhook routes demand.
+describe('Executions webhooks card mount (phase 40)', () => {
+  it('gates the card on the project-update permission', async () => {
+    const executionsSource = (await import('./Executions.tsx?raw')).default;
+    expect(executionsSource).toContain("can('project', 'update')");
+    expect(executionsSource).toContain('<WebhooksCard');
+  });
+
+  it('renders the registry when a project is selected', async () => {
+    await renderExecutionsList('1');
+
+    const row = container!.querySelector('[data-testid="webhook-row-11"]');
+    expect(row?.textContent).toContain('hooks.example.com/runs');
+  });
+
+  it('renders no card without a project selection', async () => {
+    await renderExecutionsList();
+
+    expect(container!.querySelector('[data-testid="webhook-row-11"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="add-webhook-btn"]')).toBeNull();
   });
 });
