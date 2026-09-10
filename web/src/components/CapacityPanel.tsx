@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Button from './ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
+import Input from './ui/Input';
 import { ApiError } from '../api/client';
 import {
   fanOutCapacity,
@@ -16,8 +17,26 @@ export interface CapacityPanelProps {
   scenarioId: number;
   executionId: number;
   keyInfo: CapacityKey;
-  /** The panel polls the job while a search is in flight. */
-  targetQPS: number;
+}
+
+/** localStorage key prefix for the panel's target (phase 44): one target
+ * per scenario, the same shape as the project switcher's honryu.project. */
+const TARGET_STORAGE_PREFIX = 'honryu.capacity-target-qps.';
+/** The target shown before the user (or storage) says otherwise. */
+export const DEFAULT_TARGET_QPS = 100;
+
+/** The persisted target for a scenario, or the default. Best-effort: any
+ * storage failure (or a stored value below 1) falls back to the default
+ * rather than breaking the panel. Exported for the reset-on-scenario
+ * change below. */
+export function storedTargetQPS(scenarioId: number): number {
+  try {
+    const raw = localStorage.getItem(`${TARGET_STORAGE_PREFIX}${scenarioId}`);
+    const n = raw === null ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 1 ? n : DEFAULT_TARGET_QPS;
+  } catch {
+    return DEFAULT_TARGET_QPS;
+  }
 }
 
 /**
@@ -104,7 +123,11 @@ export function isCalibrationExecution(
   return !!info?.engine && info.kind === 'calibrate_engine';
 }
 
-export default function CapacityPanel({ scenarioId, executionId, keyInfo, targetQPS }: CapacityPanelProps) {
+export default function CapacityPanel({ scenarioId, executionId, keyInfo }: CapacityPanelProps) {
+  // Phase 44: the fan-out target is the user's own number (default 100,
+  // persisted per scenario) -- it drove engine counts from an arbitrary
+  // hardcoded 100 before, disconnected from any intent.
+  const [targetQPS, setTargetQPS] = useState(() => storedTargetQPS(scenarioId));
   const [status, setStatus] = useState<FanOutStatus | null>(null);
   const [engines, setEngines] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +153,12 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
     };
   }, [scenarioId, keyInfo.engine, keyInfo.cpu, keyInfo.memory, targetQPS]);
 
+  // A different scenario means a different stored target; a same-value
+  // re-set on mount is a no-op React bails out of.
+  useEffect(() => {
+    setTargetQPS(storedTargetQPS(scenarioId));
+  }, [scenarioId]);
+
   // Poll the in-flight job every 5s until it settles.
   useEffect(() => {
     if (!job || !jobIsActive(job)) {
@@ -154,6 +183,21 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
     return () => clearInterval(t);
   }, [job, scenarioId, keyInfo, targetQPS]);
 
+  const changeTarget = (value: string) => {
+    const n = Number(value);
+    // Below-minimum or non-numeric input keeps the current target: a
+    // garbage number must never re-query fan-out.
+    if (!Number.isFinite(n) || n < 1) {
+      return;
+    }
+    setTargetQPS(n);
+    try {
+      localStorage.setItem(`${TARGET_STORAGE_PREFIX}${scenarioId}`, String(n));
+    } catch {
+      // Persistence is best-effort; the query itself still uses the value.
+    }
+  };
+
   const startCalibration = () => {
     setStarting(true);
     setError(null);
@@ -173,6 +217,15 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
         <CardTitle>Capacity</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        <Input
+          label="Target QPS"
+          type="number"
+          min={1}
+          className="max-w-40"
+          data-testid="capacity-target-qps"
+          value={targetQPS}
+          onChange={(e) => changeTarget(e.target.value)}
+        />
         {error && (
           <p className="text-sm text-red-600 dark:text-red-400" role="alert">
             {error}
@@ -182,8 +235,8 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
         {copy && (
           <div>
             {status === 'ok' && engines !== null ? (
-              <p className="text-heading-md text-slate-900 dark:text-white">
-                {engines} engine{engines === 1 ? '' : 's'}
+              <p className="text-heading-md text-slate-900 dark:text-white" data-testid="capacity-engines">
+                {engines} engine{engines === 1 ? '' : 's'} for {targetQPS} qps
               </p>
             ) : (
               <p className="text-body-sm font-medium text-slate-900 dark:text-white">{copy.title}</p>
