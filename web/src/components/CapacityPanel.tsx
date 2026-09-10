@@ -192,7 +192,7 @@ export default function CapacityPanel({ scenarioId, executionId, keyInfo, target
             {copy.cta && <p className="text-caption mt-1 text-sky-700 dark:text-sky-400">{copy.cta}</p>}
             {status !== 'ok' && (
               <Button className="mt-2" onClick={startCalibration} disabled={starting || job !== null && jobIsActive(job)}>
-                {starting ? 'Starting…' : 'Calibrate'}
+                {starting ? 'Starting…' : 'Run search'}
               </Button>
             )}
           </div>

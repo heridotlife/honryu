@@ -570,8 +570,11 @@ export default function Execution() {
   const enginesReachable = status?.status.every((s) => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
   // Phase 39's Calibrate action needs an engine to name (the backend rejects
-  // an engineless calibration) and the session's execution:create.
-  const canCalibrate = !!info?.engine && can('execution', 'create');
+  // an engineless calibration) and the session's execution:create. Phase 44:
+  // only NORMAL executions offer it -- a calibrate_engine execution is
+  // itself the calibration; creating one from it is nonsensical, and its
+  // Capacity panel owns the verb there (Run search).
+  const canCalibrate = !!info?.engine && can('execution', 'create') && !isCalibrationExecution(info);
   // A scenario's display name: the config's test name doubles as it (the
   // NewTest flow names test and scenario the same); the id is the fallback.
   const scenarioName = (scenarioId: number): string =>
@@ -721,7 +724,7 @@ export default function Execution() {
                           data-testid="calibrate-scenario-btn"
                           onClick={() => setCalibrateFor(sc.scenario_id)}
                         >
-                          Calibrate
+                          Calibrate scenario...
                         </Button>
                       )}
                     </div>
