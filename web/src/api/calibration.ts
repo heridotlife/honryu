@@ -143,6 +143,11 @@ export interface CreateCalibrationInput {
   criterion: string;
   cpu: string;
   memory: string;
+  /** The scenario the calibration measures; it must run on the source. */
+  scenarioId: number;
+  /** The execution whose load-profile entry for the scenario the backend
+   *  copies as the calibration's single-pod starting entry (phase 41). */
+  sourceExecutionId: number;
   seedQps?: number;
   maxQps?: number;
   maxSteps?: number;
@@ -150,10 +155,11 @@ export interface CreateCalibrationInput {
 }
 
 /**
- * POST /api/calibrations (phase 39's missing frontend consumer): creates a
- * CalibrateEngine execution configured for one capacity search. The
- * scenario is NOT bound here -- that stays the ordinary config flow
- * (PUT /executions/{id}/config), per the handler's own contract.
+ * POST /api/calibrations: creates a CalibrateEngine execution configured
+ * for one capacity search AND bound to the scenario -- the backend copies
+ * the source execution's entry for it, so the created execution can be
+ * triggered immediately (phase 41 closed the dead-shell gap where this
+ * POST carried no scenario at all and the execution could never run).
  */
 export function createCalibration(input: CreateCalibrationInput): Promise<CalibrationExecution> {
   const form = new URLSearchParams({
@@ -163,6 +169,8 @@ export function createCalibration(input: CreateCalibrationInput): Promise<Calibr
     criterion: input.criterion,
     cpu: input.cpu,
     memory: input.memory,
+    scenario_id: String(input.scenarioId),
+    source_execution_id: String(input.sourceExecutionId),
   });
   if (input.seedQps !== undefined) form.set('seed_qps', String(input.seedQps));
   if (input.maxQps !== undefined) form.set('max_qps', String(input.maxQps));

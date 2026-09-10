@@ -299,7 +299,7 @@ func TestGetExecutionIncludesKind(t *testing.T) {
 	t.Parallel()
 	// newCalibrationRouter (calibration_handlers_test.go) wires the
 	// Calibrations dep, so both kinds can be created over HTTP.
-	h, _, _ := newCalibrationRouter(t)
+	h, store, _ := newCalibrationRouter(t)
 	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
 
 	kindOf := func(executionID int64) string {
@@ -325,7 +325,7 @@ func TestGetExecutionIncludesKind(t *testing.T) {
 		t.Errorf("ordinary execution kind = %q, want normal", kind)
 	}
 
-	_, calibID, _ := seedCalibration(t, h)
+	_, calibID, _ := seedCalibration(t, h, store)
 	if kind := kindOf(calibID); kind != "calibrate_engine" {
 		t.Errorf("calibration execution kind = %q, want calibrate_engine", kind)
 	}

@@ -844,6 +844,30 @@ func TestAdvanceCalibrationOnce_ErrorIsLoggedNotPropagated(t *testing.T) {
 	advanceCalibrationOnce(context.Background(), calibrationapp.NewService(fake.NewStore()))
 }
 
+// seedBoundSource creates the ordinary execution Create copies its
+// scenario binding from: a native JMeter scenario and a source execution
+// whose load profile runs it.
+func seedBoundSource(ctx context.Context, store *fake.Store, projectID int64) (scenarioID, sourceID int64, err error) {
+	pl, err := scenario.NewNative("target", projectID, taurus.ExecutorJMeter)
+	if err != nil {
+		return 0, 0, err
+	}
+	scenarioID, err = store.CreateScenario(ctx, pl)
+	if err != nil {
+		return 0, 0, err
+	}
+	exe, err := execution.New("source", projectID)
+	if err != nil {
+		return 0, 0, err
+	}
+	sourceID, err = store.CreateExecution(ctx, exe)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = store.StoreLoadProfile(ctx, sourceID, false, []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 1}})
+	return scenarioID, sourceID, err
+}
+
 // The hosted loop's reason to exist: one due job claimed, driven through its
 // single terminal step, and left done.
 func TestAdvanceCalibrationOnce_AdvancesADueJob(t *testing.T) {
@@ -858,18 +882,13 @@ func TestAdvanceCalibrationOnce_AdvancesADueJob(t *testing.T) {
 	}
 	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, MaxQPS: 1000, MaxSteps: 5, HoldSeconds: 1}
 	setup := calibrationapp.NewService(store)
-	executionID, err := setup.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec)
+	scenarioID, src, err := seedBoundSource(ctx, store, projectID)
+	if err != nil {
+		t.Fatalf("seedBoundSource: %v", err)
+	}
+	executionID, err := setup.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-	pl, _ := scenario.NewNative("target", projectID, taurus.ExecutorJMeter)
-	scenarioID, err := store.CreateScenario(ctx, pl)
-	if err != nil {
-		t.Fatalf("CreateScenario: %v", err)
-	}
-	entries := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 1}}
-	if err := store.StoreLoadProfile(ctx, executionID, false, entries); err != nil {
-		t.Fatalf("StoreLoadProfile: %v", err)
 	}
 	jobID, err := setup.Trigger(ctx, executionID)
 	if err != nil {

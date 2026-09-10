@@ -208,19 +208,26 @@ func scenarioFingerprint(t *testing.T, e *phase7Env, scenarioID int64) string {
 	return fp
 }
 
-// createCalibration configures a CalibrateEngine execution via the HTTP API
-// and binds it to scenarioID the ordinary way (PUT .../config) --
-// calibrationapp.Create deliberately never binds a scenario itself (its own
-// doc comment) -- then returns the execution id. extra supplies any of the
-// optional bound overrides (seed_qps, max_qps, max_steps, hold_seconds).
-// The uploaded config's own concurrency/engines/duration/throughput are
-// irrelevant beyond passing validation: RunStep rewrites them every step,
-// preserving only the scenario id this binds.
+// createCalibration configures a CalibrateEngine execution via the HTTP
+// API, bound at creation to scenarioID: it first creates an ordinary
+// source execution running the scenario (PUT .../config), then names both
+// ids on the create call, whose own binding copies that entry (phase 41).
+// Returns the execution id. extra supplies any of the optional bound
+// overrides (seed_qps, max_qps, max_steps, hold_seconds). The copied
+// entry's own concurrency/engines/duration/throughput are irrelevant
+// beyond passing validation: RunStep rewrites them every step, preserving
+// only the scenario id this binds.
 func createCalibration(t *testing.T, e *phase7Env, projectID, scenarioID int64, criterion, cpu, memory string, extra url.Values) int64 {
 	t.Helper()
+	sourceID := postForm(t, e.client, e.srvURL+"/api/executions", url.Values{"name": {"peak"}, "project_id": {itoa(projectID)}})
+	sourceConfig := fmt.Sprintf("multi-test:\n  collectionid: %d\n  tests:\n    - testid: %d\n      concurrency: 1\n      rampup: 1\n      engines: 1\n      duration: 5\n",
+		sourceID, scenarioID)
+	putMultipart(t, e.client, e.srvURL+"/api/executions/"+itoa(sourceID)+"/config", "config.yaml", sourceConfig)
+
 	form := url.Values{
 		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
 		"criterion": {criterion}, "cpu": {cpu}, "memory": {memory},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
 	}
 	for k, v := range extra {
 		form[k] = v
@@ -237,14 +244,6 @@ func createCalibration(t *testing.T, e *phase7Env, projectID, scenarioID int64, 
 		ExecutionID int64 `json:"execution_id"`
 	}
 	decode(t, resp, &out)
-
-	// StoreExecutionConfig replaces load profile and criteria together,
-	// atomically -- an uploaded config with no criteria: block would wipe
-	// out the criterion Create just set, so it must be echoed back here.
-	config := fmt.Sprintf("multi-test:\n  collectionid: %d\n  criteria:\n    - %q\n  tests:\n    - testid: %d\n      concurrency: 1\n      rampup: 1\n      engines: 1\n      duration: 5\n",
-		out.ExecutionID, criterion, scenarioID)
-	putMultipart(t, e.client, e.srvURL+"/api/executions/"+itoa(out.ExecutionID)+"/config", "config.yaml", config)
-
 	return out.ExecutionID
 }
 

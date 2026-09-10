@@ -77,6 +77,7 @@ var badRequestErrors = []error{
 	calibration.ErrCriterionRequired, calibration.ErrPodSizeRequired, calibration.ErrSeedQPSInvalid,
 	calibration.ErrMaxQPSInvalid, calibration.ErrMaxStepsInvalid, calibration.ErrHoldInvalid,
 	calibrationapp.ErrExecutionNotCalibration, calibrationapp.ErrEngineRequired,
+	calibrationapp.ErrSourceScenarioNotBound,
 	// Cluster registration input: a malformed entry or a non-self-contained
 	// BYOC kubeconfig is the caller's, not a server fault.
 	clusterregistry.ErrNameRequired, clusterregistry.ErrOriginUnknown,

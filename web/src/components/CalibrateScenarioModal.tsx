@@ -3,9 +3,11 @@
 // create the calibrate_engine execution it needs -- POST /api/calibrations
 // had zero frontend consumers. Per scenario row on the execution page it
 // collects a search spec (pod size, target-health criterion, optional
-// bounds) and mints a fresh CalibrateEngine execution; the parent then
-// navigates to it. Modal chrome follows ShareRunModal's overlay/tap-away/
-// Escape conventions (the SPA still has no generic Modal).
+// bounds) and mints a fresh CalibrateEngine execution bound to that
+// scenario (phase 41: the POST carries scenario_id + source_execution_id,
+// so the created execution is runnable the moment it exists); the parent
+// then navigates to it. Modal chrome follows ShareRunModal's overlay/
+// tap-away/Escape conventions (the SPA still has no generic Modal).
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import Button from './ui/Button';
@@ -45,6 +47,10 @@ export interface CalibrateScenarioModalProps {
   /** Display name for that scenario (the page derives it from the config). */
   scenarioName: string;
   projectId: number;
+  /** The execution the dialog was launched from -- the source whose
+   * load-profile entry for scenarioId the backend copies as the
+   * calibration's starting entry (phase 41's binding). */
+  sourceExecutionId: number;
   /** The execution's engine -- a calibration must name one (the backend
    * rejects an engineless creation), so the page only offers the action on
    * engine'd executions. */
@@ -59,6 +65,7 @@ export default function CalibrateScenarioModal({
   scenarioId,
   scenarioName,
   projectId,
+  sourceExecutionId,
   engine,
   onClose,
   onCreated,
@@ -117,6 +124,8 @@ export default function CalibrateScenarioModal({
     setError(null);
     createCalibration({
       projectId,
+      scenarioId,
+      sourceExecutionId,
       // Auto-generated per the phase 39 spec: "calibrate <scenario name>
       // <timestamp>" -- unique per attempt, legible in the executions list.
       name: `calibrate ${scenarioName} ${new Date().toISOString()}`,
@@ -157,7 +166,7 @@ export default function CalibrateScenarioModal({
           <div>
             <h2 className="text-heading-md text-slate-900 dark:text-white">Calibrate scenario {scenarioId}</h2>
             <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-              Creates a fresh calibration execution ({engine} engine) that searches this scenario&apos;s per-pod
+              Creates a fresh calibration execution bound to this scenario ({engine} engine) that searches its per-pod
               capacity.
             </p>
           </div>

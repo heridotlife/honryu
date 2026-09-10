@@ -39,17 +39,33 @@ func newCalibrationRouter(t *testing.T) (h http.Handler, store *fake.Store, obj 
 	return h, store, obj
 }
 
+// seedCalibrationSource creates the ordinary execution a calibration
+// binds its scenario from: an execution running scenarioID, seeded through
+// the store (the config-upload HTTP path has its own tests).
+func seedCalibrationSource(t *testing.T, h http.Handler, store *fake.Store, projectID, scenarioID int64) int64 {
+	t.Helper()
+	sourceID := decodeID(t, postForm(t, h, "/api/executions", url.Values{"name": {"peak"}, "project_id": {itoa(projectID)}}))
+	entries := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 3, Concurrency: 40, Rampup: 15, Duration: 45, Throughput: 777}}
+	if err := store.StoreLoadProfile(context.Background(), sourceID, false, entries); err != nil {
+		t.Fatalf("StoreLoadProfile(source): %v", err)
+	}
+	return sourceID
+}
+
 // seedCalibration configures a fresh CalibrateEngine execution via the HTTP
-// API and returns its execution id, alongside a scenario id created (but
-// not bound to it -- calibrationapp.Create never binds a scenario) for the
-// capacity-profile/fanout tests.
-func seedCalibration(t *testing.T, h http.Handler) (projectID, executionID, scenarioID int64) {
+// API and returns its execution id, bound at creation to scenarioID (copied
+// from a source execution that runs it -- Create's own binding, phase 41),
+// alongside the project and scenario ids, for the job/capacity-profile/
+// fanout tests.
+func seedCalibration(t *testing.T, h http.Handler, store *fake.Store) (projectID, executionID, scenarioID int64) {
 	t.Helper()
 	projectID = decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
 	scenarioID = decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
 	rec := postForm(t, h, "/api/calibrations", url.Values{
 		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
 		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create calibration = %d (%s)", rec.Code, rec.Body.String())
@@ -74,13 +90,16 @@ func decodeExecutionID(t *testing.T, rec *httptest.ResponseRecorder) int64 {
 
 func TestCreateCalibration_AdmitsAndReturnsCreated(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
+	h, store, _ := newCalibrationRouter(t)
 	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
 
 	rec := postForm(t, h, "/api/calibrations", url.Values{
 		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
 		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
 		"seed_qps": {"5"}, "max_qps": {"500"}, "max_steps": {"10"}, "hold_seconds": {"15"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create calibration = %d (%s)", rec.Code, rec.Body.String())
@@ -113,12 +132,15 @@ func TestCreateCalibration_AdmitsAndReturnsCreated(t *testing.T) {
 
 func TestCreateCalibration_DefaultsUnsuppliedBounds(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
+	h, store, _ := newCalibrationRouter(t)
 	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
 
 	rec := postForm(t, h, "/api/calibrations", url.Values{
 		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
 		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create calibration = %d (%s)", rec.Code, rec.Body.String())
@@ -137,12 +159,15 @@ func TestCreateCalibration_DefaultsUnsuppliedBounds(t *testing.T) {
 
 func TestCreateCalibration_RejectsAnInvalidSpec(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
+	h, store, _ := newCalibrationRouter(t)
 	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
 
 	// No criterion supplied.
 	rec := postForm(t, h, "/api/calibrations", url.Values{
 		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("create calibration (no criterion) = %d, want 400 (%s)", rec.Code, rec.Body.String())
@@ -175,10 +200,91 @@ func TestCreateCalibration_RejectsInvalidProjectID(t *testing.T) {
 	}
 }
 
+func TestCreateCalibration_BindsTheScenarioAtCreation(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
+
+	rec := postForm(t, h, "/api/calibrations", url.Values{
+		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
+		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"seed_qps": {"25"}, "hold_seconds": {"10"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create calibration = %d (%s)", rec.Code, rec.Body.String())
+	}
+	executionID := decodeExecutionID(t, rec)
+
+	// The execution_scenario row the whole phase exists for: without it a
+	// triggered calibration died with run.ErrNoScenarios (execution 14).
+	entries, err := store.LoadProfileFor(context.Background(), executionID)
+	if err != nil {
+		t.Fatalf("LoadProfileFor: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("LoadProfileFor = %+v, want exactly 1 entry (the bound scenario)", entries)
+	}
+	got := entries[0]
+	if got.ScenarioID != scenarioID {
+		t.Errorf("ScenarioID = %d, want %d", got.ScenarioID, scenarioID)
+	}
+	if got.Engines != 1 || got.Throughput != 25 {
+		t.Errorf("Engines/Throughput = %d/%d, want 1/25 (one pod at the seed rate)", got.Engines, got.Throughput)
+	}
+	if got.Duration != 45 {
+		t.Errorf("Duration = %d, want max(hold 10, source 45) = 45", got.Duration)
+	}
+}
+
+func TestCreateCalibration_RequiresTheScenarioBinding(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
+
+	base := url.Values{
+		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
+		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
+	}
+	with := func(mutate func(form url.Values)) url.Values {
+		form := url.Values{}
+		for k, v := range base {
+			form[k] = v
+		}
+		mutate(form)
+		return form
+	}
+	cases := []struct {
+		name string
+		form url.Values
+	}{
+		{"missing scenario_id", with(func(form url.Values) { form.Del("scenario_id") })},
+		{"missing source_execution_id", with(func(form url.Values) { form.Del("source_execution_id") })},
+		{"non-numeric scenario_id", with(func(form url.Values) { form.Set("scenario_id", "nan") })},
+		{"non-numeric source_execution_id", with(func(form url.Values) { form.Set("source_execution_id", "nan") })},
+		// A source that runs no entry for the scenario is the service's own
+		// ErrSourceScenarioNotBound -- mapped to 400, not a 500.
+		{"source does not run the scenario", with(func(form url.Values) { form.Set("scenario_id", itoa(scenarioID+1000)) })},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if rec := postForm(t, h, "/api/calibrations", tc.form); rec.Code != http.StatusBadRequest {
+				t.Fatalf("create calibration (%s) = %d, want 400 (%s)", tc.name, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestTriggerCalibration_CreatesAJobAndReturnsIt(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, executionID, _ := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, executionID, _ := seedCalibration(t, h, store)
 
 	rec := do(t, h, http.MethodPost, "/api/executions/"+itoa(executionID)+"/calibration/trigger")
 	if rec.Code != http.StatusCreated {
@@ -221,8 +327,8 @@ func TestTriggerCalibration_InvalidExecutionID_400(t *testing.T) {
 
 func TestGetCalibrationJob_RoundTrips(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, executionID, _ := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, executionID, _ := seedCalibration(t, h, store)
 	jobID := decodeID(t, do(t, h, http.MethodPost, "/api/executions/"+itoa(executionID)+"/calibration/trigger"))
 
 	rec := do(t, h, http.MethodGet, "/api/calibrations/"+itoa(jobID))
@@ -262,7 +368,7 @@ func TestGetCalibrationJob_InvalidID_400(t *testing.T) {
 func TestGetCapacityProfile_RoundTrips(t *testing.T) {
 	t.Parallel()
 	h, store, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	ctx := context.Background()
 	key := capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"}
 	if err := store.UpsertCapacityProfile(ctx, capacityprofile.CapacityProfile{
@@ -291,8 +397,8 @@ func TestGetCapacityProfile_RoundTrips(t *testing.T) {
 
 func TestGetCapacityProfile_MissingReturnsNotFound(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	rec := do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/capacity-profile?engine=jmeter&cpu=1&memory=512Mi")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("get missing profile = %d, want 404 (%s)", rec.Code, rec.Body.String())
@@ -301,8 +407,8 @@ func TestGetCapacityProfile_MissingReturnsNotFound(t *testing.T) {
 
 func TestGetCapacityProfile_RequiresEngineCPUMemoryQueryParams(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	rec := do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/capacity-profile?engine=jmeter&cpu=1")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("get profile (missing memory param) = %d, want 400 (%s)", rec.Code, rec.Body.String())
@@ -321,7 +427,7 @@ func TestGetCapacityProfile_InvalidScenarioID_400(t *testing.T) {
 func TestFanOutCapacity_ReturnsOKForAFreshEngineLimitedProfile(t *testing.T) {
 	t.Parallel()
 	h, store, obj := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	ctx := context.Background()
 
 	// The scenario's real current fingerprint (no files/requests uploaded),
@@ -356,8 +462,8 @@ func TestFanOutCapacity_ReturnsOKForAFreshEngineLimitedProfile(t *testing.T) {
 
 func TestFanOutCapacity_NoProfileReturnsNoProfileStatus(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
 
 	rec := do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/capacity-profile/fanout?engine=jmeter&cpu=1&memory=512Mi&target_qps=120")
 	if rec.Code != http.StatusOK {
@@ -385,8 +491,8 @@ func TestFanOutCapacity_InvalidScenarioID_400(t *testing.T) {
 
 func TestFanOutCapacity_RequiresEngineCPUMemoryQueryParams(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	rec := do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/capacity-profile/fanout?engine=jmeter&target_qps=1")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("fan out (missing cpu/memory params) = %d, want 400 (%s)", rec.Code, rec.Body.String())
@@ -395,8 +501,8 @@ func TestFanOutCapacity_RequiresEngineCPUMemoryQueryParams(t *testing.T) {
 
 func TestFanOutCapacity_RejectsInvalidTargetQPS(t *testing.T) {
 	t.Parallel()
-	h, _, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
 
 	rec := do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/capacity-profile/fanout?engine=jmeter&cpu=1&memory=512Mi&target_qps=not-a-number")
 	if rec.Code != http.StatusBadRequest {
@@ -420,7 +526,7 @@ func TestGetCalibrationJob_ShowsResultOnceTerminal(t *testing.T) {
 	t.Parallel()
 	h, store, obj := newCalibrationRouter(t)
 	ctx := context.Background()
-	_, executionID, scenarioID := seedCalibration(t, h)
+	_, executionID, scenarioID := seedCalibration(t, h, store)
 	if err := store.StoreLoadProfile(ctx, executionID, false, []loadprofile.Entry{
 		{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 1},
 	}); err != nil {
@@ -469,7 +575,7 @@ func TestGetCalibrationJob_ShowsResultOnceTerminal(t *testing.T) {
 func TestFanOutCapacity_StaleWhenScenarioFingerprintMismatches(t *testing.T) {
 	t.Parallel()
 	h, store, _ := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	ctx := context.Background()
 	key := capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"}
 	if err := store.UpsertCapacityProfile(ctx, capacityprofile.CapacityProfile{
@@ -496,7 +602,7 @@ func TestFanOutCapacity_StaleWhenScenarioFingerprintMismatches(t *testing.T) {
 func TestFanOutCapacity_TargetLimitedProfileReturnsNoEngineCount(t *testing.T) {
 	t.Parallel()
 	h, store, obj := newCalibrationRouter(t)
-	_, _, scenarioID := seedCalibration(t, h)
+	_, _, scenarioID := seedCalibration(t, h, store)
 	ctx := context.Background()
 
 	fp, err := scenarioapp.NewService(store, obj).ScenarioFingerprint(ctx, scenarioID)

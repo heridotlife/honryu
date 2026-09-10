@@ -34,6 +34,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/domain/account"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
+	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
@@ -828,10 +829,25 @@ func TestRBAC_CalibrationRoutesRequireProjectAuthorization(t *testing.T) {
 	acmeProject := createProjectInTenantReturningID(t, f, "acme-web", "team-a", acme)
 	globexProject := createProjectInTenantReturningID(t, f, "globex-web", "team-b", globex)
 
+	// The source execution the acme editor's calibration binds from: a
+	// scenario and an execution running it, both under acme (Create copies
+	// that binding -- phase 41). Seeded through the store; the config
+	// upload path has its own authorization tests.
+	acmeScenario := decodeID(t, f.req(t, http.MethodPost, "/api/scenarios", "acme-editor-tok",
+		url.Values{"name": {"smoke"}, "project_id": {strconv.FormatInt(acmeProject, 10)}}))
+	acmeSource := decodeID(t, f.req(t, http.MethodPost, "/api/executions", "acme-editor-tok",
+		url.Values{"name": {"peak"}, "project_id": {strconv.FormatInt(acmeProject, 10)}}))
+	if err := f.store.StoreLoadProfile(context.Background(), acmeSource, false,
+		[]loadprofile.Entry{{ScenarioID: acmeScenario, Engines: 1, Concurrency: 1, Duration: 30}}); err != nil {
+		t.Fatalf("StoreLoadProfile(source): %v", err)
+	}
+
 	// The globex editor cannot create a calibration under an acme project.
 	form := url.Values{
 		"project_id": {strconv.FormatInt(acmeProject, 10)}, "name": {"calib"}, "engine": {"jmeter"},
 		"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id":         {strconv.FormatInt(acmeScenario, 10)},
+		"source_execution_id": {strconv.FormatInt(acmeSource, 10)},
 	}
 	rec := f.req(t, http.MethodPost, "/api/calibrations", "globex-editor-tok", form)
 	if rec.Code != http.StatusForbidden {
