@@ -158,6 +158,7 @@ describe('Executions webhooks card mount (phase 40)', () => {
     const executionsSource = (await import('./Executions.tsx?raw')).default;
     expect(executionsSource).toContain("can('project', 'update')");
     expect(executionsSource).toContain('<WebhooksCard');
+    expect(executionsSource).toContain('<DigestCard');
   });
 
   it('renders the registry when a project is selected', async () => {
