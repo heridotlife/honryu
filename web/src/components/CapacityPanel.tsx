@@ -53,8 +53,15 @@ export function fanOutCopy(status: FanOutStatus): { title: string; detail: strin
     case 'inconclusive':
       return {
         title: 'Inconclusive',
-        detail: 'The search hit its budget with both ends still healthy.',
+        detail: 'The search exhausted its budget with neither the engine nor the target saturated.',
         cta: 'Raise max QPS or steps and recalibrate.',
+      };
+    case 'engine_floor':
+      return {
+        title: 'Engine saturates below measurable load',
+        detail:
+          'Every search step saturated, even at the lowest rate — this scenario is too light for a single pod to reach steady measurable throughput, or the criterion is too strict.',
+        cta: 'Loosen the criterion or check the scenario, then recalibrate.',
       };
   }
 }
