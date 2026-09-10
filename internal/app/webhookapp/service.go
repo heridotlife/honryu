@@ -271,6 +271,39 @@ func (s *Service) Deliver(ctx context.Context, rep report.Report, hooks []webhoo
 	return firstErr
 }
 
+// DeliverEvent synchronously POSTs an already-serialised event payload to
+// each of the project's enabled webhooks. Deliver's generic sibling: the
+// same signing, bounds, and HTTP client as a run.completed delivery, for
+// events another use-case mints whole (phase 42: report.digest, whose
+// payload is the digest use-case's to build and store verbatim). The
+// caller's bytes are posted as-is -- the signature covers exactly what was
+// stored, so a receiver can cross-check a digest row against its delivery.
+//
+// Every enabled webhook is attempted however earlier ones answer; the
+// first failure is returned, the rest logged, mirroring Deliver's
+// error aggregation. Synchronous on purpose: the callers are background
+// loops (the digest scheduler), not request paths, so wanting the outcome
+// is free.
+func (s *Service) DeliverEvent(ctx context.Context, projectID int64, event string, body []byte) error {
+	hooks, err := s.repo.ListWebhooksByProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, w := range hooks {
+		if !w.Enabled {
+			continue
+		}
+		if err := s.deliverOne(ctx, w, body); err != nil {
+			s.log.Warn("webhook: event delivery failed", "event", event, "webhook_id", w.ID, "url", redact(w.URL), "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // deliverOne POSTs body to the webhook with bounded retries: up to
 // deliverAttempts tries, each bounded by the delivery timeout, backoff
 // between tries. Any 2xx is a success; anything else (non-2xx, timeout,

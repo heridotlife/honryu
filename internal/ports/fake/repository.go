@@ -125,6 +125,7 @@ type Store struct {
 	*ReportStore
 	*ShareStore
 	*WebhookStore
+	*DigestStore
 }
 
 // NewStore returns an empty in-memory Store.
@@ -164,6 +165,7 @@ func NewStore() *Store {
 		ReportStore:          NewReportStore(),
 		ShareStore:           NewShareStore(),
 		WebhookStore:         NewWebhookStore(),
+		DigestStore:          NewDigestStore(),
 	}
 }
 
@@ -209,6 +211,7 @@ var (
 	_ ports.ReportStore               = (*Store)(nil)
 	_ ports.ShareStore                = (*Store)(nil)
 	_ ports.WebhookStore              = (*Store)(nil)
+	_ ports.ReportDigestStore         = (*Store)(nil)
 	_ ports.ReservationRepository     = (*Store)(nil)
 	_ ports.CampaignRepository        = (*Store)(nil)
 	_ ports.CalibrationJobRepository  = (*Store)(nil)
