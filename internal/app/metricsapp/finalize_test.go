@@ -549,3 +549,97 @@ func TestFinalize_NoAnnouncementWhenSaveReportFails(t *testing.T) {
 		t.Errorf("notifier saw %d calls, want none (nothing was saved)", len(rec.calls))
 	}
 }
+
+// A run that completes naturally must close its own run marker. Before it
+// did, teardown was the only StopRun caller: a run that finished on its own
+// kept an open execution_run row forever (phase 43's wedge -- six executions
+// stuck PhaseRunning, every later Trigger 409ing on the corpse marker),
+// because the abandoned-run sweep skips runs that already have reports.
+func TestIngest_NaturalCompletionClosesTheRunMarker(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	ctx := context.Background()
+
+	if err := e.svc.Ingest(ctx, finalBatch(e, 0, 0)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	if _, running, _ := e.store.CurrentRun(ctx, e.executionID); running {
+		t.Fatal("natural completion left the run marker open")
+	}
+	// Closed means end_time stamped too, not just the pointer row gone: the
+	// history row is the run's permanent record of how long it stood.
+	hist, err := e.store.RunHistory(ctx, e.runID)
+	if err != nil {
+		t.Fatalf("RunHistory: %v", err)
+	}
+	if hist.EndTime == nil {
+		t.Error("natural completion left the run's history end_time unstamped")
+	}
+}
+
+// Teardown calls Finalize and then StopRun itself, and the abandoned-run
+// sweep does the same -- so after finalize closes the marker, a second
+// StopRun must be a quiet no-op, not an error. StopRun's own not-found guard
+// (CurrentRun returns ok=false once the marker is gone) is what makes the
+// double close safe; this pins it.
+func TestFinalize_DoubleCloseIsSafe(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	ctx := context.Background()
+
+	if err := e.svc.Ingest(ctx, finalBatch(e, 0, 0)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	// The lifecycle side of the race: teardown's Finalize arrives after
+	// natural completion already closed the marker.
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize after natural completion: %v", err)
+	}
+	// ...and then teardown/sweep calls StopRun on its own, over a marker
+	// finalize already closed.
+	if err := e.store.StopRun(ctx, e.executionID); err != nil {
+		t.Fatalf("StopRun after finalize closed the marker: %v", err)
+	}
+	if _, running, _ := e.store.CurrentRun(ctx, e.executionID); running {
+		t.Fatal("marker reopened by the double close")
+	}
+}
+
+// The marker can rotate while a finalize is in flight: teardown finalizes
+// run A while a redeploy has already stopped A and started run B. StopRun
+// deletes by execution id, so closing blindly would take B's marker down
+// with it and wedge B the same way A was wedged. The closer compares the
+// current run id first and leaves a marker that is not the finalized run's.
+func TestFinalize_DoesNotCloseANewerRunsMarker(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	ctx := context.Background()
+
+	// The marker rotated past setup()'s run: it was stopped and a new run
+	// started, the state a redeploy-during-finalize leaves behind.
+	oldRun := e.runID
+	if err := e.store.StopRun(ctx, e.executionID); err != nil {
+		t.Fatalf("StopRun(setup's run): %v", err)
+	}
+	newRun, err := e.store.StartRun(ctx, e.executionID, "")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// The stale finalize for the old run still completes -- its report is
+	// real and must be written -- but must not touch the new run's marker.
+	if err := e.svc.Finalize(ctx, e.executionID, oldRun); err != nil {
+		t.Fatalf("Finalize(stale run): %v", err)
+	}
+	if _, err := e.reports.GetReport(ctx, oldRun); err != nil {
+		t.Fatalf("stale run's report: %v", err)
+	}
+	current, running, _ := e.store.CurrentRun(ctx, e.executionID)
+	if !running || current != newRun {
+		t.Fatalf("current run = %d, %v; want run %d still open (a newer run's marker is not finalize's to close)", current, running, newRun)
+	}
+	if hist, _ := e.store.RunHistory(ctx, newRun); hist.EndTime != nil {
+		t.Error("stale finalize stamped end_time on the new run's history")
+	}
+}

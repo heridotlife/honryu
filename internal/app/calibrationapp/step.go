@@ -199,7 +199,12 @@ func (r *StepRunner) RunStep(ctx context.Context, executionID int64, requestedQP
 
 	rpt, reportErr := r.awaitReport(ctx, runID)
 
-	if err := r.lifecycle.Stop(ctx, executionID); err != nil {
+	// Since phase43, the run marker closes the moment the report settles
+	// (metricsapp.finalize), so awaitReport returning may mean the run is
+	// already closed. Stop is still attempted -- engines need teardown and
+	// the not-yet-settled path still depends on it -- but ErrNotRunning is
+	// exactly natural completion having beaten us to it.
+	if err := r.lifecycle.Stop(ctx, executionID); err != nil && !errors.Is(err, run.ErrNotRunning) {
 		return report.Report{}, err
 	}
 	if reportErr != nil {
