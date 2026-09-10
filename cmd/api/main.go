@@ -201,6 +201,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		IngestTokens:     repo,
 		ExecutionCluster: repo,
 		Admin:            admin,
+		Webhooks:         webhooks,
 		Events:           bus,
 		Store:            store,
 		Auth:             authapp.NewService(authProvider, repo, cfg.Auth.EnableRBAC),

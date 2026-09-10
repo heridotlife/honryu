@@ -108,6 +108,16 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/projects/{project_id}", decision: "project:read"},
 	{method: "DELETE", pattern: "/api/projects/{project_id}", decision: "project:delete"},
 
+	// Phase 40: webhook administration is project-scoped, gated by the
+	// project resource's own actions (the schedule routes' precedent) --
+	// read to list, create/delete/update to mutate the registry.
+	{method: "POST", pattern: "/api/projects/{project_id}/webhooks", decision: "project:create",
+		form: url.Values{"url": {"https://example.com/hook"}}},
+	{method: "GET", pattern: "/api/projects/{project_id}/webhooks", decision: "project:read"},
+	{method: "DELETE", pattern: "/api/projects/{project_id}/webhooks/{webhook_id}", decision: "project:delete"},
+	{method: "PUT", pattern: "/api/projects/{project_id}/webhooks/{webhook_id}/enabled", decision: "project:update",
+		form: url.Values{"enabled": {"false"}}},
+
 	{method: "POST", pattern: "/api/scenarios", decision: "scenario:create",
 		form: url.Values{"name": {"s"}, "project_id": {"{project_id}"}}},
 	{method: "POST", pattern: "/api/scenarios/import", decision: "scenario:create",
@@ -229,6 +239,7 @@ type auditSeed struct {
 	tenant1, tenant2, tenant3                        int64
 	projectID, scenarioID, executionID, scheduleID   int64
 	runID, campaignID, calibrationExecutionID, jobID int64
+	webhookID                                        int64
 	// shareToken is a live share link for runID (phase 34): the public
 	// report fetch's probe resolves it.
 	shareToken string
@@ -248,6 +259,12 @@ func seedAuditFixture(t *testing.T, f *rbacFixture) auditSeed {
 		url.Values{"name": {"smoke"}, "project_id": {strconv.FormatInt(s.projectID, 10)}}))
 	s.executionID = decodeID(t, f.req(t, http.MethodPost, "/api/executions", "admin-tok",
 		url.Values{"name": {"peak"}, "project_id": {strconv.FormatInt(s.projectID, 10)}}))
+
+	// A registered webhook under the seeded project (phase 40): the
+	// webhook-keyed probes' path id.
+	s.webhookID = decodeID(t, f.req(t, http.MethodPost,
+		"/api/projects/"+strconv.FormatInt(s.projectID, 10)+"/webhooks", "admin-tok",
+		url.Values{"url": {"https://example.com/hook"}}))
 
 	// The load profile a schedule create reads to reserve quota.
 	configYAML := "multi-test:\n  collectionid: " + strconv.FormatInt(s.executionID, 10) +
@@ -321,6 +338,7 @@ func (s auditSeed) path(pattern string) string {
 		"{run_id}", strconv.FormatInt(s.runID, 10),
 		"{campaign_id}", strconv.FormatInt(s.campaignID, 10),
 		"{job_id}", strconv.FormatInt(s.jobID, 10),
+		"{webhook_id}", strconv.FormatInt(s.webhookID, 10),
 		"{shard}", "0",
 		"{name}", "home",
 		"{kind}", "scenario",

@@ -29,6 +29,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/schedule"
 	"github.com/heridotlife/honryu/internal/domain/tenant"
+	"github.com/heridotlife/honryu/internal/domain/webhook"
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
@@ -82,6 +83,10 @@ var badRequestErrors = []error{
 	clusterregistry.ErrSecretRefRequired, clusterregistry.ErrNamespaceRequired,
 	clusterregistry.ErrIngestURLRequired, clusterregistry.ErrSidecarImageRequired,
 	clusterapp.ErrKubeconfigInvalid,
+	// Webhook registration input (phase 40): a non-https, over-long, or
+	// secret-over-long registration is the caller's endpoint to fix.
+	webhook.ErrProjectRequired, webhook.ErrURLRequired, webhook.ErrURLNotHTTPS,
+	webhook.ErrURLTooLong, webhook.ErrSecretTooLong,
 }
 
 // conflictErrors are state conflicts → HTTP 409.

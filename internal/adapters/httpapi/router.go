@@ -27,6 +27,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
+	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/ports"
@@ -97,6 +98,10 @@ type Deps struct {
 	// Clusters administers the cluster registry (platform-admin gated).
 	// Optional; nil disables the /api/clusters endpoints.
 	Clusters ClusterService
+	// Webhooks administers the run-completion webhook registry per project
+	// (phase 40's HTTP surface). Optional; nil disables the
+	// /api/projects/{project_id}/webhooks endpoints (404).
+	Webhooks *webhookapp.Service
 	// Audit records administrative actions. Optional; nil disables auditing.
 	Audit ports.AuditLog
 	// DefaultOwners is the owner set used when RBAC is disabled (no-auth mode).
@@ -194,6 +199,14 @@ var routes = []Route{
 	{"POST", "/api/projects", "projects", hf(func(h *handlers) http.HandlerFunc { return h.createProject })},
 	{"GET", "/api/projects/{project_id}", "projects", hf(func(h *handlers) http.HandlerFunc { return h.getProject })},
 	{"DELETE", "/api/projects/{project_id}", "projects", hf(func(h *handlers) http.HandlerFunc { return h.deleteProject })},
+
+	// Phase 40: the run-completion webhook registry, project-scoped like
+	// every other project surface. Delivery itself is phase 38's
+	// background fan-out; these routes only administer the endpoints.
+	{"POST", "/api/projects/{project_id}/webhooks", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.createWebhook })},
+	{"GET", "/api/projects/{project_id}/webhooks", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.listWebhooks })},
+	{"DELETE", "/api/projects/{project_id}/webhooks/{webhook_id}", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.deleteWebhook })},
+	{"PUT", "/api/projects/{project_id}/webhooks/{webhook_id}/enabled", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.setWebhookEnabled })},
 
 	{"POST", "/api/scenarios", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.createScenario })},
 	{"POST", "/api/scenarios/import", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.importScenario })},
