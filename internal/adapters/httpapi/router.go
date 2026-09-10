@@ -18,6 +18,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/authapp"
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/campaignapp"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/metricsapp"
@@ -98,6 +99,10 @@ type Deps struct {
 	// Clusters administers the cluster registry (platform-admin gated).
 	// Optional; nil disables the /api/clusters endpoints.
 	Clusters ClusterService
+	// Digests builds, stores, and schedules per-project report digests,
+	// delivered through the webhook machinery. Optional; nil disables the
+	// /api/projects/{project_id}/digest[s] endpoints (404).
+	Digests *digestapp.Service
 	// Webhooks administers the run-completion webhook registry per project
 	// (phase 40's HTTP surface). Optional; nil disables the
 	// /api/projects/{project_id}/webhooks endpoints (404).
@@ -207,6 +212,13 @@ var routes = []Route{
 	{"GET", "/api/projects/{project_id}/webhooks", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.listWebhooks })},
 	{"DELETE", "/api/projects/{project_id}/webhooks/{webhook_id}", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.deleteWebhook })},
 	{"PUT", "/api/projects/{project_id}/webhooks/{webhook_id}/enabled", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.setWebhookEnabled })},
+
+	// Phase 42: per-project periodic report digests -- configure the
+	// firing schedule and read the stored digest feed.
+	{"PUT", "/api/projects/{project_id}/digest", "digests", hf(func(h *handlers) http.HandlerFunc { return h.setDigestConfig })},
+	{"GET", "/api/projects/{project_id}/digest", "digests", hf(func(h *handlers) http.HandlerFunc { return h.getDigestConfig })},
+	{"DELETE", "/api/projects/{project_id}/digest", "digests", hf(func(h *handlers) http.HandlerFunc { return h.deleteDigestConfig })},
+	{"GET", "/api/projects/{project_id}/digests", "digests", hf(func(h *handlers) http.HandlerFunc { return h.listDigests })},
 
 	{"POST", "/api/scenarios", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.createScenario })},
 	{"POST", "/api/scenarios/import", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.importScenario })},

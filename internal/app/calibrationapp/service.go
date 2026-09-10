@@ -147,6 +147,12 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64, engi
 	if err := spec.Validate(); err != nil {
 		return 0, err
 	}
+	// The criterion reaches Taurus's passfail module verbatim; prose here
+	// is a run-time Config Error later (phase 42's hotfix). Rejected before
+	// anything is written, naming the offending expression.
+	if err := calibration.ValidateCriterion(spec.Criterion); err != nil {
+		return 0, err
+	}
 
 	bound, err := s.boundEntry(ctx, sourceExecutionID, scenarioID, spec)
 	if err != nil {
@@ -181,8 +187,12 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64, engi
 	// atomicity an ordinary config upload gets -- so a calibration can
 	// never exist with a criterion but no scenario to run (the dead shell
 	// this binding exists to close). CSVSplit is always false: a
-	// single-engine search never splits data across engines.
-	if err := s.repo.StoreExecutionConfig(ctx, executionID, false, []loadprofile.Entry{bound}, []string{spec.Criterion}); err != nil {
+	// single-engine search never splits data across engines. The criterion
+	// splits into its expressions first: one stored entry per expression is
+	// what compile turns into one passfail entry each -- storing the joined
+	// field as one entry would hand Taurus exactly the unparseable string
+	// the validation above exists to keep out.
+	if err := s.repo.StoreExecutionConfig(ctx, executionID, false, []loadprofile.Entry{bound}, calibration.SplitCriterion(spec.Criterion)); err != nil {
 		return 0, err
 	}
 	bounds := ports.CalibrationBounds{SeedQPS: spec.SeedQPS, MaxQPS: spec.MaxQPS, MaxSteps: spec.MaxSteps, HoldSeconds: spec.HoldSeconds}
@@ -237,10 +247,10 @@ func (s *Service) SpecFor(ctx context.Context, executionID int64) (calibration.S
 	if err != nil {
 		return calibration.Spec{}, err
 	}
-	var criterion string
-	if len(criteria) > 0 {
-		criterion = criteria[0]
-	}
+	// The stored list joins back into the one field it was created from:
+	// a single-expression criterion round-trips unchanged, and a
+	// multi-expression one comes back as the same comma-separated list.
+	criterion := strings.Join(criteria, ", ")
 	return calibration.Spec{
 		Criterion: criterion, CPU: exe.CPU, Memory: exe.Memory,
 		SeedQPS: bounds.SeedQPS, MaxQPS: bounds.MaxQPS, MaxSteps: bounds.MaxSteps, HoldSeconds: bounds.HoldSeconds,
@@ -394,7 +404,7 @@ func (s *Service) runClassifiedStep(ctx context.Context, executionID int64, requ
 	switch {
 	case rpt.ShortOfRequest() || rpt.EngineImpaired():
 		class = calibration.ClassificationEngineSaturated
-	case len(rpt.EvaluateCriteria([]string{spec.Criterion})) > 0:
+	case len(rpt.EvaluateCriteria(calibration.SplitCriterion(spec.Criterion))) > 0:
 		class = calibration.ClassificationTargetSaturated
 	}
 	step := calibration.Step{RequestedQPS: requestedQPS, AchievedQPS: rpt.Achieved.Throughput, Classification: class}

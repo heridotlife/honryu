@@ -167,6 +167,15 @@ func (h *handlers) createCalibration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid source_execution_id")
 		return
 	}
+	// The binding copies the source execution's own load-profile entry, so
+	// creating from it is reading it: without this check a caller with
+	// create rights in one project could clone any execution's scenario
+	// just by naming its id (phase 42's hotfix -- the target-project
+	// create check above is not the source's to satisfy).
+	if err := h.authorizeExecution(r, sourceExecutionID, rbac.ActionRead); err != nil {
+		respondError(w, err)
+		return
+	}
 	executionID, err := h.deps.Calibrations.Create(r.Context(), name, projectID, engine, spec, sourceExecutionID, scenarioID)
 	if err != nil {
 		respondError(w, err)

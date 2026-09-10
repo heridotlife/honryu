@@ -5,6 +5,7 @@ import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { useProjectSelection } from '../components/ProjectSwitcher';
+import DigestCard from '../components/DigestCard';
 import WebhooksCard from '../components/WebhooksCard';
 import { useSession } from '../hooks/useSession';
 
@@ -151,7 +152,15 @@ export default function Executions() {
           only exists once a project is selected and only for callers who may
           update the project (the same grant the backend's webhook routes
           demand). */}
-      {selectedId !== '' && can('project', 'update') && <WebhooksCard projectId={Number(selectedId)} />}
+      {selectedId !== '' && can('project', 'update') && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <WebhooksCard projectId={Number(selectedId)} />
+          {/* Phase 42: the same gate -- administering what a project
+              broadcasts (its digest schedule) is a project update, and the
+              card delivers through the webhook registry beside it. */}
+          <DigestCard projectId={Number(selectedId)} />
+        </div>
+      )}
       {executions === null ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : executions.length === 0 ? (
