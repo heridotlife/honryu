@@ -1928,17 +1928,17 @@ paths:
       tags: [calibration]
       summary: Configure a new CalibrateEngine execution
       description: |
-        An ordinary execution pinned to one pod size, with its target-health
-        criterion and search bounds recorded up front. Its scenario is bound
-        afterward the ordinary way (PUT .../config, unchanged by
-        calibration), and its search begins with a separate trigger call.
+        An ordinary execution pinned to one pod size, bound to one scenario
+        copied from a source execution that already runs it, with its
+        target-health criterion and search bounds recorded up front. Its
+        search begins with a separate trigger call.
       requestBody:
         required: true
         content:
           application/x-www-form-urlencoded:
             schema:
               type: object
-              required: [project_id, name, engine, criterion, cpu, memory]
+              required: [project_id, name, engine, criterion, cpu, memory, scenario_id, source_execution_id]
               properties:
                 project_id: { type: integer, format: int64 }
                 name: { type: string }
@@ -1946,6 +1946,8 @@ paths:
                 criterion: { type: string }
                 cpu: { type: string }
                 memory: { type: string }
+                scenario_id: { type: integer, format: int64, description: The measured scenario; must run on the source execution. }
+                source_execution_id: { type: integer, format: int64, description: Execution whose load-profile entry for the scenario is copied. }
                 seed_qps: { type: number, format: double, description: Defaulted when omitted. }
                 max_qps: { type: number, format: double, description: Defaulted when omitted. }
                 max_steps: { type: integer, description: Defaulted when omitted. }
