@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
@@ -29,6 +30,7 @@ func newFullRouter(t *testing.T) http.Handler {
 		Scenarios:     scenarioapp.NewService(store, obj),
 		Executions:    executionapp.NewService(store, obj, 100),
 		Webhooks:      webhookapp.NewService(store),
+		Digests:       digestapp.NewService(store),
 		Store:         obj,
 		DefaultOwners: []string{"honryu"},
 	})

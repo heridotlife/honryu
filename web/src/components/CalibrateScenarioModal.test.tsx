@@ -95,7 +95,7 @@ describe('CalibrateScenarioModal', () => {
     expect(input('calibrate-target-qps').value).toBe('');
     expect(input('calibrate-cpu').value).toBe('500m');
     expect(input('calibrate-memory').value).toBe('512Mi');
-    expect(input('calibrate-criterion').value).toBe('failures>10%');
+    expect(input('calibrate-criterion').value).toBe('failures>10%, p95>500ms');
     expect(input('calibrate-seed-qps').value).toBe('');
     expect(container!.textContent).toContain('Calibrate scenario 7');
   });
@@ -121,7 +121,7 @@ describe('CalibrateScenarioModal', () => {
     // The spec's fixed fields...
     expect(form.get('project_id')).toBe('3');
     expect(form.get('engine')).toBe('jmeter');
-    expect(form.get('criterion')).toBe('failures>10%');
+    expect(form.get('criterion')).toBe('failures>10%, p95>500ms');
     expect(form.get('cpu')).toBe('500m');
     expect(form.get('memory')).toBe('512Mi');
     // ...the phase 41 scenario binding: the scenario this row names and
@@ -170,5 +170,59 @@ describe('CalibrateScenarioModal', () => {
     expect(posts).toHaveLength(1);
     expect(created).not.toHaveBeenCalled();
     expect(container!.textContent).toContain('pod CPU and memory are required');
+  });
+});
+
+// Phase 42's hotfix: the criterion is validated client-side against the
+// Taurus expression grammar -- the prose that used to pass through here
+// was rejected by bzt only at run time ("Unsupported fail criteria
+// subject: error_rate"), after the execution existed.
+describe('CalibrateScenarioModal criterion validation (phase 42)', () => {
+  it('rejects prose criteria with a visible error and no POST', async () => {
+    stubCreate();
+    await renderModal();
+    await fill('calibrate-target-qps', '500');
+    await fill('calibrate-criterion', 'error_rate < 0.01 AND p95 < 500ms');
+    await clickSubmit();
+
+    expect(posts).toHaveLength(0);
+    expect(created).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain('is not a Taurus expression');
+    // The message names the offending input so the operator knows what to fix.
+    expect(container!.textContent).toContain('error_rate < 0.01 AND p95 < 500ms');
+  });
+
+  it('rejects an empty criterion with the stated grammar', async () => {
+    stubCreate();
+    await renderModal();
+    await fill('calibrate-target-qps', '500');
+    await fill('calibrate-criterion', ' , ');
+    await clickSubmit();
+
+    expect(posts).toHaveLength(0);
+    expect(container!.textContent).toContain('Criterion is required');
+  });
+
+  it('names only the invalid expression in a mixed list', async () => {
+    stubCreate();
+    await renderModal();
+    await fill('calibrate-target-qps', '500');
+    await fill('calibrate-criterion', 'failures>10%, latency>500ms');
+    await clickSubmit();
+
+    expect(posts).toHaveLength(0);
+    expect(container!.textContent).toContain('"latency>500ms" is not a Taurus expression');
+  });
+
+  it("accepts the default and posts the field unchanged", async () => {
+    stubCreate();
+    await renderModal();
+    await fill('calibrate-target-qps', '500');
+    await clickSubmit();
+
+    expect(posts).toHaveLength(1);
+    const form = new URLSearchParams(posts[0].body);
+    expect(form.get('criterion')).toBe('failures>10%, p95>500ms');
+    expect(created).toHaveBeenCalledWith(42);
   });
 });

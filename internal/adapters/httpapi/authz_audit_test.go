@@ -118,6 +118,15 @@ var authzAuditTable = []authzEntry{
 	{method: "PUT", pattern: "/api/projects/{project_id}/webhooks/{webhook_id}/enabled", decision: "project:update",
 		form: url.Values{"enabled": {"false"}}},
 
+	// Phase 42: digest schedule administration follows the webhook
+	// routes' own split -- update to change what the project broadcasts,
+	// read for the configuration and the stored feed.
+	{method: "PUT", pattern: "/api/projects/{project_id}/digest", decision: "project:update",
+		form: url.Values{"period": {"daily"}}},
+	{method: "GET", pattern: "/api/projects/{project_id}/digest", decision: "project:read"},
+	{method: "DELETE", pattern: "/api/projects/{project_id}/digest", decision: "project:update"},
+	{method: "GET", pattern: "/api/projects/{project_id}/digests", decision: "project:read"},
+
 	{method: "POST", pattern: "/api/scenarios", decision: "scenario:create",
 		form: url.Values{"name": {"s"}, "project_id": {"{project_id}"}}},
 	{method: "POST", pattern: "/api/scenarios/import", decision: "scenario:create",

@@ -23,6 +23,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/authapp"
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/campaignapp"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
@@ -102,6 +103,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		Campaigns:    campaigns,
 		Calibrations: calibrations,
 		Webhooks:     webhookapp.NewService(store),
+		Digests:      digestapp.NewService(store),
 		Store:        obj,
 		Reports:      reports,
 		Shares:       shares,

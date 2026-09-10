@@ -6,8 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/heridotlife/honryu/internal/domain/account"
+	"github.com/heridotlife/honryu/internal/domain/rbac"
 
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
@@ -646,5 +651,92 @@ func TestCalibrationHandlers_CalibrationsNotConfigured(t *testing.T) {
 		if rec := do(t, h, tc.method, tc.path); rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s (not configured) = %d, want 404 (%s)", tc.method, tc.path, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestCreateCalibration_RejectsProseCriterion (phase 42's hotfix): the
+// criterion grammar is enforced server-side too, with the offending
+// expression named in the 400 -- the client-side check is convenience, this
+// is the gate.
+func TestCreateCalibration_RejectsProseCriterion(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"crit"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"target"}, "project_id": {itoa(projectID)}}))
+	sourceID := seedCalibrationSource(t, h, store, projectID, scenarioID)
+
+	rec := postForm(t, h, "/api/calibrations", url.Values{
+		"project_id": {itoa(projectID)}, "name": {"calib"}, "engine": {"jmeter"},
+		// The prose found live in phase 39: bzt rejects the subject at run
+		// time; the API must reject it at create time.
+		"criterion": {"error_rate < 0.01 AND p95 < 500ms"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {itoa(scenarioID)}, "source_execution_id": {itoa(sourceID)},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create calibration = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+	// JSON escaping mangles the angle brackets, so assert on the stable
+	// words: the reason plus the offending expression's subject.
+	body := rec.Body.String()
+	if !strings.Contains(body, "unsupported expression") || !strings.Contains(body, "error_rate") {
+		t.Errorf("400 body = %s, want the offending expression named", body)
+	}
+}
+
+// TestCreateCalibration_SourceExecutionMustBeReadable (phase 42's hotfix):
+// the binding copies the source execution's own load-profile entry, so a
+// caller who may create in the target project but not read the source must
+// be refused -- otherwise create rights in one project clone any
+// execution's scenario just by naming its id.
+func TestCreateCalibration_SourceExecutionMustBeReadable(t *testing.T) {
+	t.Parallel()
+	f := newRBACFixture(t)
+
+	// Two tenants: the caller may create executions in acme's project but
+	// holds no role in globex, whose execution they name as the source.
+	acme := createTenant(t, f, "acme-src", "Acme")
+	globex := createTenant(t, f, "globex-src", "Globex")
+	f.prov.Register("ed-tok", account.Account{Subject: "ed"})
+	assignRole(t, f, acme, "ed", rbac.RoleTenantEditor)
+
+	// Admin owns both projects and the source execution under globex.
+	acmeProj := createProjectInTenantReturningID(t, f, "acme-target", "team-a", acme)
+	globexProj := createProjectInTenantReturningID(t, f, "globex-source", "team-b", globex)
+	sourceRec := f.req(t, http.MethodPost, "/api/executions", "admin-tok",
+		url.Values{"name": {"victim"}, "project_id": {strconv.FormatInt(globexProj, 10)}})
+	if sourceRec.Code != http.StatusCreated {
+		t.Fatalf("create source execution = %d (%s)", sourceRec.Code, sourceRec.Body.String())
+	}
+	sourceID := decodeID(t, sourceRec)
+
+	// The editor may create a calibration in their own project...
+	form := url.Values{
+		"project_id": {strconv.FormatInt(acmeProj, 10)}, "name": {"calib"}, "engine": {"jmeter"},
+		"criterion": {"failures>10%, p95>500ms"}, "cpu": {"1"}, "memory": {"512Mi"},
+		"scenario_id": {"1"}, "source_execution_id": {strconv.FormatInt(sourceID, 10)},
+	}
+	// ...but not read the cross-project source they named: 403, before any
+	// binding work runs.
+	rec := f.req(t, http.MethodPost, "/api/calibrations", "ed-tok", form)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-project source = %d, want 403 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// A source in the caller's own tenant passes the read gate -- and then
+	// fails on the scenario binding (400), proving the 403 above was the
+	// authorization, not the binding, speaking.
+	ownRec := f.req(t, http.MethodPost, "/api/executions", "admin-tok",
+		url.Values{"name": {"own-source"}, "project_id": {strconv.FormatInt(acmeProj, 10)}})
+	if ownRec.Code != http.StatusCreated {
+		t.Fatalf("create own source = %d (%s)", ownRec.Code, ownRec.Body.String())
+	}
+	ownID := decodeID(t, ownRec)
+	form.Set("source_execution_id", strconv.FormatInt(ownID, 10))
+	rec = f.req(t, http.MethodPost, "/api/calibrations", "ed-tok", form)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("same-tenant source = 403; the read gate must pass (got %d: %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("same-tenant source = %d, want 400 (scenario not bound -- the business check) (%s)", rec.Code, rec.Body.String())
 	}
 }

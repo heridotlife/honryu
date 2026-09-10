@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,10 +31,12 @@ import (
 	"github.com/heridotlife/honryu/internal/adapters/storage/nexus"
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/campaignapp"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
+	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/config"
 	rundomain "github.com/heridotlife/honryu/internal/domain/run" // aliased: this package's own run() is the local name
 	"github.com/heridotlife/honryu/internal/ports"
@@ -75,6 +78,13 @@ type repository interface {
 	scenarioapp.Repo
 	calibrationapp.Repo
 	calibrationapp.RunnerRepo
+	// digestapp.Repo backs the digest loop this binary also hosts
+	// (phase 42): executions+reports for the aggregation, digest rows for
+	// the windows, and the per-project firing schedules.
+	digestapp.Repo
+	// ports.WebhookStore backs the digest loop's delivery sink
+	// (webhookapp): the registry of endpoints a report.digest is POSTed to.
+	ports.WebhookStore
 	// ports.ClusterRegistry backs the registry-backed k8s scheduler's
 	// per-cluster client factory.
 	ports.ClusterRegistry
@@ -119,6 +129,12 @@ func run(parent context.Context, getenv func(string) string) error {
 	// it's what stands in the way of admission.
 	quota.WithStopper(lifecycle)
 	schedules := scheduleapp.NewService(repo, quota)
+	// The digest loop's delivery sink: webhookapp's generic event path,
+	// same signing and bounds as a run.completed delivery. This binary
+	// never wires RunCompleted's queue (no metrics service here), so the
+	// service stays delivery-only.
+	webhooks := webhookapp.NewService(repo)
+	digests := digestapp.NewService(repo).WithDeliverer(webhooks)
 
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -127,10 +143,14 @@ func run(parent context.Context, getenv func(string) string) error {
 		"tick_interval", cfg.Scheduler.TickInterval, "horizon_interval", cfg.Scheduler.HorizonInterval, "db_driver", cfg.DB.Driver)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		runHorizonLoop(ctx, schedules, cfg.Scheduler.HorizonInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		runDigestLoop(ctx, digests, digestTickInterval)
 	}()
 	go func() {
 		defer wg.Done()
@@ -231,6 +251,65 @@ func triggerWhenReady(ctx context.Context, lifecycle *lifecycleapp.Service, exec
 		}
 		time.Sleep(poll)
 	}
+}
+
+// digestTickInterval is the digest loop's own cadence, slower than the
+// fire-due tick: a digest needs at most daily resolution, so a minute is
+// prompt without making the claim hot.
+const digestTickInterval = time.Minute
+
+// runDigestLoop claims and fires one due project digest per tick. At most
+// one per tick, like the fire-due loop, so a backlog cannot starve other
+// projects from getting their turn; a project's own next digest is at
+// least a full period away anyway.
+func runDigestLoop(ctx context.Context, digests *digestapp.Service, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fireDigestOnce(ctx, digests)
+		}
+	}
+}
+
+// fireDigestOnce claims the most overdue due digest schedule, if any, and
+// fires it. The claim stamps last_fired BEFORE the fire (the ClaimDue
+// pattern): exclusivity across replicas comes from the stamp, and a fire
+// that fails after a successful claim is logged, not retried -- that
+// window is skipped, never double-sent, the same trade a deploy failure
+// after ClaimDueOccurrence makes.
+func fireDigestOnce(ctx context.Context, digests *digestapp.Service) {
+	claim, found, err := digests.ClaimDue(ctx, time.Now())
+	if err != nil {
+		slog.Error("claim due digest", "error", err)
+		return
+	}
+	if !found {
+		return
+	}
+	log := slog.With("project_id", claim.ProjectID, "period", claim.Period)
+	d, err := digests.Fire(ctx, claim.ProjectID, claim.Period, time.Now())
+	if err != nil {
+		log.Error("fire digest", "error", err)
+		return
+	}
+	log.Info("fired report digest", "digest_id", d.ID, "runs_total", runsTotalOf(d.Payload))
+}
+
+// runsTotalOf digs the run count back out of a fired digest's payload for
+// the log line; a payload that no longer parses logs nothing rather than
+// failing the log call.
+func runsTotalOf(payload []byte) int {
+	var p struct {
+		RunsTotal int `json:"runs_total"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return 0
+	}
+	return p.RunsTotal
 }
 
 // runHorizonLoop rolls every active recurring schedule's occurrence horizon

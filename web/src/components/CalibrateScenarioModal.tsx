@@ -15,6 +15,23 @@ import Input from './ui/Input';
 import { ApiError } from '../api/client';
 import { createCalibration } from '../api/calibration';
 
+/**
+ * One Taurus pass/fail expression, in the subject set Taurus engines
+ * themselves support -- the same contract the backend's
+ * calibration.ValidateCriterion enforces (phase 42's hotfix: prose like
+ * "error_rate < 0.01 AND p95 < 500ms" used to sail through here and die at
+ * run time with bzt's "Unsupported fail criteria subject: error_rate").
+ */
+const criterionExpression = /^(failures|p95|p50|avg-rt|concurrency)\s*(>|<|>=|<=)\s*[0-9.]+(ms|s|%|)?$/;
+
+/** Splits the criterion field into expressions: comma or newline separated. */
+function splitCriterion(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map(part => part.trim())
+    .filter(part => part !== '');
+}
+
 /** Text inputs for every field: numbers stay strings until submit, so an
  * empty optional field reads as "" (not "0") and is simply not sent. */
 interface CalibrateForm {
@@ -32,9 +49,11 @@ const DEFAULT_FORM: CalibrateForm = {
   targetQps: '',
   cpu: '500m',
   memory: '512Mi',
-  // The execution_criteria string style the config card already teaches
-  // (its own placeholder); the domain's grammar example is "failures>5%".
-  criterion: 'failures>10%',
+  // Taurus expressions, comma or newline separated -- the exact grammar
+  // the backend validates (calibration.ValidateCriterion) and the config
+  // card already teaches. Prose here is a run-time Config Error from bzt,
+  // so the default teaches the valid shape (phase 42's hotfix).
+  criterion: 'failures>10%, p95>500ms',
   seedQps: '',
   maxQps: '',
   maxSteps: '',
@@ -98,6 +117,20 @@ export default function CalibrateScenarioModal({
     const target = Number(form.targetQps);
     if (form.targetQps.trim() === '' || !Number.isFinite(target) || target <= 0) {
       setError('Target QPS is required (a positive number).');
+      return;
+    }
+    // The criterion reaches Taurus's passfail module verbatim: validate
+    // here, before the POST, so the operator sees the invalid expression
+    // immediately instead of a Config Error after the first trigger. The
+    // server rejects it too -- this check is convenience, not the gate.
+    const expressions = splitCriterion(form.criterion);
+    const invalid = expressions.find(expr => !criterionExpression.test(expr));
+    if (expressions.length === 0 || invalid !== undefined) {
+      setError(
+        invalid !== undefined
+          ? `Criterion "${invalid}" is not a Taurus expression. Use e.g. failures>10%, p95>500ms (comma or newline separated).`
+          : 'Criterion is required: use Taurus expressions like failures>10%, p95>500ms.'
+      );
       return;
     }
     const optional = (v: string): number | undefined => {
@@ -205,7 +238,7 @@ export default function CalibrateScenarioModal({
             <Input
               label="Criterion"
               type="text"
-              placeholder="failures>10%"
+              placeholder="failures>10%, p95>500ms"
               data-testid="calibrate-criterion"
               value={form.criterion}
               onChange={set('criterion')}

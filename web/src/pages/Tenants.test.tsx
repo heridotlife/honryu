@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Tenants, { nextUpcoming, ownTenantIds } from './Tenants';
 import DashboardLayout from '../components/DashboardLayout';
 import { SessionProvider } from '../hooks/useSession';
@@ -240,7 +240,16 @@ async function click(el: Element) {
   });
 }
 
+beforeEach(() => {
+  // The page renders Next upcoming against the real clock; pin it so the
+  // seeded 2026-09-10 reservations stay upcoming forever (the test would
+  // otherwise expire as real time passes the seeded windows).
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-09-09T12:00:00Z"));
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   const r = root;
   if (r !== null && container !== null) {
