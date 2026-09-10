@@ -27,8 +27,8 @@ import (
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
-// Repo is the persistence the service reads to attribute a pushed batch and to
-// finalise a run's report.
+// Repo is the persistence the service reads to attribute a pushed batch,
+// finalise a run's report, and close the run's marker once it does.
 type Repo interface {
 	// GetExecution supplies a report's Engine, from the execution's own
 	// configured preference.
@@ -38,6 +38,11 @@ type Repo interface {
 	// RunHistory supplies a report's StartedAt: nothing else keeps when a run
 	// began once it is no longer the active one.
 	RunHistory(ctx context.Context, runID int64) (ports.RunRecord, error)
+	// StopRun clears the active run and stamps its history end time: the
+	// same closer teardown uses, held here so natural completion can close
+	// its own marker without lifecycleapp's involvement. Stopping an
+	// execution with no active run is not an error.
+	StopRun(ctx context.Context, executionID int64) error
 	// OrphanCompletions' recording side: a shard Final that arrives with no
 	// open run is evidence the engines already finished, and Trigger refuses
 	// to open a corpse-run against it until the next Deploy clears it.
@@ -176,7 +181,7 @@ func (s *Service) stopOutcome(ctx context.Context, runID int64) (taurus.Outcome,
 }
 
 // finalize builds a run's report from its accumulated measurements, stores it,
-// and discards the working state that produced it.
+// discards the working state that produced it, and closes the run's marker.
 //
 // Discard runs whether this call's SaveReport actually wrote the report or
 // found one already there: either way the working state this run produced is
@@ -260,7 +265,35 @@ func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcom
 	if !alreadyFinalised {
 		s.notifier.RunCompleted(ctx, exe.ProjectID, rep)
 	}
-	return s.progress.Discard(ctx, runID)
+	if err := s.progress.Discard(ctx, runID); err != nil {
+		return err
+	}
+	// Natural completion must close the run marker the same way teardown's
+	// StopRun does: this is the one shared exit every finalisation path
+	// reaches, and before it closed the marker, a run that finished on its
+	// own left an open execution_run row nothing else ever clears -- teardown
+	// never comes for a dead run, and the abandoned-run sweep skips runs that
+	// already have reports -- so the execution reads running forever and
+	// every later Trigger 409s on the corpse marker (phase 43's wedge).
+	return s.closeRun(ctx, executionID, runID)
+}
+
+// closeRun clears the execution's run marker when -- and only when -- it
+// still names the run being finalised. StopRun deletes by execution id, so
+// closing unconditionally would tear down a NEW run's marker when the
+// marker has already rotated (a redeploy raced the finalize and retriggered):
+// the comparison against CurrentRun is what keeps a stale finalize from
+// wedging the run that came after it. A marker already gone, as when
+// teardown's own StopRun follows its Finalize, is simply left alone.
+func (s *Service) closeRun(ctx context.Context, executionID, runID int64) error {
+	current, ok, err := s.repo.CurrentRun(ctx, executionID)
+	if err != nil {
+		return err
+	}
+	if !ok || current != runID {
+		return nil
+	}
+	return s.repo.StopRun(ctx, executionID)
 }
 
 // requestedLoad collapses an execution's load profile into the one figure a

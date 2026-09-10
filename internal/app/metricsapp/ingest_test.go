@@ -184,7 +184,10 @@ func TestIngest_RejectsBatchesWhenNothingIsRunning(t *testing.T) {
 }
 
 // A final batch ends the pod's contribution, so the intervals it reported can be
-// forgotten rather than remembered for the life of the controller.
+// forgotten rather than remembered for the life of the controller. Completion
+// closes the run's marker too, so the release is observable one run later:
+// the next run reusing the same interval keys must be absorbed, where a leaked
+// key would suppress its very first second.
 func TestIngest_FinalBatchReleasesDeduplicationState(t *testing.T) {
 	t.Parallel()
 	e := setup(t, 1)
@@ -198,11 +201,19 @@ func TestIngest_FinalBatchReleasesDeduplicationState(t *testing.T) {
 	if got := len(e.sink.Recorded()); got != 1 {
 		t.Fatalf("sink recorded %d, want 1", got)
 	}
+	// Completion closed the marker; the execution's next run opens a new one.
+	nextRun, err := e.store.StartRun(ctx, e.executionID, "")
+	if err != nil {
+		t.Fatalf("StartRun(next run): %v", err)
+	}
 
-	// State was released, so the same interval is absorbed again rather than
-	// suppressed. That is the correct trade: after a final batch the pod is gone,
-	// and holding its keys forever would leak for the controller's lifetime.
-	if err := e.svc.Ingest(ctx, batch(e, 0, 1)); err != nil {
+	// State was released, so the same interval under the new run is absorbed
+	// again rather than suppressed. That is the correct trade: after a final
+	// batch the pod is gone, and holding its keys forever would leak for the
+	// controller's lifetime -- and silence the next run's own traffic.
+	again := batch(e, 0, 1)
+	again.RunID = nextRun
+	if err := e.svc.Ingest(ctx, again); err != nil {
 		t.Fatalf("Ingest after final: %v", err)
 	}
 	if got := len(e.sink.Recorded()); got != 2 {
