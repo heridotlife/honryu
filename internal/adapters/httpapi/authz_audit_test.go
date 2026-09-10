@@ -221,7 +221,8 @@ var authzAuditTable = []authzEntry{
 
 	{method: "POST", pattern: "/api/calibrations", decision: "execution:create",
 		form: url.Values{"project_id": {"{project_id}"}, "name": {"calib"}, "engine": {"jmeter"},
-			"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"}}},
+			"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+			"scenario_id": {"{scenario_id}"}, "source_execution_id": {"{execution_id}"}}},
 	{method: "POST", pattern: "/api/executions/{execution_id}/calibration/trigger", decision: "execution:create"},
 	{method: "GET", pattern: "/api/calibrations/{job_id}", decision: "execution:read"},
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/capacity-profile", decision: "scenario:read"},
@@ -290,7 +291,9 @@ func seedAuditFixture(t *testing.T, f *rbacFixture) auditSeed {
 
 	calibRec := f.req(t, http.MethodPost, "/api/calibrations", "admin-tok",
 		url.Values{"project_id": {strconv.FormatInt(s.projectID, 10)}, "name": {"calib"}, "engine": {"jmeter"},
-			"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"}})
+			"criterion": {"failures>5%"}, "cpu": {"1"}, "memory": {"512Mi"},
+			"scenario_id":         {strconv.FormatInt(s.scenarioID, 10)},
+			"source_execution_id": {strconv.FormatInt(s.executionID, 10)}})
 	if calibRec.Code != http.StatusCreated {
 		t.Fatalf("create calibration = %d (%s)", calibRec.Code, calibRec.Body.String())
 	}

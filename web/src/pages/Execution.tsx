@@ -833,12 +833,15 @@ export default function Execution() {
       )}
       {/* Phase 39: the create-calibration dialog, per scenario row above.
           On success it navigates to the fresh execution's page, where the
-          Capacity card (now gated on kind) lives. */}
+          Capacity card (now gated on kind) lives. Phase 41: the dialog also
+          carries this execution's id as the binding source, so the created
+          calibration is runnable the moment it exists. */}
       {calibrateFor !== null && info?.engine && (
         <CalibrateScenarioModal
           scenarioId={calibrateFor}
           scenarioName={scenarioName(calibrateFor)}
           projectId={info.project_id}
+          sourceExecutionId={executionId}
           engine={info.engine}
           onClose={() => setCalibrateFor(null)}
           onCreated={(executionId) => navigate(`/executions/${executionId}`)}

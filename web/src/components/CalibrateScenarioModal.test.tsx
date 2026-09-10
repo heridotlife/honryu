@@ -2,7 +2,8 @@
 // ShareRunModal/ExecutionConfigCard tests' style: createRoot + act with
 // fetch stubbed. Under test: the form's defaults, the exact POST body
 // createCalibration sends (project_id, auto-generated name, engine,
-// criterion, cpu, memory -- and the optional bounds ONLY when filled in),
+// criterion, cpu, memory, the phase 41 scenario binding -- scenario_id +
+// source_execution_id -- and the optional bounds ONLY when filled in),
 // the required-target-QPS guard, and the onCreated handoff the parent
 // turns into navigation to the fresh execution's page.
 import { act } from 'react';
@@ -32,6 +33,7 @@ async function renderModal(): Promise<void> {
         scenarioId={7}
         scenarioName="smoke"
         projectId={3}
+        sourceExecutionId={12}
         engine="jmeter"
         onClose={closed}
         onCreated={created}
@@ -122,6 +124,12 @@ describe('CalibrateScenarioModal', () => {
     expect(form.get('criterion')).toBe('failures>10%');
     expect(form.get('cpu')).toBe('500m');
     expect(form.get('memory')).toBe('512Mi');
+    // ...the phase 41 scenario binding: the scenario this row names and
+    // the execution the dialog was launched from (its entry is what the
+    // backend copies -- without these the created execution could never
+    // run).
+    expect(form.get('scenario_id')).toBe('7');
+    expect(form.get('source_execution_id')).toBe('12');
     // ...the auto-generated name: "calibrate <scenario name> <timestamp>".
     expect(form.get('name')).toMatch(/^calibrate smoke \S+/);
     // The optional bounds were left empty: NOT sent, so the backend's own

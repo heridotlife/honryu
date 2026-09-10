@@ -100,10 +100,10 @@ type fanOutResponse struct {
 }
 
 // createCalibration configures a new CalibrateEngine execution: an ordinary
-// execution pinned to one pod size, with its target-health criterion and
-// search bounds recorded up front. Its scenario is bound afterward the
-// ordinary way (PUT .../config, unchanged by calibration), and its search
-// begins with a separate trigger call.
+// execution pinned to one pod size, bound to one scenario copied from a
+// source execution that already runs it, with its target-health criterion
+// and search bounds recorded up front. Its search begins with a separate
+// trigger call.
 func (h *handlers) createCalibration(w http.ResponseWriter, r *http.Request) {
 	if !h.calibrationsConfigured(w) {
 		return
@@ -154,7 +154,20 @@ func (h *handlers) createCalibration(w http.ResponseWriter, r *http.Request) {
 
 	name := r.PostForm.Get("name")
 	engine := taurus.Executor(r.PostForm.Get("engine"))
-	executionID, err := h.deps.Calibrations.Create(r.Context(), name, projectID, engine, spec)
+	// The scenario binding's source: both ids are required -- a calibration
+	// that named no scenario would be born the dead shell this endpoint
+	// existed to stop creating (phase 41).
+	scenarioID, err := strconv.ParseInt(r.PostForm.Get("scenario_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid scenario_id")
+		return
+	}
+	sourceExecutionID, err := strconv.ParseInt(r.PostForm.Get("source_execution_id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid source_execution_id")
+		return
+	}
+	executionID, err := h.deps.Calibrations.Create(r.Context(), name, projectID, engine, spec, sourceExecutionID, scenarioID)
 	if err != nil {
 		respondError(w, err)
 		return
