@@ -14,9 +14,11 @@ export interface CapacityKey {
  * FanOutResult's status — why the engine count is or is not shown:
  * ok (profile fresh, engines valid), no_profile, stale (scenario edited
  * after calibration), target_limited (the target's health bounded the
- * search), inconclusive (search budget exhausted both-sides-healthy).
+ * search), inconclusive (search budget exhausted, neither end saturated),
+ * engine_floor (phase 44: the engine saturated at every rate, even the
+ * lowest -- no measurable throughput to fan out from).
  */
-export type FanOutStatus = 'ok' | 'no_profile' | 'stale' | 'target_limited' | 'inconclusive';
+export type FanOutStatus = 'ok' | 'no_profile' | 'stale' | 'target_limited' | 'inconclusive' | 'engine_floor';
 
 export interface FanOutResponse {
   status: FanOutStatus;

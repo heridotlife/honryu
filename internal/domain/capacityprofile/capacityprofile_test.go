@@ -61,7 +61,9 @@ func TestFanOut_TargetLimited_NoEngineCount(t *testing.T) {
 // SaturatedByNeither is fresh and real, but the search never confirmed
 // either ceiling -- it must not be reported as target_limited (which would
 // falsely claim the target was found to be the bottleneck) or as ok (which
-// would falsely claim a confirmed number).
+// would falsely claim a confirmed number). Phase 44: this is the ONLY road
+// to inconclusive left -- the degenerate zero floor split off to
+// StatusEngineFloor below.
 func TestFanOut_Neither_Inconclusive(t *testing.T) {
 	t.Parallel()
 	profile := &capacityprofile.CapacityProfile{
@@ -104,13 +106,39 @@ func TestFanOut_OK_RoundsEnginesUp(t *testing.T) {
 	}
 }
 
-// A zero floor (a totally degenerate calibration -- nothing ever achieved
-// any throughput) must not divide by zero or claim a confirmed answer.
-func TestFanOut_ZeroFloor_Inconclusive(t *testing.T) {
+// Phase 44's split, on the axis that matters: inconclusive discriminates
+// on SaturatedBy, never on PerPodQPS alone. A neither-result with a zero
+// floor is still "budget exhausted, both ends healthy" -- only an
+// engine-saturated zero floor is "the engine saturates below measurable
+// load" (engine_floor).
+func TestFanOut_NeitherWithZeroFloor_Inconclusive(t *testing.T) {
+	t.Parallel()
+	profile := &capacityprofile.CapacityProfile{
+		Key: testKey(), PerPodQPS: 0, SaturatedBy: calibration.SaturatedByNeither,
+		ScenarioFingerprint: "fp1",
+	}
+	got := capacityprofile.FanOut(profile, 100, "fp1")
+	if got.Status != capacityprofile.StatusInconclusive {
+		t.Fatalf("Status = %q, want inconclusive -- a neither-result is inconclusive whatever its floor", got.Status)
+	}
+	if got.Engines != 0 {
+		t.Fatalf("Engines = %d, want 0 alongside inconclusive", got.Engines)
+	}
+}
+
+// The degenerate engine floor (phase 44): the engine saturated at EVERY
+// rate the search tried, so nothing was ever sustained -- exec 15's exact
+// shape (all steps engine_saturated on a light scenario, PerPodQPS=0,
+// SaturatedBy=engine). That is NOT "both ends healthy"; it must not wear
+// inconclusive's copy, and it must never divide by zero or claim a count.
+func TestFanOut_ZeroFloor_EngineFloor(t *testing.T) {
 	t.Parallel()
 	profile := engineLimitedProfile("fp1", 0)
 	got := capacityprofile.FanOut(profile, 100, "fp1")
-	if got.Status != capacityprofile.StatusInconclusive {
-		t.Fatalf("Status = %q, want inconclusive", got.Status)
+	if got.Status != capacityprofile.StatusEngineFloor {
+		t.Fatalf("Status = %q, want engine_floor", got.Status)
+	}
+	if got.Engines != 0 {
+		t.Fatalf("Engines = %d, want 0 -- an engine floor never returns a count", got.Engines)
 	}
 }

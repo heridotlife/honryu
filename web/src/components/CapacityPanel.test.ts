@@ -12,15 +12,34 @@ describe('fanOutCopy', () => {
   });
 
   it('each non-ok status has its own title, detail, and cta', () => {
-    for (const status of ['no_profile', 'stale', 'target_limited', 'inconclusive'] as const) {
+    for (const status of ['no_profile', 'stale', 'target_limited', 'inconclusive', 'engine_floor'] as const) {
       const c = fanOutCopy(status);
       expect(c.title.length).toBeGreaterThan(0);
       expect(c.detail.length).toBeGreaterThan(0);
       expect(c.cta).not.toBeNull();
     }
     // ...and the explanations are pairwise distinct.
-    const titles = ['no_profile', 'stale', 'target_limited', 'inconclusive'].map((s) => fanOutCopy(s as never).title);
-    expect(new Set(titles).size).toBe(4);
+    const titles = ['no_profile', 'stale', 'target_limited', 'inconclusive', 'engine_floor'].map(
+      (s) => fanOutCopy(s as never).title,
+    );
+    expect(new Set(titles).size).toBe(5);
+  });
+
+  // Phase 44's split: exec 15 wore inconclusive's "both ends still healthy"
+  // copy while its actual job had every step engine_saturated at the lowest
+  // rate -- the opposite finding. engine_floor owns that copy now, and
+  // inconclusive's copy states its real case precisely.
+  it('engine_floor explains that the engine saturated below measurable load', () => {
+    const c = fanOutCopy('engine_floor');
+    expect(c.title).toBe('Engine saturates below measurable load');
+    expect(c.detail).toContain('too light');
+    expect(c.cta).toContain('Loosen the criterion');
+  });
+
+  it('inconclusive copy is precise: budget exhausted, neither end saturated', () => {
+    const c = fanOutCopy('inconclusive');
+    expect(c.detail).toContain('neither');
+    expect(c.detail).not.toContain('both ends');
   });
 });
 
