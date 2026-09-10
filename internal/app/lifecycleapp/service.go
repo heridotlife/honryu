@@ -59,9 +59,9 @@ type Repo interface {
 	// Trigger stamps onto the run it starts.
 	PendingCorrelationID(ctx context.Context, executionID int64) (string, error)
 	// GetReport returns a run's stored report, or ports.ErrNotFound when the
-	// run never got one. The abandoned-run sweep uses it to leave runs that
-	// already finalised -- natural completion, teardown outstanding --
-	// untouched.
+	// run never got one. The abandoned-run sweep uses it to tell a wedged run
+	// (report stored, marker left open: heal the marker only) from an
+	// abandoned one (no report can ever land: write the synthetic one).
 	GetReport(ctx context.Context, runID int64) (report.Report, error)
 	ports.OrphanRepository
 	ports.RunRepository
@@ -606,28 +606,31 @@ func orphansCoverProfile(orphans []ports.OrphanCompletion, profile []loadprofile
 	return len(profile) > 0
 }
 
-// ReconcileAbandoned closes runs whose engines died without ever reporting:
-// the run row stands open, no report exists for it, and no engine pods
-// remain -- a statefulset lost to a node kill or a failed PreStopHook (phase
-// 36). Nothing else can close such a run: the stranded-run pass above needs
-// Finals that never arrived, natural completion needs measurements that
-// never came, and teardown needs an operator to notice. Until it is closed
-// the execution wedges -- every Trigger 409s on the open run row, and a
-// purge clears the run with no report ever landing.
+// ReconcileAbandoned closes runs whose own completion path cannot: the
+// abandoned -- engines died without ever reporting, so the run row stands
+// open, no report exists for it, and none ever can (a statefulset lost to a
+// node kill or a failed PreStopHook, phase 36) -- and the wedged -- a
+// report exists but the marker row was never cleared (a run that finalised
+// before phase 43 taught finalize to close its own marker, or one caught
+// in the crash window between SaveReport and that close). Until the marker
+// goes the execution wedges either way: every Trigger 409s on the open run
+// row, and a purge clears the run with no report ever landing.
 //
-// A run qualifies only when all of:
+// A run is considered only when older than after -- never touch a run
+// younger than the threshold; its engines may be slow to report or a deploy
+// mid-flight. Past it, two closes:
 //
-//   - older than after -- never touch a run younger than the threshold; its
-//     engines may be slow to report or a deploy mid-flight;
-//   - no stored report -- a run that already finalised keeps its verdict;
-//     only its teardown is outstanding;
-//   - no live engine pods (pool size 0) -- a run whose engines exist may
-//     genuinely still be running.
+//   - wedged: a stored report is definitive -- the run is over whatever its
+//     pods are doing (they linger forever after bzt exits) -- so the marker
+//     is closed and nothing else is done: no refinalise, since the stored
+//     verdict is the audit record and the completion was already announced;
+//   - abandoned: no stored report, and no live engine pods (pool size 0) --
+//     a run whose engines exist may genuinely still be running -- closed
+//     the way teardown would, with a synthetic aborted report (audit
+//     evidence that the sweep ended the run, never an invented pass) and
+//     then StopRun, so the execution can deploy and trigger again.
 //
-// Qualifying runs are closed the way teardown would, with a synthetic
-// aborted report -- audit evidence that the sweep ended the run, never an
-// invented pass -- and then StopRun, so the execution can deploy and trigger
-// again. after must be positive; zero or negative disables the pass.
+// after must be positive; zero or negative disables the pass.
 // Returns the runs it closed so the caller can log every reconciliation
 // action. Idempotent by construction: a closed run is no longer open, and
 // SaveReport keeps the first report for a run anyway.
@@ -645,6 +648,15 @@ func (s *Service) ReconcileAbandoned(ctx context.Context, after time.Duration) (
 			continue
 		}
 		if _, err := s.repo.GetReport(ctx, orun.RunID); err == nil {
+			// The healed wedge: the run finalised but its marker was never
+			// cleared, so the execution reads running forever. Close the
+			// marker exactly as teardown would have -- the report already
+			// holds the verdict, so no refinalise, and the completion was
+			// announced when the report landed.
+			if err := s.repo.StopRun(ctx, orun.ExecutionID); err != nil {
+				return nil, err
+			}
+			closed = append(closed, orun)
 			continue
 		} else if !errors.Is(err, ports.ErrNotFound) {
 			return nil, err

@@ -283,13 +283,31 @@ func TestReconcileAbandoned_LeavesRunsWhoseEnginesStillExistAlone(t *testing.T) 
 	}
 }
 
-// A run that already finalised keeps its verdict: the sweep never
-// double-closes or overwrites a reported run, however old -- its report is
-// the audit record, and closing the row is teardown's job, not the sweep's.
-func TestReconcileAbandoned_LeavesReportedRunsAlone(t *testing.T) {
+// announcer records which runs a Notifier announced, so a test can assert
+// a healed wedge is not re-announced.
+type announcer struct {
+	runs []int64
+}
+
+func (a *announcer) RunCompleted(_ context.Context, _ int64, rep report.Report) {
+	a.runs = append(a.runs, rep.RunID)
+}
+
+// The wedge phase 43 hit live: a run completed naturally -- its report was
+// written -- but nothing ever closed the marker, so the execution read
+// running forever while every Trigger 409'd on the corpse row. The sweep
+// used to skip these outright (a report exists); now healing them is its
+// job: close the marker, count the close, and touch nothing else -- the
+// stored verdict stands and the completion is not re-announced.
+func TestReconcileAbandoned_HealsAWedgedReportedRun(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	e, reports := reconcileEnv(t, 1)
+	e := setup(t, false, 1)
+	ann := &announcer{}
+	reports := e.store.ReportStore
+	collector := metricsapp.NewService(e.store, fake.NewMetricsSink(), membus.New(), fake.NewReportProgress(), reports).WithNotifier(ann)
+	e.svc.WithMetrics(collector)
+
 	if err := e.svc.Deploy(ctx, e.executionID); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -303,8 +321,8 @@ func TestReconcileAbandoned_LeavesReportedRunsAlone(t *testing.T) {
 	if err := e.sched.PurgeExecution(ctx, "", e.executionID); err != nil {
 		t.Fatalf("PurgeExecution: %v", err)
 	}
-	// The run already finished naturally: its report exists, its teardown
-	// just never ran.
+	// The wedge itself: the run finished -- its report exists -- but the
+	// marker row was never cleared.
 	started := time.Unix(1000, 0)
 	if err := reports.SaveReport(ctx, report.Report{
 		ExecutionID: e.executionID, RunID: runID,
@@ -318,14 +336,32 @@ func TestReconcileAbandoned_LeavesReportedRunsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileAbandoned: %v", err)
 	}
-	if len(closed) != 0 {
-		t.Fatalf("closed = %+v, want none (the run already reported)", closed)
+	if len(closed) != 1 || closed[0].RunID != runID || closed[0].ExecutionID != e.executionID {
+		t.Fatalf("closed = %+v, want exactly the wedged run %d of execution %d", closed, runID, e.executionID)
 	}
-	if _, running, _ := e.store.CurrentRun(ctx, e.executionID); !running {
-		t.Fatal("ReconcileAbandoned closed a run that already has a report")
+
+	// The marker is gone and the verdict stands: no refinalise, no second
+	// report, no re-announcement.
+	if _, running, _ := e.store.CurrentRun(ctx, e.executionID); running {
+		t.Fatal("the wedged marker survived the sweep")
 	}
-	rep, err := reports.GetReport(ctx, runID)
-	if err != nil || rep.Outcome != taurus.OutcomePassed {
-		t.Fatalf("stored report = %q, %v; want the original passed verdict untouched", rep.Outcome, err)
+	reps, err := reports.ListReports(ctx, e.executionID, 0)
+	if err != nil {
+		t.Fatalf("ListReports: %v", err)
+	}
+	if len(reps) != 1 || reps[0].Outcome != taurus.OutcomePassed {
+		t.Fatalf("reports = %+v, want the original passed verdict alone", reps)
+	}
+	if len(ann.runs) != 0 {
+		t.Errorf("notifier announced %v, want nothing (the completion was already announced once)", ann.runs)
+	}
+
+	// The recovered surface -- the whole point: redeploy and trigger work
+	// with no manual purge.
+	if err := e.svc.Deploy(ctx, e.executionID); err != nil {
+		t.Fatalf("re-Deploy after heal: %v", err)
+	}
+	if err := e.svc.Trigger(ctx, e.executionID); err != nil {
+		t.Fatalf("Trigger after heal: %v", err)
 	}
 }
