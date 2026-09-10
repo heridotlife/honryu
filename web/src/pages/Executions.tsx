@@ -5,6 +5,7 @@ import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { useProjectSelection } from '../components/ProjectSwitcher';
+import WebhooksCard from '../components/WebhooksCard';
 import { useSession } from '../hooks/useSession';
 
 /** Shared pill styling for the list pages' filter chips (phase 28) -- the
@@ -145,6 +146,12 @@ export default function Executions() {
           </div>
         </div>
       )}
+      {/* Phase 40: the project's run-completion webhook registry, directly
+          under the filter row -- project-scoped like the list above it, so it
+          only exists once a project is selected and only for callers who may
+          update the project (the same grant the backend's webhook routes
+          demand). */}
+      {selectedId !== '' && can('project', 'update') && <WebhooksCard projectId={Number(selectedId)} />}
       {executions === null ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : executions.length === 0 ? (
