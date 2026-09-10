@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -32,6 +33,14 @@ var ErrExecutionNotCalibration = errors.New("calibrationapp: execution is not a 
 // requires the engine to look one up, so a calibration that defers its engine
 // would produce a profile nothing could ever query.
 var ErrEngineRequired = errors.New("calibrationapp: a calibration execution must name an engine")
+
+// ErrSourceScenarioNotBound means the source execution named by Create runs
+// no load-profile entry for the requested scenario -- there is nothing to
+// copy the search's starting configuration from. Before Create bound its
+// scenario itself, every UI-created calibration was born a dead shell that
+// failed its first Trigger with run.ErrNoScenarios; this error is the loud
+// refusal that keeps that shell from ever existing.
+var ErrSourceScenarioNotBound = errors.New("calibrationapp: source execution does not run the scenario")
 
 // ErrNotConfiguredForAdvance means AdvanceOne was called before a Runner and
 // a ScenarioFingerprinter were wired via WithRunner/WithFingerprint -- both
@@ -59,7 +68,12 @@ type Repo interface {
 	GetProject(ctx context.Context, id int64) (project.Project, error)
 	CreateExecution(ctx context.Context, c execution.Execution) (int64, error)
 	GetExecution(ctx context.Context, id int64) (execution.Execution, error)
-	SetExecutionCriteria(ctx context.Context, executionID int64, criteria []string) error
+	// StoreExecutionConfig binds an execution's scenario (its load
+	// profile) and its configured Taurus criteria together, in one
+	// transaction -- the same atomic write an ordinary config upload
+	// makes, reused by Create so a calibration is born with both halves of
+	// its configuration or not at all.
+	StoreExecutionConfig(ctx context.Context, executionID int64, csvSplit bool, entries []loadprofile.Entry, criteria []string) error
 	CriteriaFor(ctx context.Context, executionID int64) ([]string, error)
 	SetCalibrationBounds(ctx context.Context, executionID int64, bounds ports.CalibrationBounds) error
 	CalibrationBoundsFor(ctx context.Context, executionID int64) (ports.CalibrationBounds, error)
@@ -115,21 +129,27 @@ func (s *Service) WithFingerprint(f ScenarioFingerprinter) *Service {
 
 // Create validates spec and creates a new CalibrateEngine execution under
 // projectID configured to run it: the execution itself (pinned to spec's
-// pod size), its target-health criterion (via the execution's own
-// configured Taurus criteria), and the remaining search bounds. Returns the
-// created execution's id.
+// pod size), its scenario binding, its target-health criterion, and the
+// remaining search bounds. Returns the created execution's id.
 //
-// A calibration execution's scenario is bound afterward the same way any
-// execution's is -- an ordinary config upload (executionapp.StoreConfig) --
-// deliberately reused rather than duplicated: the step runner (task 78)
-// only ever rewrites the QPS/duration of whatever scenario that upload
-// named, never the scenario itself.
-func (s *Service) Create(ctx context.Context, name string, projectID int64, engine taurus.Executor, spec calibration.Spec) (int64, error) {
+// The scenario is bound at creation, never afterward: sourceExecutionID
+// must already run scenarioID (an ordinary config upload), and Create
+// copies that entry into the new execution as its single pinned-size pod
+// -- the one entry the step runner (task 78) then rewrites per search
+// step. A source that runs no such entry fails the whole Create before
+// anything is written, so no half-configured execution is ever left
+// behind.
+func (s *Service) Create(ctx context.Context, name string, projectID int64, engine taurus.Executor, spec calibration.Spec, sourceExecutionID, scenarioID int64) (int64, error) {
 	if strings.TrimSpace(string(engine)) == "" {
 		return 0, ErrEngineRequired
 	}
 	spec = spec.WithDefaults()
 	if err := spec.Validate(); err != nil {
+		return 0, err
+	}
+
+	bound, err := s.boundEntry(ctx, sourceExecutionID, scenarioID, spec)
+	if err != nil {
 		return 0, err
 	}
 
@@ -157,7 +177,12 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64, engi
 	if err != nil {
 		return 0, err
 	}
-	if err := s.repo.SetExecutionCriteria(ctx, executionID, []string{spec.Criterion}); err != nil {
+	// Scenario and criterion land together, in one transaction -- the same
+	// atomicity an ordinary config upload gets -- so a calibration can
+	// never exist with a criterion but no scenario to run (the dead shell
+	// this binding exists to close). CSVSplit is always false: a
+	// single-engine search never splits data across engines.
+	if err := s.repo.StoreExecutionConfig(ctx, executionID, false, []loadprofile.Entry{bound}, []string{spec.Criterion}); err != nil {
 		return 0, err
 	}
 	bounds := ports.CalibrationBounds{SeedQPS: spec.SeedQPS, MaxQPS: spec.MaxQPS, MaxSteps: spec.MaxSteps, HoldSeconds: spec.HoldSeconds}
@@ -165,6 +190,35 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64, engi
 		return 0, err
 	}
 	return executionID, nil
+}
+
+// boundEntry copies sourceExecutionID's load-profile entry for scenarioID
+// into the single-pod entry a fresh calibration starts from: one engine at
+// the search's seed rate, holding at least spec.HoldSeconds. Concurrency
+// and rampup carry over from the source only as starting values -- every
+// search step re-derives them (stepConcurrency, stepRampupSeconds), so only
+// the scenario identity and a valid shape matter here.
+func (s *Service) boundEntry(ctx context.Context, sourceExecutionID, scenarioID int64, spec calibration.Spec) (loadprofile.Entry, error) {
+	entries, err := s.repo.LoadProfileFor(ctx, sourceExecutionID)
+	if err != nil {
+		return loadprofile.Entry{}, err
+	}
+	for _, e := range entries {
+		if e.ScenarioID != scenarioID {
+			continue
+		}
+		bound := loadprofile.Entry{
+			Name:        e.Name,
+			ScenarioID:  scenarioID,
+			Engines:     1,
+			Concurrency: e.Concurrency,
+			Rampup:      e.Rampup,
+			Duration:    max(spec.HoldSeconds, e.Duration),
+			Throughput:  int(math.Ceil(spec.SeedQPS)),
+		}
+		return bound, bound.Validate()
+	}
+	return loadprofile.Entry{}, fmt.Errorf("%w: execution %d has no entry for scenario %d", ErrSourceScenarioNotBound, sourceExecutionID, scenarioID)
 }
 
 // SpecFor reconstructs the full calibration.Spec configured for

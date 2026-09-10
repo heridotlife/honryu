@@ -3,6 +3,7 @@ package calibrationapp_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -36,14 +37,46 @@ func validSpec() calibration.Spec {
 	return calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi"}
 }
 
+// seedBoundSource creates the ordinary execution Create copies its
+// scenario binding from: a native JMeter scenario and a source execution
+// whose load profile runs it. The entry's values are deliberately distinct
+// from anything Create should write, so a test can tell the bound copy's
+// overrides apart from the source's own fields.
+func seedBoundSource(t *testing.T, store *fake.Store, projectID int64) (sourceID, scenarioID int64) {
+	t.Helper()
+	ctx := context.Background()
+	pl, err := scenario.NewNative("target", projectID, taurus.ExecutorJMeter)
+	if err != nil {
+		t.Fatalf("scenario.NewNative: %v", err)
+	}
+	scenarioID, err = store.CreateScenario(ctx, pl)
+	if err != nil {
+		t.Fatalf("CreateScenario: %v", err)
+	}
+	exe, err := execution.New("source", projectID)
+	if err != nil {
+		t.Fatalf("execution.New: %v", err)
+	}
+	sourceID, err = store.CreateExecution(ctx, exe)
+	if err != nil {
+		t.Fatalf("CreateExecution: %v", err)
+	}
+	entries := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 3, Concurrency: 40, Rampup: 15, Duration: 45, Throughput: 777}}
+	if err := store.StoreLoadProfile(ctx, sourceID, false, entries); err != nil {
+		t.Fatalf("StoreLoadProfile: %v", err)
+	}
+	return sourceID, scenarioID
+}
+
 func TestCreate_PersistsExecutionCriteriaAndBounds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := fake.NewStore()
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
 
-	executionID, err := svc.Create(ctx, "checkout-calibration", projectID, taurus.ExecutorJMeter, validSpec())
+	executionID, err := svc.Create(ctx, "checkout-calibration", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -82,6 +115,127 @@ func TestCreate_PersistsExecutionCriteriaAndBounds(t *testing.T) {
 	}
 }
 
+// Create binds the source's scenario entry as the calibration execution's
+// single load-profile entry -- the phase 41 fix: before it, a UI-created
+// calibration had criteria and bounds but no execution_scenario row, so its
+// first Trigger died with run.ErrNoScenarios and Deploy with
+// ports.ErrNotFound.
+func TestCreate_BindsTheSourceScenarioAsItsSingleEntry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 7.5, HoldSeconds: 20}
+	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	entries, err := store.LoadProfileFor(ctx, executionID)
+	if err != nil {
+		t.Fatalf("LoadProfileFor: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("LoadProfileFor = %+v, want exactly 1 entry (the bound scenario)", entries)
+	}
+	got := entries[0]
+	if got.ScenarioID != scenarioID {
+		t.Errorf("ScenarioID = %d, want %d", got.ScenarioID, scenarioID)
+	}
+	if got.Engines != 1 {
+		t.Errorf("Engines = %d, want 1 (a calibration searches one pod)", got.Engines)
+	}
+	if want := int(math.Ceil(spec.SeedQPS)); got.Throughput != want {
+		t.Errorf("Throughput = %d, want ceil(SeedQPS %g) = %d", got.Throughput, spec.SeedQPS, want)
+	}
+	if got.Duration != 45 {
+		t.Errorf("Duration = %d, want max(HoldSeconds 20, source 45) = 45", got.Duration)
+	}
+	if got.Concurrency != 40 || got.Rampup != 15 {
+		t.Errorf("Concurrency/Rampup = %d/%d, want the source's 40/15 carried over", got.Concurrency, got.Rampup)
+	}
+
+	// The criterion lands with the binding -- one atomic config write.
+	criteria, err := store.CriteriaFor(ctx, executionID)
+	if err != nil {
+		t.Fatalf("CriteriaFor: %v", err)
+	}
+	if len(criteria) != 1 || criteria[0] != spec.Criterion {
+		t.Fatalf("CriteriaFor = %v, want [%s] alongside the binding", criteria, spec.Criterion)
+	}
+
+	// The source execution's own profile is untouched -- the binding is a
+	// copy, never a move.
+	sourceEntries, err := store.LoadProfileFor(ctx, src)
+	if err != nil {
+		t.Fatalf("LoadProfileFor(source): %v", err)
+	}
+	if len(sourceEntries) != 1 || sourceEntries[0].Engines != 3 || sourceEntries[0].Throughput != 777 {
+		t.Fatalf("source profile = %+v, want the original 3-engine/777-QPS entry", sourceEntries)
+	}
+}
+
+// A source entry shorter than the search's hold window gives way to it:
+// every step must hold its full steady-state window even when the source
+// ran a brief smoke entry.
+func TestCreate_BoundDurationExtendsToTheHold(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	if err := store.StoreLoadProfile(ctx, src, false, []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 2, Concurrency: 5, Rampup: 1, Duration: 5}}); err != nil {
+		t.Fatalf("StoreLoadProfile (short source): %v", err)
+	}
+
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", HoldSeconds: 20}
+	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	entries, err := store.LoadProfileFor(ctx, executionID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("LoadProfileFor = %+v (%v), want 1 entry", entries, err)
+	}
+	if entries[0].Duration != 20 {
+		t.Errorf("Duration = %d, want the spec's hold 20 over the source's 5", entries[0].Duration)
+	}
+}
+
+// A source that runs no entry for the scenario fails the whole Create
+// before anything is written -- no half-configured execution is left
+// behind.
+func TestCreate_RejectsASourceThatDoesNotRunTheScenario(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+
+	if _, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID+1000); !errors.Is(err, calibrationapp.ErrSourceScenarioNotBound) {
+		t.Fatalf("Create (scenario not in source) = %v, want ErrSourceScenarioNotBound", err)
+	}
+	// A source execution that does not exist at all fails the same way:
+	// it runs the scenario no more than a mismatched one does.
+	if _, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, validSpec(), src+1000, scenarioID); !errors.Is(err, calibrationapp.ErrSourceScenarioNotBound) {
+		t.Fatalf("Create (missing source) = %v, want ErrSourceScenarioNotBound", err)
+	}
+
+	execs, err := store.ListExecutionsByProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("ListExecutionsByProject: %v", err)
+	}
+	if len(execs) != 1 {
+		t.Fatalf("project executions = %d, want only the source (nothing half-created)", len(execs))
+	}
+}
+
 func TestCreate_RejectsAnInvalidSpec(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -91,7 +245,8 @@ func TestCreate_RejectsAnInvalidSpec(t *testing.T) {
 
 	spec := validSpec()
 	spec.Criterion = ""
-	if _, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, spec); !errors.Is(err, calibration.ErrCriterionRequired) {
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	if _, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, spec, src, scenarioID); !errors.Is(err, calibration.ErrCriterionRequired) {
 		t.Fatalf("Create (no criterion) = %v, want ErrCriterionRequired", err)
 	}
 }
@@ -103,7 +258,8 @@ func TestCreate_RejectsAnInvalidExecutionName(t *testing.T) {
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
 
-	if _, err := svc.Create(ctx, "", projectID, taurus.ExecutorJMeter, validSpec()); !errors.Is(err, execution.ErrNameRequired) {
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	if _, err := svc.Create(ctx, "", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID); !errors.Is(err, execution.ErrNameRequired) {
 		t.Fatalf("Create (no name) = %v, want ErrNameRequired", err)
 	}
 }
@@ -118,7 +274,8 @@ func TestCreate_RejectsAnEmptyEngine(t *testing.T) {
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
 
-	if _, err := svc.Create(ctx, "x", projectID, taurus.Executor(""), validSpec()); !errors.Is(err, calibrationapp.ErrEngineRequired) {
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	if _, err := svc.Create(ctx, "x", projectID, taurus.Executor(""), validSpec(), src, scenarioID); !errors.Is(err, calibrationapp.ErrEngineRequired) {
 		t.Fatalf("Create (no engine) = %v, want ErrEngineRequired", err)
 	}
 }
@@ -131,7 +288,8 @@ func TestSpecFor_ReassemblesFromExecutionCriteriaAndBounds(t *testing.T) {
 	projectID := seedProject(t, store)
 
 	spec := calibration.Spec{Criterion: "p95>500ms", CPU: "2", Memory: "1Gi", SeedQPS: 5, MaxQPS: 500, MaxSteps: 10, HoldSeconds: 20}
-	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorK6, spec)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorK6, spec, src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -174,7 +332,8 @@ func TestTrigger_CreatesAPendingJob(t *testing.T) {
 	store := fake.NewStore()
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
-	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec())
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -204,7 +363,8 @@ func TestTrigger_MoreThanOnceCreatesSeparateJobs(t *testing.T) {
 	store := fake.NewStore()
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
-	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec())
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -304,7 +464,8 @@ func TestGet_ExposesStepHistory(t *testing.T) {
 	store := fake.NewStore()
 	svc := calibrationapp.NewService(store)
 	projectID := seedProject(t, store)
-	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec())
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := svc.Create(ctx, "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -338,7 +499,7 @@ func TestGet_ExposesStepHistory(t *testing.T) {
 type erroringRepo struct {
 	*fake.Store
 	createExecutionErr       error
-	setExecutionCriteriaErr  error
+	storeExecutionConfigErr  error
 	setCalibrationBoundsErr  error
 	criteriaForErr           error
 	calibrationBoundsForErr  error
@@ -366,11 +527,11 @@ func (r *erroringRepo) CreateExecution(ctx context.Context, c execution.Executio
 	return r.Store.CreateExecution(ctx, c)
 }
 
-func (r *erroringRepo) SetExecutionCriteria(ctx context.Context, executionID int64, criteria []string) error {
-	if r.setExecutionCriteriaErr != nil {
-		return r.setExecutionCriteriaErr
+func (r *erroringRepo) StoreExecutionConfig(ctx context.Context, executionID int64, csvSplit bool, entries []loadprofile.Entry, criteria []string) error {
+	if r.storeExecutionConfigErr != nil {
+		return r.storeExecutionConfigErr
 	}
-	return r.Store.SetExecutionCriteria(ctx, executionID, criteria)
+	return r.Store.StoreExecutionConfig(ctx, executionID, csvSplit, entries, criteria)
 }
 
 func (r *erroringRepo) SetCalibrationBounds(ctx context.Context, executionID int64, bounds ports.CalibrationBounds) error {
@@ -445,7 +606,7 @@ func TestCreate_DownstreamErrorsPropagate(t *testing.T) {
 		wire func(r *erroringRepo)
 	}{
 		{"CreateExecution fails", func(r *erroringRepo) { r.createExecutionErr = errors.New("boom") }},
-		{"SetExecutionCriteria fails", func(r *erroringRepo) { r.setExecutionCriteriaErr = errors.New("boom") }},
+		{"StoreExecutionConfig fails", func(r *erroringRepo) { r.storeExecutionConfigErr = errors.New("boom") }},
 		{"SetCalibrationBounds fails", func(r *erroringRepo) { r.setCalibrationBoundsErr = errors.New("boom") }},
 	}
 	for _, tt := range tests {
@@ -456,8 +617,9 @@ func TestCreate_DownstreamErrorsPropagate(t *testing.T) {
 			tt.wire(repo)
 			svc := calibrationapp.NewService(repo)
 			projectID := seedProject(t, store)
+			src, scenarioID := seedBoundSource(t, store, projectID)
 
-			if _, err := svc.Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec()); err == nil {
+			if _, err := svc.Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID); err == nil {
 				t.Fatal("Create = nil error, want the downstream failure to propagate")
 			}
 		})
@@ -478,7 +640,8 @@ func TestSpecFor_DownstreamErrorsPropagate(t *testing.T) {
 			t.Parallel()
 			store := fake.NewStore()
 			projectID := seedProject(t, store)
-			executionID, err := calibrationapp.NewService(store).Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec())
+			src, scenarioID := seedBoundSource(t, store, projectID)
+			executionID, err := calibrationapp.NewService(store).Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -497,7 +660,8 @@ func TestTrigger_CreateCalibrationJobErrorPropagates(t *testing.T) {
 	t.Parallel()
 	store := fake.NewStore()
 	projectID := seedProject(t, store)
-	executionID, err := calibrationapp.NewService(store).Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec())
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := calibrationapp.NewService(store).Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -514,7 +678,8 @@ func TestGet_StepsForErrorPropagates(t *testing.T) {
 	store := fake.NewStore()
 	projectID := seedProject(t, store)
 	svc := calibrationapp.NewService(store)
-	executionID, err := svc.Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec())
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	executionID, err := svc.Create(context.Background(), "x", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -609,30 +774,18 @@ func (f *stubFingerprinter) ScenarioFingerprint(context.Context, int64) (string,
 }
 
 // seedTriggeredCalibration creates a project, a CalibrateEngine execution
-// configured with spec, binds it to a scenario the ordinary way (a single
-// load-profile entry -- calibrationapp.Create's own doc comment), and
+// configured with spec and bound to a scenario (Create's own binding), and
 // triggers a fresh Pending job. Mirrors what a real caller does before a
 // controller ever calls AdvanceOne.
 func seedTriggeredCalibration(t *testing.T, store *fake.Store, spec calibration.Spec) (executionID, jobID, scenarioID int64) {
 	t.Helper()
 	ctx := context.Background()
 	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
 	svc := calibrationapp.NewService(store)
-	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec)
+	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-	pl, err := scenario.NewNative("target", projectID, taurus.ExecutorJMeter)
-	if err != nil {
-		t.Fatalf("scenario.NewNative: %v", err)
-	}
-	scenarioID, err = store.CreateScenario(ctx, pl)
-	if err != nil {
-		t.Fatalf("CreateScenario: %v", err)
-	}
-	entries := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 1}}
-	if err := store.StoreLoadProfile(ctx, executionID, false, entries); err != nil {
-		t.Fatalf("StoreLoadProfile: %v", err)
 	}
 	jobID, err = svc.Trigger(ctx, executionID)
 	if err != nil {
@@ -1001,11 +1154,17 @@ func TestAdvanceOne_WriteProfileFailuresPropagateWithoutCorruptingJobState(t *te
 		projectID := seedProject(t, store)
 		spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, MaxQPS: 1000, MaxSteps: 5, HoldSeconds: 1}
 		svc := calibrationapp.NewService(store)
-		executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec)
+		src, scenarioID := seedBoundSource(t, store, projectID)
+		executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		// Deliberately never bound to a scenario.
+		// Deliberately strip the binding Create made: a calibration whose
+		// execution_scenario row went missing must still fail the profile
+		// write loudly, not silently skip it.
+		if err := store.StoreLoadProfile(ctx, executionID, false, nil); err != nil {
+			t.Fatalf("StoreLoadProfile (clear binding): %v", err)
+		}
 		jobID, err := svc.Trigger(ctx, executionID)
 		if err != nil {
 			t.Fatalf("Trigger: %v", err)
@@ -1112,22 +1271,11 @@ func seedTriggeredCalibrationWithRepo(t *testing.T, repo calibrationapp.Repo, sp
 	}
 	store := er.Store
 	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
 	svc := calibrationapp.NewService(repo)
-	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec)
+	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-	pl, err := scenario.NewNative("target", projectID, taurus.ExecutorJMeter)
-	if err != nil {
-		t.Fatalf("scenario.NewNative: %v", err)
-	}
-	scenarioID, err = store.CreateScenario(ctx, pl)
-	if err != nil {
-		t.Fatalf("CreateScenario: %v", err)
-	}
-	entries := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 1}}
-	if err := store.StoreLoadProfile(ctx, executionID, false, entries); err != nil {
-		t.Fatalf("StoreLoadProfile: %v", err)
 	}
 	jobID, err = svc.Trigger(ctx, executionID)
 	if err != nil {
