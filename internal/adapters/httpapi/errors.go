@@ -79,6 +79,10 @@ var badRequestErrors = []error{
 	calibration.ErrMaxQPSInvalid, calibration.ErrMaxStepsInvalid, calibration.ErrHoldInvalid,
 	calibrationapp.ErrExecutionNotCalibration, calibrationapp.ErrEngineRequired,
 	calibrationapp.ErrSourceScenarioNotBound,
+	// A criterion outside Taurus's expression grammar is the caller's
+	// input (phase 42's hotfix): rejected with the stated reason, not a
+	// later run-time Config Error.
+	calibration.ErrCriterionInvalid,
 	digest.ErrPeriodInvalid,
 	// Cluster registration input: a malformed entry or a non-self-contained
 	// BYOC kubeconfig is the caller's, not a server fault.

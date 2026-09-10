@@ -1401,3 +1401,74 @@ func TestFanOut_PropagatesFingerprintError(t *testing.T) {
 		t.Fatalf("error = %v, want sentinel", err)
 	}
 }
+
+// TestCreate_RejectsProseCriterion (phase 42's hotfix): a criterion outside
+// Taurus's expression grammar is rejected at Create with the offending
+// expression named -- the cheapest place to say no, before anything is
+// stored, instead of a run-time "Unsupported fail criteria subject" from
+// bzt after the first trigger.
+func TestCreate_RejectsProseCriterion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+
+	for _, raw := range []string{
+		"error_rate < 0.01 AND p95 < 500ms", // the prose found live in phase 39
+		"error_rate < 0.01",
+		"latency>500ms", // a word, but not one Taurus supports
+		" , ",           // separators only: nothing to evaluate
+	} {
+		spec := validSpec()
+		spec.Criterion = raw
+		if _, err := svc.Create(ctx, "bad", projectID, taurus.ExecutorJMeter, spec, src, scenarioID); !errors.Is(err, calibration.ErrCriterionInvalid) {
+			t.Errorf("Create(criterion %q) = %v, want ErrCriterionInvalid", raw, err)
+		}
+	}
+	// Nothing was written on any of those rejections.
+	execs, err := store.ListExecutionsByProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("ListExecutionsByProject: %v", err)
+	}
+	if len(execs) != 1 || execs[0].ID != src {
+		t.Errorf("executions after rejections = %v, want only the source", execs)
+	}
+}
+
+// TestCreate_StoresEachExpressionAsItsOwnCriterion: a comma-separated
+// criterion field splits into one stored criteria entry per expression --
+// the unit compile maps onto one Taurus passfail entry -- and SpecFor joins
+// them back into the same field the spec was created with.
+func TestCreate_StoresEachExpressionAsItsOwnCriterion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+
+	spec := validSpec()
+	spec.Criterion = "failures>10%, p95>500ms"
+	executionID, err := svc.Create(ctx, "multi", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	criteria, err := store.CriteriaFor(ctx, executionID)
+	if err != nil {
+		t.Fatalf("CriteriaFor: %v", err)
+	}
+	if len(criteria) != 2 || criteria[0] != "failures>10%" || criteria[1] != "p95>500ms" {
+		t.Fatalf("criteria = %v, want one entry per expression", criteria)
+	}
+
+	resolved, err := svc.SpecFor(ctx, executionID)
+	if err != nil {
+		t.Fatalf("SpecFor: %v", err)
+	}
+	if resolved.Criterion != "failures>10%, p95>500ms" {
+		t.Errorf("SpecFor criterion = %q, want the created field joined back", resolved.Criterion)
+	}
+}
