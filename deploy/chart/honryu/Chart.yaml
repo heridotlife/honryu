@@ -7,5 +7,5 @@ description: >-
   api/scheduler themselves and are not managed by this chart.
 type: application
 version: 0.1.0
-appVersion: "phase39"
+appVersion: "phase40"
 home: https://github.com/heridotlife/honryu
