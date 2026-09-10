@@ -7,6 +7,15 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/digest"
 )
 
+// DigestScheduleStore persists the per-project digest firing schedules.
+//
+// One row per project is the whole configuration; there are no occurrences
+// to reserve because a digest claims no capacity -- it reads stored reports
+// and delivers best-effort. The store's one concurrency-critical operation
+// is the due claim, which must be atomic in the ClaimDueOccurrence sense:
+// two scheduler replicas polling concurrently may not double-fire the same
+// project's window.
+
 // ReportDigestStore persists the periodic report digests fired per project.
 //
 // A digest row is a projection of a past aggregation, written once and never
@@ -29,4 +38,28 @@ type ReportDigestStore interface {
 	// digests of the same period count: switching daily to weekly starts
 	// the weekly history fresh rather than tiling off a daily edge.
 	LastDigestWindowEnd(ctx context.Context, projectID int64, period digest.Period) (t time.Time, found bool, err error)
+}
+
+// DigestScheduleStore persists the per-project digest firing schedules.
+type DigestScheduleStore interface {
+	// UpsertDigestSchedule stores the project's schedule configuration,
+	// creating the row or replacing its period/enabled state. last_fired
+	// is NOT part of the upsert: re-enabling or switching period keeps the
+	// bookmark, so fire times tile from where they left off.
+	UpsertDigestSchedule(ctx context.Context, projectID int64, period digest.Period, enabled bool) error
+	// GetDigestSchedule returns the project's schedule, or ErrNotFound
+	// when none is configured.
+	GetDigestSchedule(ctx context.Context, projectID int64) (digest.Schedule, error)
+	// DeleteDigestSchedule removes the project's schedule, or ErrNotFound
+	// when none exists. Past digest rows are unaffected -- history is
+	// history.
+	DeleteDigestSchedule(ctx context.Context, projectID int64) error
+	// ClaimDueDigestSchedule atomically claims one due, enabled schedule:
+	// it stamps last_fired=now on the row and returns it. Dueness is
+	// last_fired IS NULL OR last_fired <= now-period (per-row: the period
+	// is a word, not a duration, so the SQL guard takes the cutoff as a
+	// parameter). found is false when nothing is due. Implementations must
+	// make the stamp conditional on still being due (affected-rows, the
+	// ClaimDueOccurrence pattern) so two replicas cannot double-fire.
+	ClaimDueDigestSchedule(ctx context.Context, now time.Time) (s digest.Schedule, found bool, err error)
 }

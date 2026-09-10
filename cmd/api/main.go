@@ -41,6 +41,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/campaignapp"
 	"github.com/heridotlife/honryu/internal/app/clusterapp"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/metricsapp"
@@ -72,6 +73,12 @@ type repository interface {
 	ports.ReportStore
 	ports.ShareStore
 	ports.WebhookStore
+	ports.ReportDigestStore
+	ports.DigestScheduleStore
+	// ports.ExecutionRepository in full: the digest aggregation lists a
+	// project's executions through it (phase 42); executionapp.Repo above
+	// covers only the HTTP surface's own reads.
+	ports.ExecutionRepository
 	ports.IntervalRepository
 	ports.ReservationRepository
 	ports.ScheduleRepository
@@ -128,6 +135,9 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// on background workers and never delays the run.
 	webhooks := webhookapp.NewService(repo)
 	collector := metricsapp.NewService(repo, sink, bus, repo, repo).WithNotifier(webhooks)
+	// Digests deliver through the same webhook machinery a run completion
+	// rides on -- one signing path, one set of delivery bounds (phase 42).
+	digests := digestapp.NewService(repo).WithDeliverer(webhooks)
 	// Nothing to resume after a restart: pods push, so a run already under way
 	// simply keeps sending to whichever controller is listening.
 	usage := usageapp.NewService(repo)
@@ -202,6 +212,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		ExecutionCluster: repo,
 		Admin:            admin,
 		Webhooks:         webhooks,
+		Digests:          digests,
 		Events:           bus,
 		Store:            store,
 		Auth:             authapp.NewService(authProvider, repo, cfg.Auth.EnableRBAC),

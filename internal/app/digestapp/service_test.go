@@ -14,6 +14,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
+	"github.com/heridotlife/honryu/internal/ports"
 	"github.com/heridotlife/honryu/internal/ports/fake"
 )
 
@@ -347,4 +348,87 @@ func idsOf(rows []digest.Digest) []int64 {
 		out[i] = r.ID
 	}
 	return out
+}
+
+// TestScheduleLifecycleAndClaim pins the scheduler's half of the firing
+// handshake: configure is an upsert that enables, delete is the off path,
+// and a claim is exclusive in time -- never-fired rows are due at once,
+// claimed rows not again until their period elapses.
+func TestScheduleLifecycleAndClaim(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+
+	if _, err := f.svc.GetSchedule(ctx, f.projA); !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("GetSchedule(unset) = %v, want ErrNotFound", err)
+	}
+	if err := f.svc.SetSchedule(ctx, f.projA, digest.PeriodDaily); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if err := f.svc.SetSchedule(ctx, f.projA, "hourly"); !errors.Is(err, digest.ErrPeriodInvalid) {
+		t.Fatalf("SetSchedule(hourly) = %v, want ErrPeriodInvalid", err)
+	}
+	got, err := f.svc.GetSchedule(ctx, f.projA)
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.Period != digest.PeriodDaily || !got.Enabled || got.LastFired != nil {
+		t.Fatalf("schedule = %+v, want daily/enabled/never-fired", got)
+	}
+
+	claim, found, err := f.svc.ClaimDue(ctx, t0)
+	if err != nil || !found {
+		t.Fatalf("first claim = found %v err %v, want found", found, err)
+	}
+	if claim.ProjectID != f.projA || claim.LastFired == nil || !claim.LastFired.Equal(t0) {
+		t.Fatalf("claim = %+v, want stamped at t0", claim)
+	}
+	if _, found, err := f.svc.ClaimDue(ctx, t0.Add(23*time.Hour)); err != nil || found {
+		t.Fatalf("claim 23h later = found %v, want not due before the period", found)
+	}
+	if _, found, err := f.svc.ClaimDue(ctx, t0.Add(24*time.Hour)); err != nil || !found {
+		t.Fatalf("claim 24h later = found %v, want due", found)
+	}
+
+	if err := f.svc.DeleteSchedule(ctx, f.projA); err != nil {
+		t.Fatalf("DeleteSchedule: %v", err)
+	}
+	if err := f.svc.DeleteSchedule(ctx, f.projA); !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("DeleteSchedule(again) = %v, want ErrNotFound", err)
+	}
+	if _, found, err := f.svc.ClaimDue(ctx, t0.Add(7*24*time.Hour)); err != nil || found {
+		t.Fatalf("claim after delete = found %v, want nothing due", found)
+	}
+}
+
+// TestClaimThenFireHandshake mirrors the scheduler loop's exact sequence --
+// claim first (exclusivity), then fire (window) -- and proves the two
+// compose into one digest per due window.
+func TestClaimThenFireHandshake(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	if err := f.svc.SetSchedule(ctx, f.projA, digest.PeriodDaily); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	saveRun(t, f.store, f.execA1, 1, t0.Add(-time.Hour), taurus.OutcomePassed)
+
+	claim, found, err := f.svc.ClaimDue(ctx, t0)
+	if err != nil || !found {
+		t.Fatalf("claim = found %v err %v", found, err)
+	}
+	d, err := f.svc.Fire(ctx, claim.ProjectID, claim.Period, t0)
+	if err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	if !d.WindowEnd.Equal(t0) || !d.WindowStart.Equal(t0.Add(-24*time.Hour)) {
+		t.Errorf("fired window = [%v, %v], want the claimed fire's now as end", d.WindowStart, d.WindowEnd)
+	}
+	rows, err := f.svc.ListForProject(ctx, f.projA, 0)
+	if err != nil {
+		t.Fatalf("ListForProject: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != d.ID {
+		t.Errorf("feed = %v, want exactly the fired digest", rows)
+	}
 }

@@ -82,12 +82,13 @@ var outcomeSeverity = map[taurus.Outcome]int{
 }
 
 // Repo is the persistence digestapp needs: the project's executions and
-// their reports (the same surface the Reports page reads), plus the digest
-// rows themselves.
+// their reports (the same surface the Reports page reads), the digest rows
+// themselves, and the firing schedules.
 type Repo interface {
 	ports.ExecutionRepository
 	ports.ReportStore
 	ports.ReportDigestStore
+	ports.DigestScheduleStore
 }
 
 // Deliverer is the delivery sink a digest rides on -- webhookapp satisfies
@@ -223,6 +224,40 @@ func (s *Service) Fire(ctx context.Context, projectID int64, period digest.Perio
 // the in-app feed. limit behaves as ListDigestsByProject does.
 func (s *Service) ListForProject(ctx context.Context, projectID int64, limit int) ([]digest.Digest, error) {
 	return s.repo.ListDigestsByProject(ctx, projectID, limit)
+}
+
+// SetSchedule configures the project's digest firing: upserts the period
+// and enables it. The API's whole "on" path -- turning it off is a delete,
+// not an enabled=false row, so a paused-for-good project leaves no row the
+// scheduler keeps re-examining.
+func (s *Service) SetSchedule(ctx context.Context, projectID int64, period digest.Period) error {
+	if _, err := digest.ParsePeriod(string(period)); err != nil {
+		return err
+	}
+	return s.repo.UpsertDigestSchedule(ctx, projectID, period, true)
+}
+
+// GetSchedule returns the project's digest configuration, or
+// ports.ErrNotFound when none is set.
+func (s *Service) GetSchedule(ctx context.Context, projectID int64) (digest.Schedule, error) {
+	return s.repo.GetDigestSchedule(ctx, projectID)
+}
+
+// DeleteSchedule removes the project's digest configuration, or
+// ports.ErrNotFound when none is set.
+func (s *Service) DeleteSchedule(ctx context.Context, projectID int64) error {
+	return s.repo.DeleteDigestSchedule(ctx, projectID)
+}
+
+// ClaimDue claims the most overdue due, enabled schedule -- the scheduler
+// loop's half of the firing handshake. The claim happens BEFORE Fire's
+// window read on purpose: exclusivity comes from the stamp (a second
+// replica's claim affects zero rows), so at most one fire per due window
+// even with many replicas polling. A claimed fire that then fails to build
+// is skipped, never re-fired for the same window -- the same trade
+// ClaimDueOccurrence makes for occurrences.
+func (s *Service) ClaimDue(ctx context.Context, now time.Time) (digest.Schedule, bool, error) {
+	return s.repo.ClaimDueDigestSchedule(ctx, now)
 }
 
 // DecodePayload parses a stored digest's payload bytes. The handler layer's

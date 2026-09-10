@@ -21,6 +21,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/campaign"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
 	"github.com/heridotlife/honryu/internal/domain/compile"
+	"github.com/heridotlife/honryu/internal/domain/digest"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/jmx"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
@@ -78,6 +79,7 @@ var badRequestErrors = []error{
 	calibration.ErrMaxQPSInvalid, calibration.ErrMaxStepsInvalid, calibration.ErrHoldInvalid,
 	calibrationapp.ErrExecutionNotCalibration, calibrationapp.ErrEngineRequired,
 	calibrationapp.ErrSourceScenarioNotBound,
+	digest.ErrPeriodInvalid,
 	// Cluster registration input: a malformed entry or a non-self-contained
 	// BYOC kubeconfig is the caller's, not a server fault.
 	clusterregistry.ErrNameRequired, clusterregistry.ErrOriginUnknown,
