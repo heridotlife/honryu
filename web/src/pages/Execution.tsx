@@ -736,13 +736,14 @@ export default function Execution() {
           {/* Phase 39: the Capacity card mounts ONLY on calibrate_engine
               executions (isCalibrationExecution). Before Kind rode the wire
               this gate was just info?.engine, so a normal execution's
-              Calibrate button could only ever earn a 400. */}
+              Calibrate button could only ever earn a 400. Phase 44: the
+              fan-out target is the panel's own editable input (persisted
+              per scenario), not a hardcoded prop. */}
           {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}
               executionId={executionId}
               keyInfo={capacityKey}
-              targetQPS={100}
             />
           )}
           {status.phase === 'idle' && (
