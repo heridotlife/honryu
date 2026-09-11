@@ -83,7 +83,16 @@ export function TrendSection({ executionId }: { executionId: number }) {
                           <OutcomeBadge outcome={p.outcome as Outcome} />
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">{p.achieved_throughput.toFixed(1)}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">{p.requested_throughput.toFixed(1)}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {/* Phase 49 audit: this column read as a broken
+                              all-zeros table because an unset stage
+                              throughput means "unlimited" (the load profile
+                              omits the key), which persists as 0 and is the
+                              common case -- not a mapping bug and not a
+                              missing field. The zero honestly means "no
+                              target", so say that instead of 0.0. */}
+                          {p.requested_throughput > 0 ? p.requested_throughput.toFixed(1) : 'unlimited'}
+                        </td>
                         <td className="px-3 py-2 whitespace-nowrap">{p.p95.toFixed(3)}s</td>
                         <td className="px-3 py-2 whitespace-nowrap">{(p.error_rate * 100).toFixed(1)}%</td>
                         <td className="px-3 py-2">
