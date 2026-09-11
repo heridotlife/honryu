@@ -181,6 +181,42 @@ func TestReapIdle_ZeroTTLDisablesThePass(t *testing.T) {
 	}
 }
 
+// A reap must clear the execution's orphaned shard completions: an orphan
+// is "this engine already finished" evidence about pods the reap just
+// deleted, and stale rows would 409 the next post-redeploy Trigger (the
+// live phase-47 incident: reap, deploy 200, trigger 409 "engines already
+// finished" for engines that no longer exist). Deploy makes the same clear
+// for a new engine generation; the reaper owns the mirror-image one for the
+// generation it ends.
+func TestReapIdle_ClearsOrphanedCompletions(t *testing.T) {
+	t.Parallel()
+	e := setup(t, false, 1)
+	ctx := context.Background()
+	runAndFinish(t, e)
+
+	// A straggler Final that landed just after natural completion closed the
+	// run -- the orphan row the reaped pods leave behind.
+	code := 0
+	if err := e.store.RecordOrphanCompletion(ctx, ports.OrphanCompletion{
+		ExecutionID: e.executionID, ScenarioID: e.planIDs[0], ShardIndex: 0,
+		ExitCode: &code, FinishedAt: time.Unix(1000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOrphanCompletion: %v", err)
+	}
+
+	e.svc.WithNow(idleBeyond())
+	reaped, err := e.svc.ReapIdle(ctx, reapTTL, []ports.ClusterRef{""})
+	if err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if len(reaped) != 1 || reaped[0] != e.executionID {
+		t.Fatalf("reaped = %v, want [%d]", reaped, e.executionID)
+	}
+	if orphans, err := e.store.OrphanCompletions(ctx, e.executionID); err != nil || len(orphans) != 0 {
+		t.Fatalf("orphans after reap = %v (%v), want none -- they died with their pods", orphans, err)
+	}
+}
+
 // An execution with no pods left is not a candidate at all -- the cluster's
 // own deployed set drives the pass, so an already-reaped (or never deployed)
 // execution is a no-op rather than an error.

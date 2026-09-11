@@ -729,12 +729,15 @@ type shardKey struct {
 
 // ReapIdle tears down the engine pods of every execution idle longer than
 // ttl on the given clusters, leaving every persisted record -- the execution
-// row, its runs, history, and reports -- intact: this is pod teardown only,
-// NOT Purge, which additionally drops the live metric series. A re-deploy
-// recreates the engines, so an idle execution pays nothing but its next
-// deploy's startup. This is the mechanism that makes "purge-on-finalize"
-// implicit: after natural completion an execution's engines stay warm
-// exactly one TTL (fast re-runs), then land here.
+// row, its runs, history, and reports -- intact, with one exception: the
+// orphaned shard completions, which die with their pods (below -- stale
+// "engines finished" evidence would 409 the next post-redeploy Trigger).
+// This is pod teardown only, NOT Purge, which additionally drops the live
+// metric series. A re-deploy recreates the engines, so an idle execution
+// pays nothing but its next deploy's startup. This is the mechanism that
+// makes "purge-on-finalize" implicit: after natural completion an
+// execution's engines stay warm exactly one TTL (fast re-runs), then land
+// here.
 //
 // Candidates come from the cluster's own deployed set (DeployedExecutions:
 // only executions whose StatefulSets still exist) rather than a database
@@ -826,6 +829,18 @@ func (s *Service) reapIfIdle(ctx context.Context, executionID int64, cluster por
 		return false, err
 	}
 	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
+		return false, err
+	}
+	// The orphaned completions died with their pods: an orphan is "this
+	// engine already finished" evidence about pods that no longer exist, so
+	// leaving the rows would poison the next Trigger after a redeploy with a
+	// 409 "engines already finished" for engines that are gone (the live
+	// phase-47 incident). The same clear a new Deploy makes for its own new
+	// generation of engines, placed here -- reap-specific, NOT in the shared
+	// teardownAndCapture: Stop keeps its orphans (its engines really did
+	// finish, and a straggler Final may still land), and Purge leaves the
+	// clear to the next Deploy, exactly as before.
+	if err := s.repo.ClearOrphanCompletions(ctx, executionID); err != nil {
 		return false, err
 	}
 	return true, nil
