@@ -22,8 +22,16 @@ func (h *handlers) deployExecution(w http.ResponseWriter, r *http.Request) {
 // until the caller's own retry happened to land after readiness (every human
 // and script client re-implemented that retry; task 121 hit it live). The
 // handler now owns the bounded wait calibrationapp has had since Phase 7:
-// retry the readiness-class conflicts for up to Deps.TriggerReadyTimeout,
-// then surface the last error exactly as before.
+// retry the readiness-class conflicts, then surface the last error exactly as
+// before. The two conflicts wait on different clocks, though: pods that exist
+// but are still starting (ErrEnginesNotReady) deserve the full
+// Deps.TriggerReadyTimeout, while pods that do not exist at all
+// (ErrNotDeployed — never deployed, or reaped by the phase-46 idle reaper)
+// can never become ready on their own and get only the short
+// Deps.TriggerAbsentTimeout window, covering nothing but a parallel deploy's
+// StatefulSet appearing (phase-47: the reaped-execution trigger used to hang
+// the full deadline for pods that would never come, until the ingress
+// gateway 504'd it).
 func (h *handlers) triggerExecution(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathInt(r, "execution_id")
 	if !ok {
@@ -43,8 +51,19 @@ func (h *handlers) triggerExecution(w http.ResponseWriter, r *http.Request) {
 	if timeout <= 0 {
 		timeout = defaultTriggerReadyTimeout
 	}
+	absentWait := h.deps.TriggerAbsentTimeout
+	if absentWait <= 0 {
+		absentWait = defaultTriggerAbsentTimeout
+	}
+	if absentWait > timeout {
+		absentWait = timeout
+	}
 
 	deadline := time.Now().Add(timeout)
+	// ErrNotDeployed's own, far shorter deadline: absent pods never become
+	// ready, so this window only covers a parallel deploy's StatefulSet
+	// appearing — see the function comment.
+	absentDeadline := time.Now().Add(absentWait)
 	// The wait is bounded but can far outlive http.Server.WriteTimeout
 	// (2m vs 15s by default): a write deadline that expires mid-wait makes
 	// the final conflict answer unwritable -- zero bytes reach the client
@@ -69,13 +88,21 @@ func (h *handlers) triggerExecution(w http.ResponseWriter, r *http.Request) {
 			respondError(w, err)
 			return
 		}
-		if time.Now().After(deadline) || r.Context().Err() != nil {
+		// Pods that exist but are starting get the full deadline; pods that
+		// do not exist get the short one, after which the conflict (with its
+		// deploy-first hint) is surfaced immediately rather than after a
+		// gateway-killing hang.
+		waitUntil := deadline
+		if errors.Is(err, run.ErrNotDeployed) {
+			waitUntil = absentDeadline
+		}
+		if time.Now().After(waitUntil) || r.Context().Err() != nil {
 			respondError(w, err)
 			return
 		}
 		// A poll capped at the remaining budget so the final attempt cannot
 		// sleep past the deadline and add the poll interval to the latency.
-		if remaining := time.Until(deadline); remaining < poll {
+		if remaining := time.Until(waitUntil); remaining < poll {
 			poll = remaining
 		}
 		h.sleep(poll)
