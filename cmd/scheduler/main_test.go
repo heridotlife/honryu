@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/heridotlife/honryu/internal/config"
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/campaign"
+	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
@@ -907,5 +909,89 @@ func TestAdvanceCalibrationOnce_AdvancesADueJob(t *testing.T) {
 	}
 	if job.Phase != calibration.PhaseDone {
 		t.Fatalf("job.Phase = %q, want done", job.Phase)
+	}
+}
+
+// sweepClusters must cover the deployment's own default cluster (the empty
+// ref) plus every registered one -- an execution pinned to a registered
+// cluster has its engines there, and a sweep that never lists that cluster
+// never finds its idle pods.
+func TestSweepClusters_DefaultPlusEveryRegisteredCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+
+	for _, name := range []string{"eu", "us"} {
+		c := clusterregistry.Cluster{
+			Name: name, Origin: clusterregistry.OriginOperator, SecretRef: "sec",
+			Namespace: "honryu", SidecarImage: "sidecar:1", IngestURL: "https://ingest",
+		}
+		if err := store.CreateCluster(ctx, c); err != nil {
+			t.Fatalf("CreateCluster(%s): %v", name, err)
+		}
+	}
+
+	refs, err := sweepClusters(ctx, store)
+	if err != nil {
+		t.Fatalf("sweepClusters: %v", err)
+	}
+	want := []ports.ClusterRef{"", "eu", "us"}
+	if !reflect.DeepEqual(refs, want) {
+		t.Fatalf("sweepClusters = %v, want %v", refs, want)
+	}
+}
+
+// A zero EngineIdleTTL is the disabled state: the loop must return before
+// its first tick rather than run a disabled sweep forever.
+func TestRunEngineReaperLoop_ZeroTTLReturnsImmediately(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := fake.NewStore()
+	sched := fake.NewScheduler()
+	obj := fake.NewObjectStore()
+	lifecycle := lifecycleapp.NewService(store, sched, obj, lifecycleapp.StaticImage("honryu/jmeter:latest"))
+
+	done := make(chan struct{})
+	go func() { runEngineReaperLoop(ctx, lifecycle, store, config.Config{}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runEngineReaperLoop with zero TTL did not return")
+	}
+}
+
+// One reap pass through the loop's own entry point: an execution whose pods
+// were deployed (never activity-stamped) beyond the TTL is torn down and its
+// id handed back for the loop to log.
+func TestReapIdleOnce_ReapsIdleEngines(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	sched := fake.NewScheduler()
+	obj := fake.NewObjectStore()
+	lifecycle := lifecycleapp.NewService(store, sched, obj, lifecycleapp.StaticImage("honryu/jmeter:latest"))
+
+	p, _ := project.New("web", "honryu", "")
+	projectID, _ := store.CreateProject(ctx, p)
+	coll, _ := execution.New("peak", projectID)
+	executionID, _ := store.CreateExecution(ctx, coll)
+	// Pods deployed an hour and a half ago, straight through the scheduler:
+	// never activity-stamped, so the deploy-time fallback is the clock.
+	sched.Now = func() time.Time { return time.Now().Add(-90 * time.Minute) }
+	if err := sched.DeployScenario(ctx, ports.DeploySpec{
+		ProjectID: projectID, ExecutionID: executionID, Image: "honryu/jmeter:latest",
+		Shards: []ports.ShardSpec{{Index: 0, Config: []byte("cfg")}},
+	}); err != nil {
+		t.Fatalf("DeployScenario: %v", err)
+	}
+
+	reapIdleOnce(ctx, lifecycle, store, time.Hour)
+
+	if deployed, _ := sched.DeployedExecutions(ctx, ""); len(deployed) != 0 {
+		t.Fatalf("deployed after reap = %v, want none", deployed)
+	}
+	if _, err := store.GetExecution(ctx, executionID); err != nil {
+		t.Fatalf("GetExecution after reap: %v (records must survive)", err)
 	}
 }
