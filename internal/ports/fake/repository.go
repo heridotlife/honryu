@@ -59,6 +59,12 @@ type Store struct {
 	// pendingCorrelation is the trace id the latest Deploy minted, waiting for
 	// the next Trigger to stamp it onto a run.
 	pendingCorrelation map[int64]string
+	// lastActivity is the engine idle clock (execution.last_activity_at):
+	// restamped by every lifecycle event that proves the engines are in use.
+	// touchCount mirrors it as a per-execution call count, so a test can pin
+	// WHICH lifecycle path stamped the clock, not just that something did.
+	lastActivity map[int64]time.Time
+	touchCount   map[int64]int
 
 	runSeq     int64
 	currentRun map[int64]int64               // executionID -> active runID
@@ -144,6 +150,8 @@ func NewStore() *Store {
 		exec:                 make(map[int64][]loadprofile.Entry),
 		execCriteria:         make(map[int64][]string),
 		pendingCorrelation:   make(map[int64]string),
+		lastActivity:         make(map[int64]time.Time),
+		touchCount:           make(map[int64]int),
 		currentRun:           make(map[int64]int64),
 		runHistory:           make(map[int64]*ports.RunRecord),
 		running:              make(map[int64]map[int64]time.Time),
@@ -635,6 +643,41 @@ func (s *Store) PendingCorrelationID(_ context.Context, executionID int64) (stri
 		return "", ports.ErrNotFound
 	}
 	return s.pendingCorrelation[executionID], nil
+}
+
+// TouchActivity stamps the execution's last-activity clock to now. An
+// unknown execution id is a dropped stamp, not an error -- matching the mysql
+// adapter, where affected rows are deliberately not checked (NOW()'s second
+// precision would mistake a same-second second touch for a missing row).
+func (s *Store) TouchActivity(_ context.Context, executionID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastActivity[executionID] = s.now()
+	s.touchCount[executionID]++
+	return nil
+}
+
+// LastActivity returns the execution's last-activity stamp; ok is false for
+// no row or a never-stamped one, mirroring the mysql adapter's NULL/no-row
+// collapse (either way the caller falls back to another clock).
+func (s *Store) LastActivity(_ context.Context, executionID int64) (time.Time, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.executions[executionID]; !ok {
+		return time.Time{}, false, nil
+	}
+	last, ok := s.lastActivity[executionID]
+	return last, ok, nil
+}
+
+// TouchActivityCount reports how many times the execution's idle clock was
+// stamped -- a test hook distinguishing WHICH lifecycle path stamped the
+// clock (deploy, trigger, teardown) when their stamps land in the same
+// second and the timestamps alone cannot.
+func (s *Store) TouchActivityCount(executionID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.touchCount[executionID]
 }
 
 // StoreExecutionConfig replaces the execution's load profile and configured
