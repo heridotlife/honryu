@@ -173,6 +173,17 @@ func respondError(w http.ResponseWriter, err error) {
 			"orphaned_completions": finishedErr.Orphaned,
 			"hint":                 "purge the execution and redeploy before triggering",
 		})
+	case errors.Is(err, run.ErrNotDeployed):
+		// No engine pods exist at all — never deployed, or deleted
+		// underneath the caller. The message names the condition; since
+		// phase 47 the hint adds the remediation and the one cause a user
+		// cannot see: engines they know they deployed can be absent because
+		// the idle reaper (HONRYU_ENGINE_IDLE_TTL) tore them down after their
+		// last run, which "not deployed" alone does not say. The message
+		// itself stays byte-identical — details is strictly additive.
+		writeErrorDetails(w, http.StatusConflict, err.Error(), map[string]any{
+			"hint": "no engine pods exist for this execution (never deployed, or removed by the idle reaper); (re)deploy before triggering",
+		})
 	case matchesAny(err, conflictErrors):
 		writeError(w, http.StatusConflict, err.Error())
 	case matchesAny(err, badRequestErrors):

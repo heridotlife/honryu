@@ -30,6 +30,7 @@ type lifecycleEnv struct {
 	h           http.Handler
 	store       *fake.Store
 	sched       *fake.Scheduler
+	svc         *lifecycleapp.Service
 	executionID int64
 	scenarioID  int64
 	owner       string
@@ -39,28 +40,31 @@ type lifecycleEnv struct {
 // execution with one scenario (JMX test file) and a stored execution config.
 func newLifecycleEnv(t *testing.T, owner string) lifecycleEnv {
 	t.Helper()
-	return newLifecycleEnvWithTimings(t, owner, time.Millisecond, 10*time.Millisecond)
+	return newLifecycleEnvWithTimings(t, owner, time.Millisecond, 10*time.Millisecond, 10*time.Millisecond)
 }
 
 // newLifecycleEnvWithTimings is newLifecycleEnv with the trigger readiness
-// poll/timeout wired by the caller, for tests that need the wait to relate to
-// an outside clock (e.g. http.Server.WriteTimeout).
-func newLifecycleEnvWithTimings(t *testing.T, owner string, poll, timeout time.Duration) lifecycleEnv {
+// poll/timeout and the (shorter) not-deployed absent window wired by the
+// caller, for tests that need the waits to relate to an outside clock (e.g.
+// http.Server.WriteTimeout, or proving which deadline a conflict waited on).
+func newLifecycleEnvWithTimings(t *testing.T, owner string, poll, ready, absent time.Duration) lifecycleEnv {
 	t.Helper()
 	ctx := context.Background()
 	store := fake.NewStore()
 	obj := fake.NewObjectStore()
 	sched := fake.NewScheduler()
+	lifecycle := lifecycleapp.NewService(store, sched, obj, lifecycleapp.StaticImage("img"))
 
 	h := httpapi.NewRouter(httpapi.Deps{
-		Projects:            projectapp.NewService(store),
-		Scenarios:           scenarioapp.NewService(store, obj),
-		Executions:          executionapp.NewService(store, obj, 100),
-		Lifecycle:           lifecycleapp.NewService(store, sched, obj, lifecycleapp.StaticImage("img")),
-		Store:               obj,
-		DefaultOwners:       []string{"honryu"},
-		TriggerReadyPoll:    poll,
-		TriggerReadyTimeout: timeout,
+		Projects:             projectapp.NewService(store),
+		Scenarios:            scenarioapp.NewService(store, obj),
+		Executions:           executionapp.NewService(store, obj, 100),
+		Lifecycle:            lifecycle,
+		Store:                obj,
+		DefaultOwners:        []string{"honryu"},
+		TriggerReadyPoll:     poll,
+		TriggerReadyTimeout:  ready,
+		TriggerAbsentTimeout: absent,
 	})
 
 	p, _ := project.New("web", owner, "")
@@ -78,7 +82,7 @@ func newLifecycleEnvWithTimings(t *testing.T, owner string, poll, timeout time.D
 	}); err != nil {
 		t.Fatalf("store exec: %v", err)
 	}
-	return lifecycleEnv{h: h, store: store, sched: sched, executionID: executionID, scenarioID: scenarioID, owner: owner}
+	return lifecycleEnv{h: h, store: store, sched: sched, svc: lifecycle, executionID: executionID, scenarioID: scenarioID, owner: owner}
 }
 
 func TestLifecycleHTTP_DeployTriggerStatusStopPurge(t *testing.T) {
@@ -226,7 +230,7 @@ func TestLifecycleHTTP_TriggerWaitOutlivesServerWriteTimeout(t *testing.T) {
 	// SetWriteDeadline override now has 100ms -- not 10ms -- to land before
 	// the server's deadline, which survives -race goroutine-scheduling
 	// delays on loaded CI runners (the 10ms window flaked once there).
-	e := newLifecycleEnvWithTimings(t, "honryu", 50*time.Millisecond, 500*time.Millisecond)
+	e := newLifecycleEnvWithTimings(t, "honryu", 50*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
 	srv := httptest.NewUnstartedServer(e.h)
 	srv.Config.WriteTimeout = 100 * time.Millisecond // < the 500ms wait
 	srv.Start()
@@ -247,6 +251,92 @@ func TestLifecycleHTTP_TriggerWaitOutlivesServerWriteTimeout(t *testing.T) {
 	if msg := string(body); !strings.Contains(msg, run.ErrNotDeployed.Error()) {
 		t.Fatalf("body = %s, want the not-deployed conflict message", msg)
 	}
+}
+
+// The two readiness-class conflicts wait on different clocks (phase 47):
+// ErrEnginesNotReady (pods exist, still starting) keeps the full
+// TriggerReadyTimeout, but ErrNotDeployed (no pods at all -- never deployed,
+// or deleted underneath the caller by the idle reaper) gets only the short
+// TriggerAbsentTimeout: absent pods can never become ready, so the full
+// deadline is a hang that ends when the ingress gateway 504s the request
+// (the live phase-47 incident). The short window still covers the one race
+// worth waiting for: a parallel deploy's StatefulSet appearing mid-wait.
+func TestLifecycleHTTP_TriggerAbsentFastFail(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("persistent not-deployed answers within the short window", func(t *testing.T) {
+		t.Parallel()
+		// absent (100ms) far below ready (1.5s): a request that answers in
+		// ~100ms proves the short window ran the wait; the old behavior
+		// (full deadline for both conflicts) would still be sleeping at 1s.
+		e := newLifecycleEnvWithTimings(t, "honryu", 5*time.Millisecond, 1500*time.Millisecond, 100*time.Millisecond)
+		start := time.Now()
+		rec := do(t, e.h, http.MethodPost, "/api/executions/"+itoa(e.executionID)+"/trigger")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("trigger not-deployed = %d (%s), want 409", rec.Code, rec.Body.String())
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("trigger not-deployed took %s, want the ~100ms absent window, not the 1.5s readiness deadline", elapsed)
+		}
+		if msg := rec.Body.String(); !strings.Contains(msg, run.ErrNotDeployed.Error()) {
+			t.Fatalf("body = %s, want the not-deployed conflict message", msg)
+		}
+		// The details hint names the remediation and the reaper -- the one
+		// cause a user staring at "not deployed" for engines they know they
+		// deployed cannot see (phase 47).
+		if msg := rec.Body.String(); !strings.Contains(msg, "idle reaper") || !strings.Contains(msg, "deploy") {
+			t.Fatalf("body = %s, want a hint naming the idle reaper and the deploy-first fix", msg)
+		}
+	})
+
+	t.Run("engines-not-ready still waits the full deadline", func(t *testing.T) {
+		t.Parallel()
+		// One of the profile's two engines deployed: pods exist, so the
+		// conflict is ErrEnginesNotReady, which must keep waiting the full
+		// readiness deadline rather than the 20ms absent window.
+		e := newLifecycleEnvWithTimings(t, "honryu", 5*time.Millisecond, 300*time.Millisecond, 20*time.Millisecond)
+		c, err := e.store.GetExecution(ctx, e.executionID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if err := e.sched.DeployScenario(ctx, ports.DeploySpec{
+			ProjectID: c.ProjectID, ExecutionID: e.executionID, ScenarioID: e.scenarioID, Image: "img",
+			Shards: []ports.ShardSpec{{Index: 0, Config: []byte("cfg")}},
+		}); err != nil {
+			t.Fatalf("DeployScenario: %v", err)
+		}
+		start := time.Now()
+		rec := do(t, e.h, http.MethodPost, "/api/executions/"+itoa(e.executionID)+"/trigger")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("trigger half-deployed = %d (%s), want 409", rec.Code, rec.Body.String())
+		}
+		if msg := rec.Body.String(); !strings.Contains(msg, run.ErrEnginesNotReady.Error()) {
+			t.Fatalf("body = %s, want the not-ready conflict message", msg)
+		}
+		if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+			t.Fatalf("trigger not-ready answered in %s, want it to wait the full 300ms readiness deadline (not the 20ms absent window)", elapsed)
+		}
+	})
+
+	t.Run("pods appearing mid-window succeed", func(t *testing.T) {
+		t.Parallel()
+		// The race the absent window exists for: a deploy issued in parallel
+		// lands its pods while the trigger waits, and the wait ends in 200
+		// rather than a conflict.
+		e := newLifecycleEnvWithTimings(t, "honryu", 5*time.Millisecond, 3*time.Second, time.Second)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			_ = e.svc.Deploy(ctx, e.executionID)
+		}()
+		start := time.Now()
+		rec := do(t, e.h, http.MethodPost, "/api/executions/"+itoa(e.executionID)+"/trigger")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("trigger after mid-window deploy = %d (%s), want 200", rec.Code, rec.Body.String())
+		}
+		if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+			t.Fatalf("trigger took %s, want it to succeed once the parallel deploy's pods appear, not after the full deadline", elapsed)
+		}
+	})
 }
 
 func TestLifecycleHTTP_StopWithoutRunConflicts(t *testing.T) {
