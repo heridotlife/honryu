@@ -47,6 +47,11 @@ type Repo interface {
 	// open run is evidence the engines already finished, and Trigger refuses
 	// to open a corpse-run against it until the next Deploy clears it.
 	RecordOrphanCompletion(ctx context.Context, oc ports.OrphanCompletion) error
+	// TouchActivity restamps the execution's engine idle clock: a finalised
+	// run -- natural completion above all -- is exactly the moment the idle
+	// TTL starts running, after which the engines stay warm for fast re-runs
+	// until the reaper takes them.
+	TouchActivity(ctx context.Context, executionID int64) error
 }
 
 // Service absorbs pushed measurements and finalises runs.
@@ -275,6 +280,14 @@ func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcom
 	// never comes for a dead run, and the abandoned-run sweep skips runs that
 	// already have reports -- so the execution reads running forever and
 	// every later Trigger 409s on the corpse marker (phase 43's wedge).
+	//
+	// The same is true of the engine idle clock: this is the shared exit, so
+	// stamping here is what makes "purge-on-finalize" implicit -- a run that
+	// finished naturally keeps its engines warm exactly one TTL, then the
+	// reaper tears them down. Best effort, like the notification above: a
+	// report must not fail on a bookkeeping stamp, and teardown's own stamp
+	// covers the paths that end in Stop or Purge instead.
+	_ = s.repo.TouchActivity(ctx, executionID)
 	return s.closeRun(ctx, executionID, runID)
 }
 

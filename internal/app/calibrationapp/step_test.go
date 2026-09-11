@@ -632,3 +632,28 @@ func TestRunStep_PropagatesReportReadFailure(t *testing.T) {
 		t.Fatal("RunStep error = nil, want the report store's failure")
 	}
 }
+
+// A completed step is calibration progress: the idle clock must carry a
+// fresh stamp so the engine reaper does not count the gap between a search's
+// steps against the engines the next step is about to reuse. Deploy and
+// Trigger stamp their own halves through the real lifecycle; this pins that
+// the completion -- after Stop, whatever settled the run -- leaves a stamp
+// too (>= 3: deploy + trigger + completion).
+func TestRunStep_StampsEngineActivityOnCompletion(t *testing.T) {
+	t.Parallel()
+	e := setupStep(t, true)
+	ctx := context.Background()
+
+	if got := e.store.TouchActivityCount(e.executionID); got != 0 {
+		t.Fatalf("activity touches before RunStep = %d, want 0", got)
+	}
+	if _, err := e.runner.RunStep(ctx, e.executionID, 123.4, 17, 0); err != nil {
+		t.Fatalf("RunStep: %v", err)
+	}
+	if got := e.store.TouchActivityCount(e.executionID); got < 3 {
+		t.Fatalf("activity touches after RunStep = %d, want >= 3 (deploy, trigger, completion)", got)
+	}
+	if _, ok, err := e.store.LastActivity(ctx, e.executionID); err != nil || !ok {
+		t.Fatalf("LastActivity after RunStep = %v,%v; want true,nil", ok, err)
+	}
+}

@@ -58,6 +58,11 @@ type Repo interface {
 	// PendingCorrelationID returns the id the latest Deploy minted, which
 	// Trigger stamps onto the run it starts.
 	PendingCorrelationID(ctx context.Context, executionID int64) (string, error)
+	// TouchActivity restamps the execution's engine idle clock: deploy, run
+	// start, and run teardown below each call it, and metricsapp calls it on
+	// natural completion -- every event that proves the engines are in use
+	// resets the TTL the idle reaper measures.
+	TouchActivity(ctx context.Context, executionID int64) error
 	// GetReport returns a run's stored report, or ports.ErrNotFound when the
 	// run never got one. The abandoned-run sweep uses it to tell a wedged run
 	// (report stored, marker left open: heal the marker only) from an
@@ -333,6 +338,14 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 	if err := s.repo.ClearOrphanCompletions(ctx, executionID); err != nil {
 		return err
 	}
+	// The deploy itself is engine activity: restamp the idle clock before any
+	// pod exists, so a reaper sweeping mid-deploy cannot count this execution
+	// as idle and tear down engines the deploy is about to (re)create. Like
+	// the correlation-id park above, a failure here fails the deploy with
+	// nothing half-created rather than leaving engines nothing vouches for.
+	if err := s.repo.TouchActivity(ctx, executionID); err != nil {
+		return err
+	}
 	headers := telemetry.Headers(tc, telemetry.Identity{
 		TenantID:         coll.TenantID,
 		ProjectID:        coll.ProjectID,
@@ -510,6 +523,12 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	if err != nil {
 		return err
 	}
+	// The run's start is engine activity -- the idle clock must measure from
+	// the run, not the deploy that preceded it, or a long-idle-then-triggered
+	// execution could read as already-expired mid-run. Best effort: the run
+	// is open and the reaper's open-run guard protects these engines even if
+	// the stamp is lost.
+	_ = s.repo.TouchActivity(ctx, executionID)
 	// Snapshot each scenario's currently-deployed config under this run's own
 	// id, so what a re-deploy stages afterward can never change what this run
 	// is shown to have used. Best effort, matching log capture: a customer must
@@ -993,6 +1012,13 @@ func engineOf(exe execution.Execution, fallback taurus.Executor) taurus.Executor
 // teardown stops metric execution and engines, and clears run/running-scenario
 // state (best effort on the engine stop calls, which may already be gone).
 func (s *Service) teardown(ctx context.Context, executionID int64) error {
+	// A run being torn down is its own last activity: the engines usually
+	// stay deployed (only Purge removes pods), so the idle clock must start
+	// at the run's end, not its start -- this is the "stopped" half of the
+	// completion activity, the natural-finalize half living in metricsapp.
+	// Best effort, like every side duty below: a bookkeeping stamp must not
+	// fail a stop.
+	_ = s.repo.TouchActivity(ctx, executionID)
 	scenarios, err := s.repo.LoadProfileFor(ctx, executionID)
 	if err != nil {
 		return err
