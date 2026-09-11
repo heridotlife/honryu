@@ -319,7 +319,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.HTTP.TriggerReadyTimeout, err = durEnv(getenv, "HTTP_TRIGGER_READY_TIMEOUT", cfg.HTTP.TriggerReadyTimeout); err != nil {
 		return cfg, err
 	}
-	if cfg.HTTP.TriggerAbsentTimeout, err = durEnv(getenv, "HTTP_TRIGGER_ABSENT_TIMEOUT", cfg.HTTP.TriggerAbsentTimeout); err != nil {
+	if cfg.HTTP.TriggerAbsentTimeout, err = durEnv(getenv, "TRIGGER_ABSENT_TIMEOUT", cfg.HTTP.TriggerAbsentTimeout); err != nil {
 		return cfg, err
 	}
 	cfg.DB.Driver = strEnv(getenv, "DB_DRIVER", cfg.DB.Driver)
