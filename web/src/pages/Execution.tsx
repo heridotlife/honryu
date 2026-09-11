@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -452,6 +452,21 @@ export default function Execution() {
   // numbers / remediation hint when the server's envelope carried them.
   const [actionDetails, setActionDetails] = useState<Record<string, unknown> | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  // Purge is the one control that tears engines and pods down (run:delete),
+  // so its button is destructive-styled and two-step: the first click arms
+  // it (label becomes "Confirm purge?"), the second click executes. Arming
+  // decays after six seconds, and Escape or moving focus away disarms --
+  // an armed state must never outlive the operator's attention.
+  const [purgeArmed, setPurgeArmed] = useState(false);
+  const disarmTimer = useRef<number | null>(null);
+  const disarmPurge = () => {
+    setPurgeArmed(false);
+    if (disarmTimer.current !== null) {
+      clearTimeout(disarmTimer.current);
+      disarmTimer.current = null;
+    }
+  };
+  useEffect(() => disarmPurge, []);
   const [reports, setReports] = useState<Report[] | null>(null);
   const [logsScenario, setLogsScenario] = useState<number | null>(null);
   const [logText, setLogText] = useState<string>('');
@@ -636,16 +651,50 @@ export default function Execution() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {controls.map(({ action, enabled }) => (
-                  <Button
-                    key={action}
-                    variant={action === 'stop' || action === 'purge' ? 'outline' : 'primary'}
-                    disabled={!enabled || busyAction !== null}
-                    onClick={() => runAction(action)}
-                  >
-                    {busyAction === action ? 'Working…' : action.charAt(0).toUpperCase() + action.slice(1)}
-                  </Button>
-                ))}
+                {controls.map(({ action, enabled }) => {
+                  const isPurge = action === 'purge';
+                  return (
+                    <Button
+                      key={action}
+                      data-testid={`lifecycle-${action}`}
+                      variant={isPurge ? 'destructive' : action === 'stop' ? 'outline' : 'primary'}
+                      disabled={!enabled || busyAction !== null}
+                      onClick={() => {
+                        if (!isPurge) {
+                          // Any other action cancels a lingering armed purge:
+                          // the operator has moved on, so must the button.
+                          disarmPurge();
+                          runAction(action);
+                          return;
+                        }
+                        if (!purgeArmed) {
+                          // First click: arm. A 6s window keeps the confirm
+                          // deliberate without a modal; nothing is sent yet.
+                          setPurgeArmed(true);
+                          if (disarmTimer.current !== null) {
+                            clearTimeout(disarmTimer.current);
+                          }
+                          disarmTimer.current = window.setTimeout(() => {
+                            disarmTimer.current = null;
+                            setPurgeArmed(false);
+                          }, 6_000);
+                          return;
+                        }
+                        // Second click while armed: actually purge.
+                        disarmPurge();
+                        runAction('purge');
+                      }}
+                      onBlur={isPurge ? disarmPurge : undefined}
+                      onKeyDown={isPurge ? (e) => { if (e.key === 'Escape') disarmPurge(); } : undefined}
+                    >
+                      {busyAction === action
+                        ? 'Working…'
+                        : isPurge && purgeArmed
+                          ? 'Confirm purge?'
+                          : action.charAt(0).toUpperCase() + action.slice(1)}
+                    </Button>
+                  );
+                })}
                 {controls.length === 0 && (
                   <p className="text-sm text-slate-500 dark:text-slate-400">
                     Your role is read-only here: no lifecycle controls.

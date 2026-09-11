@@ -27,6 +27,7 @@ import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { useSession } from '../hooks/useSession';
 import { formatApmLink, getApmLinks, loadApmTemplate, saveApmTemplate, substituteApmLink, type ApmLinkTemplate } from '../api/apm';
 import { SignatureSection, TrendSection } from './ReportsTrend';
+import { executionDisplayName, formatRowTime } from '../lib/executionRow';
 
 /** Validates the shard viewer's input: shards are 0-indexed non-negative integers; anything else is null. */
 export function parseShard(raw: string): number | null {
@@ -266,12 +267,15 @@ function ReportsList() {
                     data-testid={`execution-${e.id}`}
                   >
                     <span className="font-medium text-slate-900 dark:text-slate-100">
-                      #{e.id} {e.name}
+                      #{e.id} {executionDisplayName(e.name)}
                     </span>
                     <span className="text-slate-500 dark:text-slate-400">
                       {e.engine ?? 'default'}
                       {' · '}
-                      {new Date(e.created_time).toLocaleString()}
+                      {/* One short timestamp, no raw ISO (phase 49): the
+                          calibrate flow bakes one into the name, which the
+                          display name above strips. */}
+                      {formatRowTime(e.created_time)}
                       {active ? ' · loaded' : ''}
                     </span>
                   </button>

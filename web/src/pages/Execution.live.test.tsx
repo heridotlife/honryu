@@ -530,3 +530,131 @@ describe('Execution action-error details (mounted)', () => {
     expect(container!.querySelector('[data-testid="action-error-details"]')).toBeNull();
   });
 });
+
+// Phase 49: Purge tears engines and pods down, so it is destructive-styled
+// and two-step -- first click arms ("Confirm purge?"), second click fires.
+// Nothing is sent while armed; Escape, blur, six seconds, or any other
+// lifecycle action disarms. A disabled Purge can never arm.
+describe('Execution purge confirm (mounted)', () => {
+  const purgeBtn = () =>
+    container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
+
+  const label = () => purgeBtn().textContent ?? '';
+
+  const clickPurge = async () => {
+    await act(async () => {
+      purgeBtn().click();
+    });
+    await act(async () => {});
+  };
+
+  /** Renders a deployed execution (Purge enabled) and swaps in a fetch stub
+   * that records every URL, answering the purge POST -- the same
+   * stub-after-mount pattern the action-error tests use. */
+  const renderArmedable = async (calls: string[]) => {
+    await renderExecution('deployed', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith('/api/executions/5/purge')) {
+          return json({ message: 'purged' });
+        }
+        if (url.endsWith('/api/executions/5/status')) {
+          return json(statusFixture('idle'));
+        }
+        return json({ message: 'no stub' }, 500);
+      }),
+    );
+  };
+
+  const purgeCalls = (calls: string[]) => calls.filter((u) => u.endsWith('/api/executions/5/purge'));
+
+  it('first click arms without sending anything; second click fires the purge', async () => {
+    const calls: string[] = [];
+    await renderArmedable(calls);
+    expect(label()).toBe('Purge');
+
+    await clickPurge();
+    expect(label()).toBe('Confirm purge?');
+    expect(purgeCalls(calls)).toHaveLength(0);
+
+    await clickPurge();
+    expect(purgeCalls(calls)).toHaveLength(1);
+  });
+
+  it('Escape disarms; the next click re-arms instead of purging', async () => {
+    const calls: string[] = [];
+    await renderArmedable(calls);
+
+    await clickPurge();
+    expect(label()).toBe('Confirm purge?');
+
+    await act(async () => {
+      purgeBtn().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(label()).toBe('Purge');
+
+    await clickPurge();
+    expect(label()).toBe('Confirm purge?');
+    expect(purgeCalls(calls)).toHaveLength(0);
+  });
+
+  it('blur disarms', async () => {
+    const calls: string[] = [];
+    await renderArmedable(calls);
+
+    await clickPurge();
+    expect(label()).toBe('Confirm purge?');
+
+    await act(async () => {
+      purgeBtn().dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(label()).toBe('Purge');
+    expect(purgeCalls(calls)).toHaveLength(0);
+  });
+
+  it('the armed state decays after six seconds', async () => {
+    const calls: string[] = [];
+    await renderArmedable(calls);
+
+    // Fake timers must be live before the arming click so the disarm
+    // timeout is created under their control.
+    vi.useFakeTimers();
+    try {
+      await clickPurge();
+      expect(label()).toBe('Confirm purge?');
+
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(label()).toBe('Purge');
+    expect(purgeCalls(calls)).toHaveLength(0);
+  });
+
+  it('a disabled Purge never arms and never sends', async () => {
+    const calls: string[] = [];
+    // Idle: phaseControls gates every action off, Purge included.
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return json({ message: 'no stub' }, 500);
+      }),
+    );
+
+    expect(purgeBtn().disabled).toBe(true);
+    // HTMLElement.click() is spec'd to do nothing on a disabled control --
+    // the browser-level guarantee the two-step flow leans on.
+    await act(async () => {
+      purgeBtn().click();
+    });
+    expect(label()).toBe('Purge');
+    expect(calls.some((u) => u.endsWith('/api/executions/5/purge'))).toBe(false);
+  });
+});
