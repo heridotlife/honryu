@@ -231,3 +231,80 @@ describe('errorDetails through wrapper errors', () => {
     expect(errorDetails(new Error('outer', { cause: new Error('inner') }))).toBeNull();
   });
 });
+
+// Phase 49: a session cookie expiring mid-use used to leave pages rendering
+// lying empty states ("No executions visible to you yet."). Now any API 401
+// outside the session surface drops local session state and hard-redirects
+// to "/" exactly once, so the profile picker boots. The session surface's
+// own 401s (/me, /session, /session/profiles) are the picker's normal
+// unauthenticated state and must never trigger the redirect -- otherwise
+// booting the picker would loop.
+describe('ApiClient dead-session redirect (phase 49)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.removeItem('honryu_token');
+  });
+
+  /** Swaps window.location for a stub whose assign() is observable. The
+   * spread keeps href etc. working for the rest of the worker. */
+  const stubLocation = (): ReturnType<typeof vi.fn> => {
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      value: { ...window.location, assign },
+      writable: true,
+      configurable: true,
+    });
+    return assign;
+  };
+
+  const fetch401 = (): void => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ message: 'session expired' }), { status: 401 })),
+    );
+  };
+
+  it('a 401 from a list call clears the local token and hard-redirects to / exactly once', async () => {
+    localStorage.setItem('honryu_token', 'stale-token');
+    const assign = stubLocation();
+    fetch401();
+
+    const client = new ApiClient({ baseUrl: '/api', getToken: () => localStorage.getItem('honryu_token') });
+    await expect(client.get('/executions')).rejects.toBeInstanceOf(ApiError);
+
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith('/');
+    expect(localStorage.getItem('honryu_token')).toBeNull();
+
+    // The burst case: several in-flight calls 401 together (a page polling
+    // status, trend, and reports at once) -- still exactly one redirect.
+    await expect(client.get('/executions/5/status')).rejects.toBeInstanceOf(ApiError);
+    await expect(client.get('/executions/5/trend')).rejects.toBeInstanceOf(ApiError);
+    expect(assign).toHaveBeenCalledTimes(1);
+  });
+
+  it('a burst of 401s on an injected spy also fires exactly once', async () => {
+    fetch401();
+    const onUnauthorized = vi.fn();
+    const client = new ApiClient({ baseUrl: '/api', getToken: () => null, onUnauthorized });
+
+    await expect(client.get('/reports')).rejects.toBeInstanceOf(ApiError);
+    await expect(client.post('/executions/5/trigger', new URLSearchParams())).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it('the session surface never triggers the redirect (the picker must be able to boot)', async () => {
+    fetch401();
+    const onUnauthorized = vi.fn();
+    const client = new ApiClient({ baseUrl: '/api', getToken: () => null, onUnauthorized });
+
+    // GET /me (identity), POST /session (the picker's login -- createSession
+    // rides request/send like everything else), DELETE /session (logout),
+    // and GET /session/profiles (the persona list).
+    await expect(client.get('/me')).rejects.toBeInstanceOf(ApiError);
+    await expect(client.post('/session', new URLSearchParams())).rejects.toBeInstanceOf(ApiError);
+    await expect(client.request('/session', { method: 'DELETE' })).rejects.toBeInstanceOf(ApiError);
+    await expect(client.get('/session/profiles')).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});

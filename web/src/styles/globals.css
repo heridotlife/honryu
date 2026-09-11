@@ -39,3 +39,19 @@
 body {
   @apply bg-white text-slate-700 dark:bg-slate-950 dark:text-slate-300;
 }
+
+/* Vestibular safety: operators who ask the OS for reduced motion get a
+   near-instant UI. The SPA leans on transition-all duration-200 everywhere
+   (buttons, chips, rows), so one global clamp covers every surface without
+   touching components. 0.01ms rather than 0 keeps transitionend/
+   animationend events firing for any code that waits on them. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

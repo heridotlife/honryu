@@ -21,16 +21,52 @@ export interface ApiClientOptions {
   baseUrl?: string;
   /** Defaults to reading "honryu_token" from localStorage; returns null when unauthenticated (no-auth mode). */
   getToken?: () => string | null;
+  /** Called once when an API response comes back 401 and the session is dead. Defaults to
+   * hard-redirecting to "/" so the profile picker boots (session-surface calls exempt). */
+  onUnauthorized?: () => void;
+}
+
+/** The paths whose 401s are the picker's normal unauthenticated state, not a
+ * dead session mid-use: identity (GET /me), the session itself (POST/DELETE
+ * /session -- the picker's createSession MUST NOT bounce), and the persona
+ * list (GET /session/profiles). Everything else 401ing means the cookie
+ * expired while the operator was working. */
+function isSessionSurface(path: string): boolean {
+  return path === '/me' || path === '/session' || path.startsWith('/session/');
+}
+
+/** The default dead-session reaction: drop any local bearer token, then let
+ * a full page load at "/" rebuild the app around the profile picker. A hard
+ * redirect (not router state) because React context, polls, and SSE streams
+ * all still believe the session is alive. */
+function defaultOnUnauthorized(): void {
+  localStorage.removeItem('honryu_token');
+  window.location.assign('/');
 }
 
 export class ApiClient {
   /** Exposed read-only so callers needing a raw URL (e.g. EventSource, which can't use fetch) can build one. */
   readonly baseUrl: string;
   private readonly getToken: () => string | null;
+  private readonly onUnauthorized: () => void;
+  /** Once-per-instance latch: a burst of 401s (a page firing several polls
+   * at once) must trigger exactly one redirect, never a loop. The hard
+   * navigation rebuilds every module, so no reset is needed in practice. */
+  private unauthorizedHandled = false;
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api';
     this.getToken = options.getToken ?? (() => localStorage.getItem('honryu_token'));
+    this.onUnauthorized = options.onUnauthorized ?? defaultOnUnauthorized;
+  }
+
+  /** Fires the dead-session reaction at most once per client instance. */
+  private handleUnauthorized(path: string): void {
+    if (this.unauthorizedHandled || isSessionSurface(path)) {
+      return;
+    }
+    this.unauthorizedHandled = true;
+    this.onUnauthorized();
   }
 
   /** Sends a request with the usual auth/Accept headers, returning the checked response. */
@@ -43,6 +79,9 @@ export class ApiClient {
     }
 
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    if (res.status === 401) {
+      this.handleUnauthorized(path);
+    }
     if (!res.ok) {
       const bodyText = await res.text();
       let data: unknown;
@@ -85,6 +124,9 @@ export class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
     const res = await fetch(`${this.baseUrl}${path}`, { method: 'PUT', headers, body });
+    if (res.status === 401) {
+      this.handleUnauthorized(path);
+    }
     if (!res.ok) {
       const bodyText = await res.text();
       let data: unknown;

@@ -417,7 +417,7 @@ func TestRunCompletedNeverBlocks(t *testing.T) {
 	rc := newReceiver()
 	defer rc.close()
 	rc.mu.Lock()
-	rc.onReq = func(http.ResponseWriter, *http.Request, int) { select {} }
+	rc.onReq = func(_ http.ResponseWriter, r *http.Request, _ int) { <-r.Context().Done() }
 	rc.mu.Unlock()
 	repo := fake.NewStore()
 	svc := fast(t, repo).WithQueueCapacity(8)

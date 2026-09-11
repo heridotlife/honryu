@@ -13,13 +13,13 @@ image:
   # digest, because imagePullPolicy is Always/IfNotPresent by tag, not by
   # content. A new build always gets a new tag.
   api:
-    tag: phase33
+    tag: phase46
   calibrator:
-    tag: phase33
+    tag: phase46
   scheduler:
-    tag: phase33
+    tag: phase46
   sidecar:
-    tag: phase33
+    tag: phase46
   # Already a real tag, not a floating one -- pinned here for consistency
   # with the rest of image.*, so mysql's version is a values-file decision
   # like everything else, not a hardcoded literal in the template.
@@ -36,7 +36,7 @@ image:
   # the upstream Grafana version, since that's already pinned inside the
   # Dockerfile's own FROM line.
   grafana:
-    tag: phase33
+    tag: phase46
   pullPolicy: Always
   pullSecret: registry-pve-heri-life
 
@@ -176,6 +176,11 @@ config:
   engineImages: "jmeter=registry.pve.heri.life/honryu/engine-jmeter:5.6.3-3,\
     k6=registry.pve.heri.life/honryu/engine-k6:0.57.0-3"
   deployContext: homelab
+  engineIdleTTL: 3h
+  # Phase47: pods absent (never deployed / reaped) answer after this
+  # window, NOT the full TriggerReadyTimeout. Must stay below the
+  # HAProxy->ingress gateway timeout (~30s) or the gateway 504s first.
+  triggerAbsentTimeout: 10s
   logFormat: text
   storageRoot: /honryu-storage
 

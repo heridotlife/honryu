@@ -380,6 +380,8 @@ async function renderReportsList(permissions: Record<string, string[]> | null, r
         return json([
           { id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
           { id: 2, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
+          // Phase 49: calibrate-minted names must not leak their raw ISO.
+          { id: 16, name: 'calibrate checkout 2026-09-10T16:47:22.442Z', project_id: 1, engine: 'k6', created_time: '2026-09-10T16:47:22.442Z' },
         ]);
       }
       if (url.endsWith('/api/projects')) {
@@ -445,6 +447,35 @@ describe('ReportsList execution list (phase 27)', () => {
       container!.querySelector('[data-testid="manual-id-toggle"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container!.querySelector('input[type="number"]')).not.toBeNull();
+  });
+
+  it('renders one formatted timestamp and no raw ISO in picker rows (phase 49)', async () => {
+    await renderReportsList(navPersonas.alice);
+
+    const row = container!.querySelector('[data-testid="execution-16"]');
+    expect(row).not.toBeNull();
+    const text = row!.textContent ?? '';
+    expect(text).toContain('#16 calibrate checkout');
+    expect(text).not.toContain('2026-09-10T16:47:22.442Z');
+    expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // Phase 49 audit follow-up: the engine chips are toggle buttons, so each
+  // must carry aria-pressed (the attribute shipped with the chips in phase
+  // 28; this pins it so a rewrite cannot silently drop the semantics).
+  it('reflects the active engine chip in aria-pressed', async () => {
+    await renderReportsList(navPersonas.alice);
+
+    const all = container!.querySelector('[data-testid="filter-engine-all"]') as HTMLButtonElement;
+    const k6 = container!.querySelector('[data-testid="filter-engine-k6"]') as HTMLButtonElement;
+    expect(all.getAttribute('aria-pressed')).toBe('true');
+    expect(k6.getAttribute('aria-pressed')).toBe('false');
+
+    await act(async () => {
+      k6.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(k6.getAttribute('aria-pressed')).toBe('true');
+    expect(all.getAttribute('aria-pressed')).toBe('false');
   });
 });
 
