@@ -183,6 +183,12 @@ type ClusterConfig struct {
 	// that pass. It never touches runs younger than this, runs that already
 	// finalised, or runs whose engine pods still exist.
 	RunReconcileAfter time.Duration
+	// EngineIdleTTL is how long an execution's engines may sit with no
+	// activity (no deploy, run start, run completion, or calibration step)
+	// before the scheduler-side reaper tears the pods down, leaving every
+	// persisted record intact. Zero disables the reaper -- the default, so
+	// deployments opt in per environment.
+	EngineIdleTTL time.Duration
 	// CredentialKey is the hex-encoded (64 hex digits) app-held key that
 	// encrypts BYOC cluster credentials at rest (AES-256-GCM). Empty disables
 	// the cluster-registry management API (/api/clusters) -- a deployment that
@@ -345,6 +351,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Cluster.RunReconcileAfter, err = durEnv(getenv, "RUN_RECONCILE_AFTER", cfg.Cluster.RunReconcileAfter); err != nil {
+		return Config{}, err
+	}
+	if cfg.Cluster.EngineIdleTTL, err = durEnv(getenv, "ENGINE_IDLE_TTL", cfg.Cluster.EngineIdleTTL); err != nil {
 		return Config{}, err
 	}
 	if cfg.Cluster.AutoPurgeIdle, err = durEnv(getenv, "AUTOPURGE_IDLE", cfg.Cluster.AutoPurgeIdle); err != nil {

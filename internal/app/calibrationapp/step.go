@@ -79,6 +79,11 @@ type RunnerRepo interface {
 	LoadProfileFor(ctx context.Context, executionID int64) ([]loadprofile.Entry, error)
 	StoreLoadProfile(ctx context.Context, executionID int64, csvSplit bool, entries []loadprofile.Entry) error
 	CurrentRun(ctx context.Context, executionID int64) (runID int64, ok bool, err error)
+	// TouchActivity restamps the execution's engine idle clock: a completed
+	// step is calibration progress -- the search's next step reuses these
+	// engines within minutes, so the reaper must not count the gap between
+	// steps against them.
+	TouchActivity(ctx context.Context, executionID int64) error
 }
 
 // Lifecycle is the ordinary test-lifecycle mechanism a step drives -- reused
@@ -207,6 +212,13 @@ func (r *StepRunner) RunStep(ctx context.Context, executionID int64, requestedQP
 	if err := r.lifecycle.Stop(ctx, executionID); err != nil && !errors.Is(err, run.ErrNotRunning) {
 		return report.Report{}, err
 	}
+	// The step's completion is calibration progress, restamping the idle
+	// clock explicitly -- Deploy and Trigger already stamped their halves,
+	// but a step that settled naturally and skipped Stop (ErrNotRunning
+	// above) still must leave a fresh stamp, and the reaper must see the
+	// search's engines as in use even while it waits out the gap to the next
+	// step's claim. Best effort: the step's outcome is already settled.
+	_ = r.repo.TouchActivity(ctx, executionID)
 	if reportErr != nil {
 		return report.Report{}, reportErr
 	}
