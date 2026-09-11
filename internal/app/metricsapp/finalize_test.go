@@ -643,3 +643,35 @@ func TestFinalize_DoesNotCloseANewerRunsMarker(t *testing.T) {
 		t.Error("stale finalize stamped end_time on the new run's history")
 	}
 }
+
+// Finalise is natural completion's shared exit, so it owns the idle-clock
+// stamp that makes "purge-on-finalize" implicit: a run that finished on its
+// own keeps its engines warm exactly one TTL, then the reaper takes them.
+// The stamp must happen even when a report already existed (the wedged-run
+// heal), because a heal can be the last lifecycle event for hours.
+func TestFinalize_StampsEngineActivity(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	last, ok, err := e.store.LastActivity(ctx, e.executionID)
+	if err != nil || !ok {
+		t.Fatalf("LastActivity after Finalize = %v,%v; want true,nil", ok, err)
+	}
+	if last.IsZero() {
+		t.Fatal("LastActivity stamp is zero")
+	}
+
+	// A second finalize (the idempotent re-entry) still stamps: whatever
+	// finished the run, the engines are provably not in use as of now.
+	before := e.store.TouchActivityCount(e.executionID)
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize (again): %v", err)
+	}
+	if got := e.store.TouchActivityCount(e.executionID); got != before+1 {
+		t.Fatalf("activity touches after second Finalize = %d, want %d", got, before+1)
+	}
+}

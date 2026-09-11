@@ -38,6 +38,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/config"
+	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
 	rundomain "github.com/heridotlife/honryu/internal/domain/run" // aliased: this package's own run() is the local name
 	"github.com/heridotlife/honryu/internal/ports"
 	"github.com/heridotlife/honryu/internal/ports/fake"
@@ -143,7 +144,7 @@ func run(parent context.Context, getenv func(string) string) error {
 		"tick_interval", cfg.Scheduler.TickInterval, "horizon_interval", cfg.Scheduler.HorizonInterval, "db_driver", cfg.DB.Driver)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		runHorizonLoop(ctx, schedules, cfg.Scheduler.HorizonInterval)
@@ -160,6 +161,10 @@ func run(parent context.Context, getenv func(string) string) error {
 		// already running when a campaign's window opened, and there is no
 		// reason for it to lag further behind than that.
 		runDrainLoop(ctx, campaigns, lifecycle, repo, cfg.Scheduler.TickInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		runEngineReaperLoop(ctx, lifecycle, repo, cfg)
 	}()
 	if cfg.Calibrator.HostInScheduler {
 		// Reuses this same lifecycle (quota+freeze already wired) rather than
@@ -397,6 +402,67 @@ func drainOnce(ctx context.Context, campaigns *campaignapp.Service, lifecycle *l
 			log.Info("drained non-campaign execution")
 		}
 	}
+}
+
+// runEngineReaperLoop sweeps idle engine pods on every fire-due tick while
+// an EngineIdleTTL is configured. A disabled TTL (zero) returns immediately
+// -- the loop is strictly opt-in. Reaping is low-priority housekeeping (a
+// TTL is hours), but a pass is cheap -- one StatefulSet list per cluster
+// plus a handful of guarded reads -- so riding the fire-due tick keeps a
+// fresh orphan from waiting longer than the TTL plus one tick.
+func runEngineReaperLoop(ctx context.Context, lifecycle *lifecycleapp.Service, repo repository, cfg config.Config) {
+	if cfg.Cluster.EngineIdleTTL <= 0 {
+		return
+	}
+	ticker := time.NewTicker(cfg.Scheduler.TickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reapIdleOnce(ctx, lifecycle, repo, cfg.Cluster.EngineIdleTTL)
+		}
+	}
+}
+
+// reapIdleOnce runs one idle-reap pass across the default cluster and every
+// registered one. Reaped executions are logged one by one -- an operator
+// must be able to tell a reaped engine pool from a lost one -- and a pass
+// error is logged rather than fatal: the next tick retries.
+func reapIdleOnce(ctx context.Context, lifecycle *lifecycleapp.Service, repo repository, ttl time.Duration) {
+	clusters, err := sweepClusters(ctx, repo)
+	if err != nil {
+		slog.Error("list clusters for engine reap", "error", err)
+		return
+	}
+	reaped, err := lifecycle.ReapIdle(ctx, ttl, clusters)
+	if err != nil {
+		slog.Warn("engine idle reap", "error", err)
+	}
+	for _, executionID := range reaped {
+		slog.Info("reaped idle execution engines",
+			"execution_id", executionID, "idle_ttl", ttl.String())
+	}
+}
+
+// sweepClusters returns the cluster refs an idle-reap pass must cover: the
+// deployment's own default cluster plus every registered one. The default
+// is swept through its empty ref; a registered entry aliasing the default
+// name is skipped so the same pods are not listed twice in one pass.
+func sweepClusters(ctx context.Context, registry ports.ClusterRegistry) ([]ports.ClusterRef, error) {
+	registered, err := registry.ListClusters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refs := []ports.ClusterRef{""}
+	for _, c := range registered {
+		if clusterregistry.IsDefaultName(c.Name) {
+			continue
+		}
+		refs = append(refs, ports.ClusterRef(c.Name))
+	}
+	return refs, nil
 }
 
 // runCalibratorLoop ticks every interval, advancing at most one due

@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
@@ -53,6 +54,21 @@ type ExecutionRepository interface {
 	// PendingCorrelationID returns the id the latest Deploy minted. Empty when
 	// no deploy has happened since the phase that introduced it.
 	PendingCorrelationID(ctx context.Context, executionID int64) (string, error)
+
+	// TouchActivity stamps the execution's last-activity clock to now: every
+	// lifecycle event that proves its engines are in use (a deploy, a run
+	// start, a run completion -- natural finalize or a stop -- a calibration
+	// step) restamps it, resetting the idle TTL the engine reaper measures.
+	// Touching an unknown execution is not an error -- a stamp is advisory
+	// bookkeeping, and the reaper's own guards are what protect a live run,
+	// so a racing delete simply drops the stamp.
+	TouchActivity(ctx context.Context, executionID int64) error
+	// LastActivity returns the execution's last-activity stamp; ok is false
+	// when there is nothing to read -- no row, or a row never stamped (NULL:
+	// deployed before the column existed). A caller that needs a clock
+	// anyway falls back to another source, such as the engine's own deploy
+	// time. err is reserved for real read failures.
+	LastActivity(ctx context.Context, executionID int64) (last time.Time, ok bool, err error)
 
 	// StoreExecutionConfig replaces the execution's load profile and
 	// configured criteria together, in one transaction -- unlike calling

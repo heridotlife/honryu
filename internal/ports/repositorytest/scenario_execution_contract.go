@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
@@ -733,6 +734,51 @@ func RunExecutionRepositoryContract(t *testing.T, newRepo NewRepo) {
 		}
 		if got != "22222222222222222222222222222222" {
 			t.Fatalf("PendingCorrelationID after second set = %q, want the second id", got)
+		}
+	})
+
+	// The idle clock the engine TTL reaper measures: unstamped reads as
+	// ok=false (fall back to another clock), a touch stamps it, and a second
+	// touch in the same second must not read as an error or a lost stamp.
+	t.Run("ActivityTouchStampsTheIdleClock", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+		id := mustCreateExecution(t, repo, "peak", 10)
+
+		if _, ok, err := repo.LastActivity(ctx, id); err != nil || ok {
+			t.Fatalf("LastActivity before any touch = %v,%v; want false,nil", ok, err)
+		}
+
+		before := time.Now()
+		if err := repo.TouchActivity(ctx, id); err != nil {
+			t.Fatalf("TouchActivity: %v", err)
+		}
+		// A same-second second touch: NOW()'s second precision means the row
+		// may not change, which must not be mistaken for a missing row.
+		if err := repo.TouchActivity(ctx, id); err != nil {
+			t.Fatalf("TouchActivity (same second): %v", err)
+		}
+		last, ok, err := repo.LastActivity(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("LastActivity after touch = %v,%v; want true,nil", ok, err)
+		}
+		// Second-precision columns can lag the test's clock by a second on
+		// either side; anything within that tolerance is the touch just made.
+		if last.Before(before.Add(-2*time.Second)) || last.After(time.Now().Add(2*time.Second)) {
+			t.Fatalf("LastActivity = %v, want the just-made stamp near %v", last, before)
+		}
+
+		// Touching a deleted execution drops the stamp rather than erroring:
+		// a stamp is advisory, and the reaper's guards -- not a touch error --
+		// are what protect a live run from a racing delete.
+		if err := repo.DeleteExecution(ctx, id); err != nil {
+			t.Fatalf("DeleteExecution: %v", err)
+		}
+		if err := repo.TouchActivity(ctx, id); err != nil {
+			t.Fatalf("TouchActivity after delete: %v", err)
+		}
+		if _, ok, err := repo.LastActivity(ctx, id); err != nil || ok {
+			t.Fatalf("LastActivity after delete = %v,%v; want false,nil", ok, err)
 		}
 	})
 }

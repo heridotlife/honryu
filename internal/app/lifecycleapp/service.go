@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/compile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
@@ -58,6 +60,18 @@ type Repo interface {
 	// PendingCorrelationID returns the id the latest Deploy minted, which
 	// Trigger stamps onto the run it starts.
 	PendingCorrelationID(ctx context.Context, executionID int64) (string, error)
+	// TouchActivity restamps the execution's engine idle clock: deploy, run
+	// start, and run teardown below each call it, and metricsapp calls it on
+	// natural completion -- every event that proves the engines are in use
+	// resets the TTL the idle reaper measures.
+	TouchActivity(ctx context.Context, executionID int64) error
+	// LastActivity reads that idle clock back; ok is false when there is no
+	// stamp to read (no row, or a row deployed before the column existed),
+	// leaving ReapIdle to fall back to the engine's own deploy time.
+	LastActivity(ctx context.Context, executionID int64) (time.Time, bool, error)
+	// ListCalibrationJobsByExecution backs ReapIdle's active-calibration
+	// guard: a search between steps keeps its engines warm on purpose.
+	ListCalibrationJobsByExecution(ctx context.Context, executionID int64) ([]ports.CalibrationJob, error)
 	// GetReport returns a run's stored report, or ports.ErrNotFound when the
 	// run never got one. The abandoned-run sweep uses it to tell a wedged run
 	// (report stored, marker left open: heal the marker only) from an
@@ -333,6 +347,14 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 	if err := s.repo.ClearOrphanCompletions(ctx, executionID); err != nil {
 		return err
 	}
+	// The deploy itself is engine activity: restamp the idle clock before any
+	// pod exists, so a reaper sweeping mid-deploy cannot count this execution
+	// as idle and tear down engines the deploy is about to (re)create. Like
+	// the correlation-id park above, a failure here fails the deploy with
+	// nothing half-created rather than leaving engines nothing vouches for.
+	if err := s.repo.TouchActivity(ctx, executionID); err != nil {
+		return err
+	}
 	headers := telemetry.Headers(tc, telemetry.Identity{
 		TenantID:         coll.TenantID,
 		ProjectID:        coll.ProjectID,
@@ -510,6 +532,12 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	if err != nil {
 		return err
 	}
+	// The run's start is engine activity -- the idle clock must measure from
+	// the run, not the deploy that preceded it, or a long-idle-then-triggered
+	// execution could read as already-expired mid-run. Best effort: the run
+	// is open and the reaper's open-run guard protects these engines even if
+	// the stamp is lost.
+	_ = s.repo.TouchActivity(ctx, executionID)
 	// Snapshot each scenario's currently-deployed config under this run's own
 	// id, so what a re-deploy stages afterward can never change what this run
 	// is shown to have used. Best effort, matching log capture: a customer must
@@ -699,6 +727,128 @@ type shardKey struct {
 	shard      int
 }
 
+// ReapIdle tears down the engine pods of every execution idle longer than
+// ttl on the given clusters, leaving every persisted record -- the execution
+// row, its runs, history, and reports -- intact: this is pod teardown only,
+// NOT Purge, which additionally drops the live metric series. A re-deploy
+// recreates the engines, so an idle execution pays nothing but its next
+// deploy's startup. This is the mechanism that makes "purge-on-finalize"
+// implicit: after natural completion an execution's engines stay warm
+// exactly one TTL (fast re-runs), then land here.
+//
+// Candidates come from the cluster's own deployed set (DeployedExecutions:
+// only executions whose StatefulSets still exist) rather than a database
+// idle scan -- the DB cannot know which idle executions still have pods,
+// and checking per-candidate from the DB side would put one Kubernetes
+// round trip behind every finished execution ever, every pass. The idle
+// predicate is the same either way: activity clock older than ttl. An
+// execution with no stamp at all (deployed before the clock existed, or its
+// row deleted underneath orphaned pods -- the original 8-pod incident)
+// falls back to the StatefulSet's own age, which is what heals pre-existing
+// orphans on the reaper's first pass.
+//
+// Guards, in order: an open run marker skips the execution (its engines are
+// provably in use, or at least not provably idle); an active calibration
+// job skips it (a search between steps reuses its engines within minutes).
+// ttl must be positive; zero or negative disables the pass. Returns the
+// reaped execution ids and the first per-candidate failure, if any -- one
+// execution's reap failure must not stop the rest, and the caller logs both.
+func (s *Service) ReapIdle(ctx context.Context, ttl time.Duration, clusters []ports.ClusterRef) ([]int64, error) {
+	if ttl <= 0 {
+		return nil, nil
+	}
+	now := s.now()
+	seen := make(map[int64]struct{})
+	var reaped []int64
+	var reapErr error
+	for _, cluster := range clusters {
+		deployed, err := s.sched.DeployedExecutions(ctx, cluster)
+		if err != nil {
+			return reaped, err
+		}
+		for executionID, deployedAt := range deployed {
+			// A cluster registered under an alias of the default can list the
+			// same StatefulSets the default's own sweep already covered; reap
+			// each execution at most once per pass.
+			if _, dup := seen[executionID]; dup {
+				continue
+			}
+			seen[executionID] = struct{}{}
+			id := executionID
+			done, err := s.reapIfIdle(ctx, id, cluster, deployedAt, now, ttl)
+			if err != nil {
+				if reapErr == nil {
+					reapErr = err
+				}
+				continue
+			}
+			if done {
+				reaped = append(reaped, id)
+			}
+		}
+	}
+	sort.Slice(reaped, func(i, j int) bool { return reaped[i] < reaped[j] })
+	return reaped, reapErr
+}
+
+// reapIfIdle reaps one candidate unless a guard holds. reaped is false
+// (with nil error) for every skip: a skip is the pass working as intended,
+// not a failure. A missing row and a never-stamped row both fall back to the
+// pods' own deploy time as the idle clock.
+func (s *Service) reapIfIdle(ctx context.Context, executionID int64, cluster ports.ClusterRef, deployedAt, now time.Time, ttl time.Duration) (reaped bool, err error) {
+	last, ok, err := s.repo.LastActivity(ctx, executionID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		last = deployedAt
+	}
+	if now.Sub(last) < ttl {
+		return false, nil
+	}
+	if _, running, err := s.repo.CurrentRun(ctx, executionID); err != nil {
+		return false, err
+	} else if running {
+		return false, nil
+	}
+	calibrating, err := s.calibrating(ctx, executionID)
+	if err != nil {
+		return false, err
+	}
+	if calibrating {
+		return false, nil
+	}
+	// The same teardown+capture path Purge walks, minus Purge's metric-series
+	// drop: pods and their logs go, the execution's records stay. cluster is
+	// where the pods were actually found -- not the row's own configured
+	// cluster, which a missing row cannot supply and a stale row gets wrong.
+	if err := s.teardownAndCapture(ctx, executionID); err != nil {
+		return false, err
+	}
+	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// calibrating reports whether an active (not yet done or failed) calibration
+// job targets the execution: a search pauses between steps for minutes at a
+// time with its engines deliberately warm, and the reaper must not tear down
+// a search's working set just because a step boundary left it momentarily
+// idle.
+func (s *Service) calibrating(ctx context.Context, executionID int64) (bool, error) {
+	jobs, err := s.repo.ListCalibrationJobsByExecution(ctx, executionID)
+	if err != nil {
+		return false, err
+	}
+	for _, j := range jobs {
+		if j.Phase != calibration.PhaseDone && j.Phase != calibration.PhaseFailed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Stop halts the run: it stops every engine and clears run state. A run must be
 // in progress.
 func (s *Service) Stop(ctx context.Context, executionID int64) error {
@@ -730,6 +880,28 @@ func (s *Service) Purge(ctx context.Context, executionID int64) error {
 	if err != nil {
 		return err
 	}
+	if err := s.teardownAndCapture(ctx, executionID); err != nil {
+		return err
+	}
+	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
+		return err
+	}
+	s.metrics.Purge(executionID)
+	return nil
+}
+
+// teardownAndCapture ends whatever run state an execution still carries and
+// captures its engine logs while the pods that hold them still exist -- the
+// shared body of Purge and ReapIdle. A running execution is torn down
+// mid-run and its logs captured for the run it was running; an idle one
+// whose run already closed by natural completion still gets the teardown
+// natural completion never ran (scenario markers, usage, quota) and a
+// capture for its last run -- the LastRun fallback that keeps a
+// post-completion teardown from losing the last run's logs. An execution
+// with no run history at all has nothing to end and nothing to capture; a
+// LastRun read error is left to the caller's best-effort spirit, exactly as
+// Purge has always treated it.
+func (s *Service) teardownAndCapture(ctx context.Context, executionID int64) error {
 	runID, running, err := s.repo.CurrentRun(ctx, executionID)
 	if err != nil {
 		return err
@@ -741,24 +913,14 @@ func (s *Service) Purge(ctx context.Context, executionID int64) error {
 		// After teardown, before the pods that hold them are deleted: this is
 		// the last moment engine logs exist anywhere but here.
 		s.captureLogs(ctx, executionID, runID)
-	} else if last, lerr := s.repo.LastRun(ctx, executionID); lerr == nil {
-		// Phase 43 closes the run marker the moment a run completes
-		// naturally, so a purge arriving after that reads running=false --
-		// but the pods and their logs still exist, and teardown's other
-		// duties (clearing scenario markers, releasing usage and quota)
-		// were never done: natural completion only finalises the report.
-		// Teardown is safe on a closed marker -- its Finalize is guarded on
-		// CurrentRun and StopRun is idempotent -- so run it, then capture
-		// the last run's logs before the pods that hold them are deleted.
+		return nil
+	}
+	if last, lerr := s.repo.LastRun(ctx, executionID); lerr == nil {
 		if err := s.teardown(ctx, executionID); err != nil {
 			return err
 		}
 		s.captureLogs(ctx, executionID, last.RunID)
 	}
-	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
-		return err
-	}
-	s.metrics.Purge(executionID)
 	return nil
 }
 
@@ -993,6 +1155,13 @@ func engineOf(exe execution.Execution, fallback taurus.Executor) taurus.Executor
 // teardown stops metric execution and engines, and clears run/running-scenario
 // state (best effort on the engine stop calls, which may already be gone).
 func (s *Service) teardown(ctx context.Context, executionID int64) error {
+	// A run being torn down is its own last activity: the engines usually
+	// stay deployed (only Purge removes pods), so the idle clock must start
+	// at the run's end, not its start -- this is the "stopped" half of the
+	// completion activity, the natural-finalize half living in metricsapp.
+	// Best effort, like every side duty below: a bookkeeping stamp must not
+	// fail a stop.
+	_ = s.repo.TouchActivity(ctx, executionID)
 	scenarios, err := s.repo.LoadProfileFor(ctx, executionID)
 	if err != nil {
 		return err

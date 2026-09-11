@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
@@ -412,6 +413,38 @@ func (r *Repository) PendingCorrelationID(ctx context.Context, executionID int64
 		return "", fmt.Errorf("mysql: pending correlation id: %w", err)
 	}
 	return id, nil
+}
+
+// TouchActivity stamps the execution's last-activity clock to now. Affected
+// rows are deliberately not checked: NOW() has second precision, so a second
+// touch within the same second changes nothing and must not be mistaken for a
+// missing row (unlike SetPendingCorrelationID, a touch on a deleted execution
+// is a dropped stamp, not a caller error the reaper could act on).
+func (r *Repository) TouchActivity(ctx context.Context, executionID int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		"UPDATE execution SET last_activity_at = NOW() WHERE id = ?", executionID); err != nil {
+		return fmt.Errorf("mysql: touch activity: %w", err)
+	}
+	return nil
+}
+
+// LastActivity returns the execution's last-activity stamp; ok is false for
+// no row or a never-stamped (NULL) one, either of which leaves the caller to
+// fall back to another clock. err is reserved for real read failures.
+func (r *Repository) LastActivity(ctx context.Context, executionID int64) (time.Time, bool, error) {
+	var last sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		"SELECT last_activity_at FROM execution WHERE id = ?", executionID).Scan(&last)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("mysql: last activity: %w", err)
+	}
+	if !last.Valid {
+		return time.Time{}, false, nil
+	}
+	return last.Time, true, nil
 }
 
 func scanExecution(s rowScanner) (execution.Execution, error) {
