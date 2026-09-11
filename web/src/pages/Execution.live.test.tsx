@@ -81,7 +81,8 @@ async function renderExecution(
   trend: TrendPoint[] | null = [],
   signatures: ErrorSignatureHistory | null = { execution_id: 5, grouped_by: 'label', groups: [] },
   calls: string[] = [],
-  infoOver: Record<string, unknown> = {}
+  infoOver: Record<string, unknown> = {},
+  statusOver: Record<string, unknown> = {},
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -101,10 +102,13 @@ async function renderExecution(
         });
       }
       if (url.endsWith('/api/executions/5/status')) {
-        return json(statusFixture(phase));
+        return json({ ...statusFixture(phase), ...statusOver });
       }
       if (url.endsWith('/api/executions/5/reports')) {
         return json([]);
+      }
+      if (url.includes('/api/scenarios/1/capacity-profile/fanout')) {
+        return json({ status: 'no_profile' });
       }
       if (url.includes('/api/executions/5/trend')) {
         return trend === null ? json({ message: 'trend backend down' }, 500) : json({ execution_id: 5, points: trend });
@@ -238,6 +242,35 @@ describe('Execution capacity panel gate (mounted)', () => {
     // panel still mounts (into its error state), which is the assertion.
     await renderExecution('running', [], undefined, [], { kind: 'calibrate_engine' });
     expect(container!.querySelector('[data-testid="capacity-panel"]')).not.toBeNull();
+  });
+});
+
+// Phase 44: ONE calibrate verb per execution kind. The scenario-row
+// "Calibrate scenario..." button creates a NEW calibration execution, so
+// it exists only on normal executions; on a calibrate_engine execution the
+// Capacity panel is the single surface and its trigger says "Run search".
+// Before the split, both buttons rendered on exec 15 with the same label
+// "Calibrate" -- two different verbs wearing one word.
+const scenarioRow = {
+  status: [{ scenario_id: 1, engines: 1, engines_deployed: 1, engines_reachable: true, in_progress: false }],
+};
+
+describe('Execution calibrate verb (mounted)', () => {
+  it('normal execution: scenario row offers "Calibrate scenario...", no Capacity panel', async () => {
+    await renderExecution('running', [], undefined, [], {}, scenarioRow);
+    const btn = container!.querySelector('[data-testid="calibrate-scenario-btn"]');
+    expect(btn?.textContent).toBe('Calibrate scenario...');
+    expect(container!.querySelector('[data-testid="capacity-panel"]')).toBeNull();
+  });
+
+  it('calibrate execution: no scenario-row button; the panel offers "Run search" instead', async () => {
+    await renderExecution('running', [], undefined, [], { kind: 'calibrate_engine' }, scenarioRow);
+    expect(container!.querySelector('[data-testid="calibrate-scenario-btn"]')).toBeNull();
+    const panel = container!.querySelector('[data-testid="capacity-panel"]');
+    expect(panel).not.toBeNull();
+    // The fan-out stub answers no_profile, so the panel's trigger renders.
+    const runSearch = panel!.querySelector('button');
+    expect(runSearch?.textContent).toBe('Run search');
   });
 });
 
