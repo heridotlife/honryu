@@ -149,6 +149,23 @@ sequenceDiagram
     LC->>Sched: delete engine pods
 ```
 
+### Engine idle reaper (activity-aware TTL)
+
+Deployed engine pods outlive their runs — a finished bzt pod stays Ready
+forever — so without a reaper they accumulate until someone purges them by
+hand. When `HONRYU_ENGINE_IDLE_TTL` is set (default: disabled), the scheduler
+binary runs an activity-aware reaper: every deploy, run start, run completion
+(natural finalize **or** stop), and calibration step restamps the execution's
+`last_activity_at`; a sweep on the scheduler tick tears down the pods of
+executions idle beyond the TTL. The teardown is **pod-only** — the same path
+purge walks (teardown duties + engine log capture) minus the metric-series
+drop — so the execution row, runs, history, and reports all survive, and a
+re-deploy recreates the engines. This makes "purge-on-finalize" implicit: a
+naturally-completed run keeps its engines warm for exactly one TTL (fast
+re-runs), then they are reaped. Guards: an open run marker or an active
+calibration job is never reaped; executions deployed before the clock existed
+(orphaned pods) fall back to the pods' own age, so the first pass heals them.
+
 ## Testing
 
 Three layers, gated in CI at **≥90%** coverage over production packages:
@@ -187,6 +204,7 @@ has a local-dev default, so `go run ./cmd/api` works with no environment set.
 | `HONRYU_HTTP_TRIGGER_READY_TIMEOUT` | `2m` | trigger's bounded wait for just-deployed engines |
 | `HONRYU_RECONCILE_INTERVAL` | `1m` | stranded-run sweep interval (`0` disables) |
 | `HONRYU_RUN_RECONCILE_AFTER` | `2h` | age at which an open, unreported, engine-less run may be reconciled as aborted (`0` disables) |
+| `HONRYU_ENGINE_IDLE_TTL` | `0` | engine idle TTL for the scheduler-side activity-aware reaper: pods of executions with no activity for this long are torn down (records survive; `0` disables) |
 | `HONRYU_DB_DRIVER` | `fake` | `fake` (in-memory) or `mysql` |
 | `HONRYU_DB_DSN` | – | MySQL DSN (required when driver is `mysql`) |
 | `HONRYU_STORAGE_DRIVER` | `local` | `local` or `nexus` |
