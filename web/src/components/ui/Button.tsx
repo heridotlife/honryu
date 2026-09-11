@@ -2,7 +2,7 @@ import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'destructive';
   size?: 'sm' | 'md' | 'lg';
   fullWidth?: boolean;
   children?: ReactNode;
@@ -37,6 +37,15 @@ const variantClasses: Record<NonNullable<ButtonProps['variant']>, string> = {
     'text-slate-600 dark:text-slate-300',
     'hover:bg-slate-100 dark:hover:bg-slate-800',
     'focus:ring-sky-500',
+  ].join(' '),
+  // Destructive actions (the execution hub's Purge): reads as danger at
+  // rest, not only on hover -- the outline shape keeps it in the same
+  // family as the other lifecycle controls while the reds do the talking.
+  destructive: [
+    'border border-red-600 dark:border-red-400/40',
+    'text-red-600 dark:text-red-400',
+    'hover:bg-red-50 dark:hover:bg-red-950',
+    'focus:ring-red-500',
   ].join(' '),
 };
 
