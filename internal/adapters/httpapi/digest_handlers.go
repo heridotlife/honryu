@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/domain/digest"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
+	"github.com/heridotlife/honryu/internal/ports"
 )
 
 // digestConfigResponse is the wire shape of GET/PUT
@@ -119,6 +121,14 @@ func (h *handlers) getDigestConfig(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) writeDigestConfig(w http.ResponseWriter, r *http.Request, projectID int64) {
 	sched, err := h.deps.Digests.GetSchedule(r.Context(), projectID)
 	if err != nil {
+		// A project with no digest configuration is the normal "off" state,
+		// not a server fault -- but the raw repo sentinel ("ports: not
+		// found") names an internal package, so intercept it here and speak
+		// the resource's own language instead.
+		if errors.Is(err, ports.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no digest schedule for this project")
+			return
+		}
 		respondError(w, err)
 		return
 	}
@@ -146,6 +156,13 @@ func (h *handlers) deleteDigestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.deps.Digests.DeleteSchedule(r.Context(), projectID); err != nil {
+		if errors.Is(err, ports.ErrNotFound) {
+			// The pinned contract (TestDigestConfigUpsertRoundtrip) reads a
+			// second delete as 404, but the raw repo sentinel names an
+			// internal package -- speak the resource's language instead.
+			writeError(w, http.StatusNotFound, "no digest schedule for this project")
+			return
+		}
 		respondError(w, err)
 		return
 	}
