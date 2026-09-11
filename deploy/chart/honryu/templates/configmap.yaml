@@ -21,6 +21,9 @@ data:
   {{- if .Values.config.engineIdleTTL }}
   HONRYU_ENGINE_IDLE_TTL: {{ .Values.config.engineIdleTTL | quote }}
   {{- end }}
+  {{- if .Values.config.triggerAbsentTimeout }}
+  HONRYU_TRIGGER_ABSENT_TIMEOUT: {{ .Values.config.triggerAbsentTimeout | quote }}
+  {{- end }}
   HONRYU_SIDECAR_IMAGE: {{ printf "%s/honryu-sidecar:%s" .Values.image.registry .Values.image.sidecar.tag | quote }}
   HONRYU_INGEST_URL: {{ include "honryu.ingestUrl" . | quote }}
   HONRYU_LOG_FORMAT: {{ .Values.config.logFormat | quote }}

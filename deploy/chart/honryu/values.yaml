@@ -177,6 +177,10 @@ config:
     k6=registry.pve.heri.life/honryu/engine-k6:0.57.0-3"
   deployContext: homelab
   engineIdleTTL: 3h
+  # Phase47: pods absent (never deployed / reaped) answer after this
+  # window, NOT the full TriggerReadyTimeout. Must stay below the
+  # HAProxy->ingress gateway timeout (~30s) or the gateway 504s first.
+  triggerAbsentTimeout: 10s
   logFormat: text
   storageRoot: /honryu-storage
 
