@@ -570,8 +570,11 @@ export default function Execution() {
   const enginesReachable = status?.status.every((s) => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
   // Phase 39's Calibrate action needs an engine to name (the backend rejects
-  // an engineless calibration) and the session's execution:create.
-  const canCalibrate = !!info?.engine && can('execution', 'create');
+  // an engineless calibration) and the session's execution:create. Phase 44:
+  // only NORMAL executions offer it -- a calibrate_engine execution is
+  // itself the calibration; creating one from it is nonsensical, and its
+  // Capacity panel owns the verb there (Run search).
+  const canCalibrate = !!info?.engine && can('execution', 'create') && !isCalibrationExecution(info);
   // A scenario's display name: the config's test name doubles as it (the
   // NewTest flow names test and scenario the same); the id is the fallback.
   const scenarioName = (scenarioId: number): string =>
@@ -721,7 +724,7 @@ export default function Execution() {
                           data-testid="calibrate-scenario-btn"
                           onClick={() => setCalibrateFor(sc.scenario_id)}
                         >
-                          Calibrate
+                          Calibrate scenario...
                         </Button>
                       )}
                     </div>
@@ -733,13 +736,14 @@ export default function Execution() {
           {/* Phase 39: the Capacity card mounts ONLY on calibrate_engine
               executions (isCalibrationExecution). Before Kind rode the wire
               this gate was just info?.engine, so a normal execution's
-              Calibrate button could only ever earn a 400. */}
+              Calibrate button could only ever earn a 400. Phase 44: the
+              fan-out target is the panel's own editable input (persisted
+              per scenario), not a hardcoded prop. */}
           {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}
               executionId={executionId}
               keyInfo={capacityKey}
-              targetQPS={100}
             />
           )}
           {status.phase === 'idle' && (
