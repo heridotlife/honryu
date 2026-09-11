@@ -105,6 +105,26 @@ func (r *Repository) RunHistory(ctx context.Context, runID int64) (ports.RunReco
 	return rec, nil
 }
 
+// LastRun returns the most recently started run for an execution. started_time
+// ties (bulk-created in one statement clock tick) resolve to the newer run id,
+// matching the fake's tie-break.
+func (r *Repository) LastRun(ctx context.Context, executionID int64) (ports.RunRecord, error) {
+	var rec ports.RunRecord
+	var end sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		"SELECT run_id, execution_id, started_time, end_time, correlation_id FROM execution_run_history WHERE execution_id=? ORDER BY started_time DESC, run_id DESC LIMIT 1",
+		executionID).Scan(&rec.RunID, &rec.ExecutionID, &rec.StartedTime, &end, &rec.CorrelationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.RunRecord{}, ports.ErrNotFound
+	}
+	if err != nil {
+		return ports.RunRecord{}, err
+	}
+	if end.Valid {
+		rec.EndTime = &end.Time
+	}
+	return rec, nil
+}
 // MarkScenarioRunning records a running scenario; duplicates are ignored (idempotent).
 func (r *Repository) MarkScenarioRunning(ctx context.Context, executionID, scenarioID int64) error {
 	_, err := r.db.ExecContext(ctx,

@@ -73,4 +73,9 @@ type RunRepository interface {
 	RunningScenarios(ctx context.Context) ([]RunningScenario, error)
 	// RunningScenariosByExecution lists running scenarios for one execution.
 	RunningScenariosByExecution(ctx context.Context, executionID int64) ([]RunningScenario, error)
+	// LastRun returns the most recently started run for an execution from its
+	// history, or ErrNotFound when the execution has never run. Natural
+	// completion (phase 43) closes the active marker, so this is how a late
+	// purge learns which run's logs it still owes a capture for.
+	LastRun(ctx context.Context, executionID int64) (RunRecord, error)
 }
