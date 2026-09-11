@@ -18,6 +18,9 @@ data:
   HONRYU_ENABLE_RBAC: {{ .Values.config.enableRbac | quote }}
   HONRYU_ENGINE_IMAGES: {{ .Values.config.engineImages | quote }}
   HONRYU_DEPLOY_CONTEXT: {{ .Values.config.deployContext | quote }}
+  {{- if .Values.config.engineIdleTTL }}
+  HONRYU_ENGINE_IDLE_TTL: {{ .Values.config.engineIdleTTL | quote }}
+  {{- end }}
   HONRYU_SIDECAR_IMAGE: {{ printf "%s/honryu-sidecar:%s" .Values.image.registry .Values.image.sidecar.tag | quote }}
   HONRYU_INGEST_URL: {{ include "honryu.ingestUrl" . | quote }}
   HONRYU_LOG_FORMAT: {{ .Values.config.logFormat | quote }}
