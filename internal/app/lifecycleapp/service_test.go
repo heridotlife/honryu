@@ -343,6 +343,42 @@ func TestTrigger_RefusesFinishedEnginesUntilRedeploy(t *testing.T) {
 	}
 }
 
+// Stop must NOT clear the orphaned completions (phase 47 pinned this when
+// the reap path learned to clear its own): a stopped run's engines really
+// did finish, straggler Finals may still land after the stop closes the run,
+// and that orphan evidence is exactly what makes the next Trigger over the
+// dead engines refuse with ErrEnginesFinished instead of opening a corpse
+// run. Clearing belongs to the paths that end the engine generation for
+// good -- Deploy (new generation) and ReapIdle (pods deleted) -- not to the
+// shared teardown. The same split is why Purge leaves the clear to the next
+// Deploy, exactly as it always has.
+func TestStop_KeepsOrphanedCompletions(t *testing.T) {
+	t.Parallel()
+	e := setup(t, false, 2)
+	ctx := context.Background()
+	if err := e.svc.Deploy(ctx, e.executionID); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := e.svc.Trigger(ctx, e.executionID); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	// A straggler Final landing once the stop has closed the run.
+	code := 0
+	if err := e.store.RecordOrphanCompletion(ctx, ports.OrphanCompletion{
+		ExecutionID: e.executionID, ScenarioID: e.planIDs[0], ShardIndex: 0,
+		ExitCode: &code, FinishedAt: time.Unix(1000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOrphanCompletion: %v", err)
+	}
+
+	if err := e.svc.Stop(ctx, e.executionID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if orphans, err := e.store.OrphanCompletions(ctx, e.executionID); err != nil || len(orphans) != 1 {
+		t.Fatalf("orphans after stop = %v (%v), want the 1 recorded -- Stop keeps orphan evidence", orphans, err)
+	}
+}
+
 func TestTrigger_HappyPathStartsRunAndMarksScenariosRunning(t *testing.T) {
 	t.Parallel()
 	e := setup(t, true, 2, 3) // 5 engines total, execution CSV split on

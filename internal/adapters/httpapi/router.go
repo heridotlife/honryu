@@ -127,6 +127,18 @@ type Deps struct {
 	// before returning the last conflict. Zero means the default (2m). The
 	// wait is per-request: cancelling the request context cancels the wait.
 	TriggerReadyTimeout time.Duration
+	// TriggerAbsentTimeout bounds a much shorter wait for the other conflict
+	// the trigger loop retries: ErrNotDeployed, meaning NO engine pods exist
+	// at all -- never deployed, or deleted underneath the caller (the phase-46
+	// idle reaper's signature). Absent pods can never become ready, so the
+	// full TriggerReadyTimeout only hangs the request until the ingress
+	// gateway in front 504s it (live phase-47 incident: ~5min wait, gateway
+	// answer, client nothing). The short window covers exactly one race: a
+	// deploy issued in parallel whose StatefulSet has not appeared yet.
+	// Zero means the default (30s); it is additionally capped at
+	// TriggerReadyTimeout so a deployment that tuned the overall wait down
+	// is never waited past.
+	TriggerAbsentTimeout time.Duration
 	// StaticAssets serves the SPA build (web/dist, unwrapped from web.Dist's
 	// "dist/" prefix by the caller) for any unmatched non-/api/ path.
 	// Optional; nil disables static serving (e.g. in tests that only exercise
@@ -396,6 +408,13 @@ type ExecutionClusterLoader interface {
 const (
 	defaultTriggerReadyPoll    = 2 * time.Second
 	defaultTriggerReadyTimeout = 2 * time.Minute
+	// defaultTriggerAbsentTimeout is the ErrNotDeployed wait: pods that do
+	// not exist never become ready, so it only needs to cover a parallel
+	// deploy's StatefulSet appearing -- 30s is generous for that (statefulset
+	// creation is a few API writes) while staying an order of magnitude
+	// below typical gateway timeouts, unlike the 2m readiness deadline that
+	// outlived the gateway in the phase-47 live incident.
+	defaultTriggerAbsentTimeout = 30 * time.Second
 )
 
 func (h *handlers) health(w http.ResponseWriter, _ *http.Request) {
