@@ -8,6 +8,7 @@ import { useProjectSelection } from '../components/ProjectSwitcher';
 import DigestCard from '../components/DigestCard';
 import WebhooksCard from '../components/WebhooksCard';
 import { useSession } from '../hooks/useSession';
+import { executionDisplayName, formatRowTime } from '../lib/executionRow';
 
 /** Shared pill styling for the list pages' filter chips (phase 28) -- the
  * latency percentile selector's visual language, so every toggleable pill
@@ -179,12 +180,15 @@ export default function Executions() {
                 to={`/executions/${e.id}`}
                 className="flex items-center justify-between rounded py-3 text-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 px-2"
               >
-                <span className="font-medium text-slate-900 dark:text-slate-100">{e.name}</span>
+                <span className="font-medium text-slate-900 dark:text-slate-100">{executionDisplayName(e.name)}</span>
                 <span className="text-slate-500">
                   {e.engine ?? 'default engine'}
                   {e.cluster ? ` · ${e.cluster}` : ''}
                   {' · '}
-                  {new Date(e.created_time).toLocaleString()}
+                  {/* One short timestamp, no raw ISO (phase 49): the
+                      calibrate flow bakes one into the name, which the
+                      display name above strips. */}
+                  {formatRowTime(e.created_time)}
                 </span>
               </Link>
             </li>

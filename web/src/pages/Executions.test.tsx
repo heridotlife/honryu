@@ -40,6 +40,9 @@ const projectsFixture = [
 const executionsFixture = [
   { id: 7, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
   { id: 3, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
+  // Phase 49: the calibrate flow mints "calibrate <scenario> <ISO>" names;
+  // the row must not leak the raw ISO next to the formatted timestamp.
+  { id: 16, name: 'calibrate checkout 2026-09-10T16:47:22.442Z', project_id: 1, engine: 'k6', created_time: '2026-09-10T16:47:22.442Z' },
 ];
 
 // Phase 40: the Webhooks card mounts whenever a project is selected, so
@@ -147,6 +150,20 @@ describe('Executions project filter (phase 32)', () => {
     expect(container!.querySelector('a[href="/executions/7"]')).not.toBeNull();
     expect(container!.querySelector('a[href="/executions/3"]')).not.toBeNull();
     expect(container!.querySelector('[data-testid="filter-project"]')).toBeNull();
+  });
+
+  it('renders one formatted timestamp and no raw ISO in row labels (phase 49)', async () => {
+    await renderExecutionsList('1');
+
+    const row = container!.querySelector('a[href="/executions/16"]');
+    expect(row).not.toBeNull();
+    const text = row!.textContent ?? '';
+    // The name shows without its minted ISO suffix...
+    expect(text).toContain('calibrate checkout');
+    expect(text).not.toContain('2026-09-10T16:47:22.442Z');
+    expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    // ...and exactly one timestamp, already formatted.
+    expect(text).toMatch(/· [A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2}$/);
   });
 });
 
