@@ -227,6 +227,12 @@ type HTTPConfig struct {
 	// TriggerReadyTimeout bounds that wait; expiring surfaces the same
 	// conflict error the immediate check used to.
 	TriggerReadyTimeout time.Duration
+	// TriggerAbsentTimeout bounds the far shorter wait for
+	// ErrNotDeployed (no engine pods at all -- never deployed, or
+	// reaped by the idle TTL reaper). Must stay below the edge
+	// gateway own timeout or the gateway 504s before the 409
+	// lands.
+	TriggerAbsentTimeout time.Duration
 }
 
 // Addr returns the listen address in ":port" form.
@@ -264,6 +270,7 @@ func Load(getenv func(string) string) (Config, error) {
 			// The 2s/2m readiness bounds calibrationapp has used since
 			// Phase 7, now also bounding the HTTP trigger boundary.
 			TriggerReadyPoll: 2 * time.Second, TriggerReadyTimeout: 2 * time.Minute,
+			TriggerAbsentTimeout: 30 * time.Second,
 		},
 		DB:      DBConfig{Driver: "fake"},
 		Log:     LogConfig{Level: "info", Format: "json"},
@@ -310,6 +317,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return cfg, err
 	}
 	if cfg.HTTP.TriggerReadyTimeout, err = durEnv(getenv, "HTTP_TRIGGER_READY_TIMEOUT", cfg.HTTP.TriggerReadyTimeout); err != nil {
+		return cfg, err
+	}
+	if cfg.HTTP.TriggerAbsentTimeout, err = durEnv(getenv, "HTTP_TRIGGER_ABSENT_TIMEOUT", cfg.HTTP.TriggerAbsentTimeout); err != nil {
 		return cfg, err
 	}
 	cfg.DB.Driver = strEnv(getenv, "DB_DRIVER", cfg.DB.Driver)
