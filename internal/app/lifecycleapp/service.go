@@ -741,6 +741,19 @@ func (s *Service) Purge(ctx context.Context, executionID int64) error {
 		// After teardown, before the pods that hold them are deleted: this is
 		// the last moment engine logs exist anywhere but here.
 		s.captureLogs(ctx, executionID, runID)
+	} else if last, lerr := s.repo.LastRun(ctx, executionID); lerr == nil {
+		// Phase 43 closes the run marker the moment a run completes
+		// naturally, so a purge arriving after that reads running=false --
+		// but the pods and their logs still exist, and teardown's other
+		// duties (clearing scenario markers, releasing usage and quota)
+		// were never done: natural completion only finalises the report.
+		// Teardown is safe on a closed marker -- its Finalize is guarded on
+		// CurrentRun and StopRun is idempotent -- so run it, then capture
+		// the last run's logs before the pods that hold them are deleted.
+		if err := s.teardown(ctx, executionID); err != nil {
+			return err
+		}
+		s.captureLogs(ctx, executionID, last.RunID)
 	}
 	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
 		return err

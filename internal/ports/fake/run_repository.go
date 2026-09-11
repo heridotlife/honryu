@@ -137,6 +137,27 @@ func (s *Store) RunningScenariosByExecution(_ context.Context, executionID int64
 	return out, nil
 }
 
+// LastRun returns the most recently started run for an execution, breaking
+// start-time ties by run id so a same-instant pair resolves deterministically.
+func (s *Store) LastRun(_ context.Context, executionID int64) (ports.RunRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var latest *ports.RunRecord
+	for _, rec := range s.runHistory {
+		if rec.ExecutionID != executionID {
+			continue
+		}
+		if latest == nil || rec.StartedTime.After(latest.StartedTime) ||
+			(rec.StartedTime.Equal(latest.StartedTime) && rec.RunID > latest.RunID) {
+			latest = rec
+		}
+	}
+	if latest == nil {
+		return ports.RunRecord{}, ports.ErrNotFound
+	}
+	return *latest, nil
+}
+
 func sortRunningScenarios(rps []ports.RunningScenario) {
 	sort.Slice(rps, func(i, j int) bool {
 		if rps[i].ExecutionID != rps[j].ExecutionID {
