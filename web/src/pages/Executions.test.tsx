@@ -167,6 +167,30 @@ describe('Executions project filter (phase 32)', () => {
   });
 });
 
+// Phase 49 audit follow-up: the engine chips are toggle buttons, so each
+// must carry aria-pressed (the attribute shipped with the chips themselves
+// in the phase 28 commit; this pins it so a rewrite cannot silently drop
+// the toggle semantics).
+describe('Executions engine filter pressed state (phase 49)', () => {
+  it('reflects the active engine chip in aria-pressed', async () => {
+    await renderExecutionsList();
+
+    const all = container!.querySelector('[data-testid="filter-engine-all"]') as HTMLButtonElement;
+    const k6 = container!.querySelector('[data-testid="filter-engine-k6"]') as HTMLButtonElement;
+    expect(all.getAttribute('aria-pressed')).toBe('true');
+    expect(k6.getAttribute('aria-pressed')).toBe('false');
+
+    await act(async () => {
+      k6.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(k6.getAttribute('aria-pressed')).toBe('true');
+    expect(all.getAttribute('aria-pressed')).toBe('false');
+    // And the toggle really filters: only the k6 execution survives.
+    expect(container!.querySelector('a[href="/executions/16"]')).not.toBeNull();
+    expect(container!.querySelector('a[href="/executions/7"]')).toBeNull();
+  });
+});
+
 // Phase 40: the Webhooks card is the project-scoped registry surface on
 // this page -- present only once a project is selected AND the caller may
 // update projects, the same grant the backend's webhook routes demand.
