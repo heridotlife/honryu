@@ -479,6 +479,9 @@ func (s *Store) ListExecutionsByProject(_ context.Context, projectID int64) ([]e
 			out = append(out, c)
 		}
 	}
+	// Map iteration order is random; callers (digests) present executions
+	// in a stable order, so mirror the mysql adapter's id ordering.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
