@@ -125,6 +125,7 @@ func (r *Repository) LastRun(ctx context.Context, executionID int64) (ports.RunR
 	}
 	return rec, nil
 }
+
 // MarkScenarioRunning records a running scenario; duplicates are ignored (idempotent).
 func (r *Repository) MarkScenarioRunning(ctx context.Context, executionID, scenarioID int64) error {
 	_, err := r.db.ExecContext(ctx,
