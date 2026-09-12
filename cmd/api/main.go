@@ -227,8 +227,9 @@ func run(ctx context.Context, getenv func(string) string) error {
 		// The trigger endpoint's bounded readiness wait (Phase 11): a
 		// client may fire deploy->trigger back-to-back without owning the
 		// retry itself.
-		TriggerReadyPoll:    cfg.HTTP.TriggerReadyPoll,
-		TriggerReadyTimeout: cfg.HTTP.TriggerReadyTimeout,
+		TriggerReadyPoll:     cfg.HTTP.TriggerReadyPoll,
+		TriggerReadyTimeout:  cfg.HTTP.TriggerReadyTimeout,
+		TriggerAbsentTimeout: cfg.HTTP.TriggerAbsentTimeout,
 	})
 
 	srv := &http.Server{

@@ -35,6 +35,20 @@ function isSessionSurface(path: string): boolean {
   return path === '/me' || path === '/session' || path.startsWith('/session/');
 }
 
+/**
+ * True when the caller has ever been authenticated this page load. The
+ * dead-session redirect only makes sense when a session existed and died:
+ * a visitor who lands unauthenticated (the picker booting on "/") fires
+ * layout-level fetches -- the project switcher's GET /projects -- that 401
+ * as their NORMAL state. Reacting to those with location.assign("/") loops
+ * the browser: every reload mounts the same unauthenticated layout and
+ * fires the same 401s. This flag is set by the first successful
+ * authenticated response (any 2xx on a non-session-surface path) and by
+ * createSession; it is never cleared, matching the once-per-page-load
+ * latch semantics -- after the redirect the whole module reloads anyway.
+ */
+let everAuthenticated = false;
+
 /** The default dead-session reaction: drop any local bearer token, then let
  * a full page load at "/" rebuild the app around the profile picker. A hard
  * redirect (not router state) because React context, polls, and SSE streams
@@ -65,6 +79,11 @@ export class ApiClient {
     if (this.unauthorizedHandled || isSessionSurface(path)) {
       return;
     }
+    if (!everAuthenticated) {
+      // Unauthenticated visitor, not a dying session: never redirect, the
+      // caller's own error handling renders the signed-out view.
+      return;
+    }
     this.unauthorizedHandled = true;
     this.onUnauthorized();
   }
@@ -79,6 +98,9 @@ export class ApiClient {
     }
 
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    if (res.ok && !isSessionSurface(path)) {
+      everAuthenticated = true;
+    }
     if (res.status === 401) {
       this.handleUnauthorized(path);
     }
