@@ -9,10 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/heridotlife/honryu/internal/app/adminapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/config"
-	"github.com/heridotlife/honryu/internal/ports"
 	"github.com/heridotlife/honryu/internal/ports/fake"
 )
 
@@ -86,7 +84,6 @@ func TestRun_WiringErrors(t *testing.T) {
 	base := map[string]string{
 		"HONRYU_DB_DRIVER":          "fake",
 		"HONRYU_LOG_FORMAT":         "text",
-		"HONRYU_AUTOPURGE_INTERVAL": "0",
 		"HONRYU_RECONCILE_INTERVAL": "0",
 	}
 	cases := []struct {
@@ -118,47 +115,6 @@ func TestRun_WiringErrors(t *testing.T) {
 			}
 		})
 	}
-}
-
-// recordingPurger lets the auto-purge test observe a sweep tick firing.
-type recordingPurger struct {
-	ch chan int64
-}
-
-func (p *recordingPurger) Purge(_ context.Context, executionID int64) error {
-	p.ch <- executionID
-	return nil
-}
-
-func TestStartAutoPurge_SweepsStaleExecutionsUntilCancelled(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sched := fake.NewScheduler()
-	// Deploy "two hours ago" so the very first sweep already sees the
-	// execution as idle past the configured threshold, mirroring adminapp's
-	// own sweep tests.
-	sched.Now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
-	if err := sched.DeployScenario(ctx, ports.DeploySpec{ExecutionID: 42, ScenarioID: 1}); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-	sched.Now = nil
-
-	purger := &recordingPurger{ch: make(chan int64, 8)}
-	admin := adminapp.NewService(fake.NewStore(), sched, purger)
-
-	startAutoPurge(ctx, admin, config.ClusterConfig{AutoPurgeInterval: 5 * time.Millisecond, AutoPurgeIdle: time.Hour})
-
-	select {
-	case id := <-purger.ch:
-		if id != 42 {
-			t.Fatalf("purged execution %d, want 42", id)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("auto-purge sweep never fired")
-	}
-	cancel()
 }
 
 func TestStartReconcile_TicksUntilCancelled(t *testing.T) {

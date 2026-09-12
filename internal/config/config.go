@@ -166,11 +166,6 @@ type ClusterConfig struct {
 	// registered cluster carries its own IngestURL on its entry (Phase 8).
 	// Required when Scheduler is "k8s".
 	IngestURL string
-	// AutoPurgeInterval is how often idle engines are swept; zero disables the
-	// sweeper. AutoPurgeIdle is how long engines may sit idle before a sweep
-	// purges them.
-	AutoPurgeInterval time.Duration
-	AutoPurgeIdle     time.Duration
 	// ReconcileInterval is how often the stranded-run reconciliation pass
 	// runs; zero disables it. A pass finalizes open runs whose engines
 	// already finished (their Finals arrived orphaned) -- evidence-based
@@ -284,7 +279,6 @@ func Load(getenv func(string) string) (Config, error) {
 			EngineImages:  map[taurus.Executor]string{taurus.ExecutorJMeter: "honryu/engine-jmeter:5.6.3"},
 			EnginePort:    8080,
 			Context:       "default",
-			AutoPurgeIdle: time.Hour,
 			// The stranded-run sweep: frequent enough that a corpse run is
 			// closed within minutes, quiet enough to be idle in the common
 			// case (the pass is one query when nothing is stranded).
@@ -354,9 +348,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.Cluster.EnginePort, err = intEnv(getenv, "ENGINE_PORT", cfg.Cluster.EnginePort); err != nil {
 		return Config{}, err
 	}
-	if cfg.Cluster.AutoPurgeInterval, err = durEnv(getenv, "AUTOPURGE_INTERVAL", cfg.Cluster.AutoPurgeInterval); err != nil {
-		return Config{}, err
-	}
 	if cfg.Cluster.ReconcileInterval, err = durEnv(getenv, "RECONCILE_INTERVAL", cfg.Cluster.ReconcileInterval); err != nil {
 		return Config{}, err
 	}
@@ -364,9 +355,6 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Cluster.EngineIdleTTL, err = durEnv(getenv, "ENGINE_IDLE_TTL", cfg.Cluster.EngineIdleTTL); err != nil {
-		return Config{}, err
-	}
-	if cfg.Cluster.AutoPurgeIdle, err = durEnv(getenv, "AUTOPURGE_IDLE", cfg.Cluster.AutoPurgeIdle); err != nil {
 		return Config{}, err
 	}
 	cfg.Auth.Mode = strEnv(getenv, "AUTH_MODE", cfg.Auth.Mode)
