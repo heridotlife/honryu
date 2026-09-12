@@ -104,6 +104,61 @@ func TestDigestConfigUpsertRoundtrip(t *testing.T) {
 	}
 }
 
+// TestDigestConfigNoScheduleIsAResource404 pins the anti-leak contract the
+// phase 42 anomaly note flagged: a GET for a project with no schedule is a
+// 404 whose message names the resource ("no digest schedule for this
+// project"), not the internal repo sentinel ("ports: not found") -- the UI
+// reads this 404 as the off state, so the message doubles as user-facing
+// copy. The configured GET's 200 shape is the roundtrip test's contract;
+// here it is re-asserted with a stamped last_fired so the omitempty field's
+// present side is pinned too (the stamp rides the store's claim path -- the
+// same mark the sweeper's fire leaves behind).
+func TestDigestConfigNoScheduleIsAResource404(t *testing.T) {
+	t.Parallel()
+	store := fake.NewStore()
+	h := newDigestRouter(t, store, fake.NewObjectStore())
+	projectID := createProjectForWebhooks(t, h, "digest-404")
+
+	rec := do(t, h, http.MethodGet, "/api/projects/"+itoa(projectID)+"/digest")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get with no schedule = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no digest schedule for this project") {
+		t.Errorf("404 body = %s, want the resource's own message", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "ports") {
+		t.Errorf("404 body = %s, must not leak the internal sentinel", rec.Body.String())
+	}
+
+	rec = putForm(t, h, "/api/projects/"+itoa(projectID)+"/digest", url.Values{"period": {"daily"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put config = %d (%s)", rec.Code, rec.Body.String())
+	}
+	fired := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if _, ok, err := store.ClaimDueDigestSchedule(context.Background(), fired); err != nil || !ok {
+		t.Fatalf("claim due = (%v, %v), want the fresh schedule claimed", ok, err)
+	}
+	rec = do(t, h, http.MethodGet, "/api/projects/"+itoa(projectID)+"/digest")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get config = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var cfg struct {
+		ProjectID int64      `json:"project_id"`
+		Period    string     `json:"period"`
+		Enabled   bool       `json:"enabled"`
+		LastFired *time.Time `json:"last_fired"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode config: %v (%s)", err, rec.Body.String())
+	}
+	if cfg.ProjectID != projectID || cfg.Period != "daily" || !cfg.Enabled {
+		t.Errorf("config = %+v, want daily/enabled for the project", cfg)
+	}
+	if cfg.LastFired == nil || !cfg.LastFired.Equal(fired) {
+		t.Errorf("last_fired = %v, want the claimed fire stamp %v", cfg.LastFired, fired)
+	}
+}
+
 // TestDigestListScopedNewestFirstAndLimited: the feed serves only the
 // project's rows, newest first, with the payload's verdict fields decoded
 // and limit honored (default 10, capped at 100).

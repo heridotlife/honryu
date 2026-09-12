@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
@@ -53,5 +54,31 @@ func TestAPMLinks_EmptyByDefault(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("links = %v, want empty (never null)", got)
+	}
+}
+
+// TestAPMLinks_EmptyBodyIsLiteralArray closes the gap the length check
+// above cannot: json.Unmarshal leaves a nil slice untouched when the body
+// is the JSON literal null, so len(got)==0 passes for null and [] alike --
+// precisely the pair "no link-outs" and "endpoint broken" must stay
+// apart on the wire (phase 37's array guarantee). The unconfigured body
+// must be the literal [] bytes and decode to a non-nil empty slice.
+func TestAPMLinks_EmptyBodyIsLiteralArray(t *testing.T) {
+	t.Parallel()
+	h := httpapi.NewRouter(httpapi.Deps{})
+
+	rec := do(t, h, http.MethodGet, "/api/apm-links")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET apm-links = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("empty body = %q, want the literal [] (never null)", body)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got == nil {
+		t.Fatal("decoded slice is nil, want a non-nil empty array")
 	}
 }

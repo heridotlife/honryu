@@ -93,7 +93,7 @@ export default function Reservations() {
   const groups = reservations ? groupByDay(reservations) : [];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" role="region" aria-label="Reservations panel">
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Reservations</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">

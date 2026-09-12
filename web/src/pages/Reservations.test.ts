@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { groupByDay, reservationStatus } from './Reservations';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it } from 'vitest';
+import Reservations, { groupByDay, reservationStatus } from './Reservations';
 import type { Reservation } from '../api/reservations';
 
 function makeReservation(overrides: Partial<Reservation> = {}): Reservation {
@@ -53,5 +55,41 @@ describe('groupByDay', () => {
 
   it('returns no groups for an empty list', () => {
     expect(groupByDay([])).toEqual([]);
+  });
+});
+
+// Phase 51 landmark gate (mounted; createElement so this stays a .ts file):
+// the page's outermost element is a labelled region a screen reader can jump to.
+// Reservations fetches nothing on mount (the query form drives the load), so
+// the mount needs no fetch stubs.
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+afterEach(() => {
+  const r = root;
+  if (r !== null && container !== null) {
+    act(() => {
+      r.unmount();
+    });
+  }
+  container?.remove();
+  container = null;
+  root = null;
+});
+
+describe('Reservations landmarks (phase 51)', () => {
+  it('renders the page as a labelled region', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Reservations));
+    });
+
+    const region = container!.querySelector('[role="region"]');
+    expect(region).not.toBeNull();
+    expect(region!.getAttribute('aria-label')).toBe('Reservations panel');
   });
 });

@@ -68,7 +68,7 @@ export default function Clusters() {
   }, []);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" role="region" aria-label="Clusters panel">
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Clusters</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
