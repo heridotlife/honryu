@@ -6,9 +6,12 @@ import { ApiError } from '../api/client';
 import {
   fanOutCapacity,
   getCalibrationJob,
+  getCapacityProfile,
   triggerCalibration,
   type CalibrationJob,
   type CapacityKey,
+  type CapacityProfile,
+  type FanOutResponse,
   type FanOutStatus,
 } from '../api/calibration';
 import type { ExecutionInfo } from '../api/status';
@@ -17,6 +20,13 @@ export interface CapacityPanelProps {
   scenarioId: number;
   executionId: number;
   keyInfo: CapacityKey;
+  /** Phase 54: planner mode -- the same fan-out question asked from a
+   * NORMAL execution, with the pod size and engine user-selectable and an
+   * explicit Compute button (no auto-query, no Run-search verb: the
+   * backend rejects triggering calibration on a non-calibration execution,
+   * which is the exact phase-39 bug this gate once fixed). Defaults to
+   * false: the phase-39/44 calibrate_engine behaviour. */
+  planner?: boolean;
 }
 
 /** localStorage key prefix for the panel's target (phase 44): one target
@@ -38,6 +48,14 @@ export function storedTargetQPS(scenarioId: number): number {
     return DEFAULT_TARGET_QPS;
   }
 }
+
+/** Pod sizes the planner offers (phase 54): the calibration search's own
+ * house sizes plus the two bigger steps, mirroring what a profile can
+ * actually be calibrated against. */
+export const PLANNER_CPU_OPTIONS = ['250m', '500m', '1', '2'] as const;
+export const PLANNER_MEMORY_OPTIONS = ['256Mi', '512Mi', '1Gi', '2Gi'] as const;
+/** Engines the planner offers: the same list the NewTest form carries. */
+export const PLANNER_ENGINE_OPTIONS = ['jmeter', 'gatling', 'k6'] as const;
 
 /**
  * Per-status explanation and call to action. The number is rendered ONLY
@@ -123,7 +141,193 @@ export function isCalibrationExecution(
   return !!info?.engine && info.kind === 'calibrate_engine';
 }
 
-export default function CapacityPanel({ scenarioId, executionId, keyInfo }: CapacityPanelProps) {
+/** The per-pod number the basis note quotes: integral counts stay bare,
+ * everything else gets one decimal (608.5 -> "608.5", 310 -> "310"). */
+export function formatPerPod(perPod: number): string {
+  return Number.isInteger(perPod) ? String(perPod) : perPod.toFixed(1);
+}
+
+export default function CapacityPanel(props: CapacityPanelProps) {
+  if (props.planner) {
+    return <CapacityPlanner {...props} />;
+  }
+  return <CalibrationCapacityPanel {...props} />;
+}
+
+/** A labelled native select, the NewTest form's wrapper style: the label
+ * wraps the control so it is visible and always associated. */
+function LabeledSelect({
+  label,
+  value,
+  options,
+  testId,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  testId: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-caption text-slate-600 dark:text-slate-300">
+      {label}
+      <select
+        data-testid={testId}
+        className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Phase 54's planner: "I want X qps -- how many pods, what size?" for any
+ * scenario-bound execution. Same fan-out endpoint and verdict copy as the
+ * calibration panel, but the key is user-chosen and the query is explicit
+ * (a collapsed card must not fire fetches on mount). The profile lookup is
+ * best-effort: 404 just means no basis note, any other failure is an error. */
+function CapacityPlanner({ scenarioId, keyInfo }: CapacityPanelProps) {
+  const [key, setKey] = useState<CapacityKey>(keyInfo);
+  const [targetQPS, setTargetQPS] = useState(() => storedTargetQPS(scenarioId));
+  const [result, setResult] = useState<FanOutResponse | null>(null);
+  const [profile, setProfile] = useState<CapacityProfile | null>(null);
+  const [computing, setComputing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // A different scenario means a different stored target (phase 44's rule,
+  // same persistence as the calibration panel).
+  useEffect(() => {
+    setTargetQPS(storedTargetQPS(scenarioId));
+  }, [scenarioId]);
+
+  const compute = () => {
+    setComputing(true);
+    setError(null);
+    // The basis note and freshness line (phase 54) come from the stored
+    // profile, not the fan-out verdict; a missing profile is not an error.
+    const profileLookup = getCapacityProfile(scenarioId, key).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 404) {
+        return null;
+      }
+      throw err;
+    });
+    Promise.all([fanOutCapacity(scenarioId, key, targetQPS), profileLookup])
+      .then(([res, prof]) => {
+        setResult(res);
+        setProfile(prof);
+      })
+      .catch((err: unknown) => {
+        setResult(null);
+        setProfile(null);
+        setError(err instanceof ApiError ? err.message : 'Failed to compute capacity.');
+      })
+      .finally(() => setComputing(false));
+  };
+
+  const changeTarget = (value: string) => {
+    const n = Number(value);
+    // Below-minimum or non-numeric input keeps the current target: a
+    // garbage number must never reach the endpoint via Compute.
+    if (!Number.isFinite(n) || n < 1) {
+      return;
+    }
+    setTargetQPS(n);
+    try {
+      localStorage.setItem(`${TARGET_STORAGE_PREFIX}${scenarioId}`, String(n));
+    } catch {
+      // Persistence is best-effort; the query itself still uses the value.
+    }
+  };
+
+  const changeKey = (patch: Partial<CapacityKey>) => {
+    setKey((prev) => ({ ...prev, ...patch }));
+  };
+
+  const copy = result && result.status !== 'ok' ? fanOutCopy(result.status) : null;
+
+  return (
+    <Card role="region" aria-label="Capacity planner" data-testid="capacity-planner">
+      <CardHeader className="mb-2">
+        <CardTitle>Plan capacity</CardTitle>
+      </CardHeader>
+      <details data-testid="planner-details">
+        <summary className="cursor-pointer text-caption font-medium text-sky-700 hover:underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400">
+          Pick a target QPS and pod size, then compute the fleet
+        </summary>
+        <div className="mt-3 space-y-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Input
+              label="Target QPS"
+              type="number"
+              min={1}
+              className="max-w-40"
+              data-testid="planner-target-qps"
+              value={targetQPS}
+              onChange={(e) => changeTarget(e.target.value)}
+            />
+            <LabeledSelect
+              label="Engine"
+              value={key.engine}
+              options={PLANNER_ENGINE_OPTIONS}
+              testId="planner-engine"
+              onChange={(engine) => changeKey({ engine })}
+            />
+            <LabeledSelect
+              label="CPU per pod"
+              value={key.cpu}
+              options={PLANNER_CPU_OPTIONS}
+              testId="planner-cpu"
+              onChange={(cpu) => changeKey({ cpu })}
+            />
+            <LabeledSelect
+              label="Memory per pod"
+              value={key.memory}
+              options={PLANNER_MEMORY_OPTIONS}
+              testId="planner-memory"
+              onChange={(memory) => changeKey({ memory })}
+            />
+          </div>
+          <Button data-testid="planner-compute" onClick={compute} disabled={computing}>
+            {computing ? 'Computing…' : 'Compute'}
+          </Button>
+          {error && (
+            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+              {error}
+            </p>
+          )}
+          {result && result.status === 'ok' && result.engines !== undefined && (
+            <div data-testid="planner-result">
+              <p className="text-heading-md text-slate-900 dark:text-white" data-testid="capacity-planner-pods">
+                {result.engines} pod{result.engines === 1 ? '' : 's'} for {targetQPS} qps
+              </p>
+              {profile && (
+                <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="planner-basis">
+                  based on calibrated {formatPerPod(profile.per_pod_qps)} qps/pod for this scenario
+                </p>
+              )}
+            </div>
+          )}
+          {copy && (
+            <div data-testid="planner-result">
+              <p className="text-body-sm font-medium text-slate-900 dark:text-white">{copy.title}</p>
+              <p className="text-caption text-slate-500 dark:text-slate-400">{copy.detail}</p>
+              {copy.cta && <p className="text-caption mt-1 text-sky-700 dark:text-sky-400">{copy.cta}</p>}
+            </div>
+          )}
+        </div>
+      </details>
+    </Card>
+  );
+}
+
+function CalibrationCapacityPanel({ scenarioId, executionId, keyInfo }: CapacityPanelProps) {
   // Phase 44: the fan-out target is the user's own number (default 100,
   // persisted per scenario) -- it drove engine counts from an arbitrary
   // hardcoded 100 before, disconnected from any intent.
