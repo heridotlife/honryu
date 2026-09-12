@@ -6,6 +6,7 @@ import Campaigns from './pages/Campaigns';
 import Executions from './pages/Executions';
 import NewTest from './pages/NewTest';
 import Execution from './pages/Execution';
+import Home from './pages/Home';
 import ProfilePicker from './pages/ProfilePicker';
 import Reports from './pages/Reports';
 import Reservations from './pages/Reservations';
@@ -22,8 +23,11 @@ export default function App() {
         <DashboardLayout>
           <Routes>
             {/* Phase 20: / is the profile picker when unauthenticated and a
-                redirect to /reports when a session cookie already exists. */}
+                redirect to the dashboard when a session cookie already
+                exists. Phase 52: that dashboard is /home, not the bare run
+                list. */}
             <Route path="/" element={<ProfilePicker />} />
+            <Route path="/home" element={<Home />} />
             <Route path="/executions/new" element={<NewTest />} />
             <Route path="/executions" element={<Executions />} />
             <Route path="/executions/:id" element={<Execution />} />

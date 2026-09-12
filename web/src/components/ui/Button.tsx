@@ -2,7 +2,7 @@ import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'destructive';
+  variant?: 'primary' | 'accent' | 'secondary' | 'outline' | 'ghost' | 'destructive';
   size?: 'sm' | 'md' | 'lg';
   fullWidth?: boolean;
   children?: ReactNode;
@@ -20,6 +20,16 @@ const variantClasses: Record<NonNullable<ButtonProps['variant']>, string> = {
     'text-white shadow-md hover:shadow-lg',
     'hover:from-sky-600 hover:to-cyan-600 dark:hover:from-sky-700 dark:hover:to-cyan-700',
     'focus:ring-sky-500',
+  ].join(' '),
+  // The accent (phase 52): the ONE primary CTA per view reads amber so it
+  // stands apart from the sky family that carries navigation and links.
+  // Flat amber, not a gradient -- the gradient is primary's signature; a
+  // second gradient would blur which control is which.
+  accent: [
+    'bg-amber-600 dark:bg-amber-600',
+    'text-white shadow-md hover:shadow-lg',
+    'hover:bg-amber-700 dark:hover:bg-amber-500',
+    'focus:ring-amber-500',
   ].join(' '),
   secondary: [
     'border border-slate-300 dark:border-slate-700',

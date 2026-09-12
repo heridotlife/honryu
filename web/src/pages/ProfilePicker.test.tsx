@@ -1,5 +1,5 @@
 // The picker is phase 20's only interactive identity surface: which cards
-// render, what a click does (POST /api/session -> refresh -> /reports), and
+// render, what a click does (POST /api/session -> refresh -> /home), and
 // what the already-authenticated visitor sees. Mounted with createRoot+act
 // for the same reason as useSession.test.tsx: the behaviour spans fetch,
 // context state, and the router, and none of it is visible to a pure test.
@@ -41,7 +41,7 @@ function LocationSpy() {
   return null;
 }
 
-/** A /reports stand-in proving the router actually landed there. */
+/** A /home stand-in proving the router actually landed there. */
 function Where() {
   return <p data-testid="reports">reports</p>;
 }
@@ -59,7 +59,7 @@ async function renderPicker(fetchMock: ReturnType<typeof stubApi>) {
           <LocationSpy />
           <Routes>
             <Route path="/" element={<ProfilePicker />} />
-            <Route path="/reports" element={<Where />} />
+            <Route path="/home" element={<Where />} />
           </Routes>
         </SessionProvider>
       </MemoryRouter>
@@ -112,7 +112,7 @@ describe('ProfilePicker', () => {
     expect(container?.querySelectorAll('button').length).toBe(0);
   });
 
-  it('selecting a card signs in and lands on /reports', async () => {
+  it('selecting a card signs in and lands on /home', async () => {
     const calls: string[] = [];
     let authenticated = false;
     await renderPicker(
@@ -140,7 +140,7 @@ describe('ProfilePicker', () => {
       'POST /api/session {"profile":"alice"}',
       'GET /api/me',
     ]);
-    expect(locationPath).toBe('/reports');
+    expect(locationPath).toBe('/home');
   });
 
   it('stays on / and surfaces the error when the profile is unknown', async () => {
@@ -166,7 +166,7 @@ describe('ProfilePicker', () => {
     expect((container?.querySelector('button') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('redirects an already-authenticated visitor to /reports without rendering cards', async () => {
+  it('redirects an already-authenticated visitor to /home without rendering cards', async () => {
     const calls: string[] = [];
     await renderPicker(
       stubApi(
@@ -179,6 +179,6 @@ describe('ProfilePicker', () => {
 
     expect(calls).toEqual(['GET /api/me']);
     expect(container?.querySelectorAll('button').length).toBe(0);
-    expect(locationPath).toBe('/reports');
+    expect(locationPath).toBe('/home');
   });
 });

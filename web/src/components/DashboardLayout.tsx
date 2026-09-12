@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, Moon, Sun, X } from 'lucide-react';
+import { LogOut, Menu, Moon, Plus, Sun, X } from 'lucide-react';
 import Button from './ui/Button';
 import ProjectSwitcher from './ProjectSwitcher';
 import { useSession } from '../hooks/useSession';
@@ -16,6 +16,10 @@ export interface NavItem {
 
 /** Every nav surface, in order; visibility is the session's call. */
 const allNavItems: NavItem[] = [
+  // report:read -- Home (phase 52) reads the same reports and executions
+  // the Reports page reads, so it rides the same grant and lands the
+  // authenticated session somewhere that answers "what is happening".
+  { href: '/home', label: 'Home', resource: 'report', action: 'read' },
   // report:read -- the Reports page's primary fetches are report reads.
   { href: '/reports', label: 'Reports', resource: 'report', action: 'read' },
   // execution:list -- GET /api/executions is the caller-scoped list.
@@ -165,7 +169,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <nav className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/80">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
-            <div className="flex items-center space-x-8">
+            {/* gap, not space-x (phase 52's 5px-overflow fix): Tailwind's
+                space-x utilities put the margin on the sibling selectors
+                themselves, so the logo carried a phantom 32px margin-inline-end
+                while the nav links were display:none at mobile -- pushing the
+                right-side control group out to x=380 on a 375px viewport, on
+                EVERY route. CSS gap only applies between boxes that actually
+                render, so hidden children cannot leak spacing. */}
+            <div className="flex items-center gap-8">
               <Link
                 to="/"
                 className={`text-xl font-bold tracking-tight text-slate-900 dark:text-white ${focusRing}`}
@@ -190,10 +201,34 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </div>
 
             {/* One right-side control group for every viewport (phase 32):
-                the project switcher leads, then the theme toggle, then the
+                the New Test CTA leads (phase 52: the one amber accent per
+                view -- the audit's "no visible primary action" finding),
+                then the project switcher, then the theme toggle, then the
                 burger (mobile only). A single switcher/theme instance keeps
                 the nav to one /api/projects fetch per page. */}
-            <div className="flex items-center space-x-2 md:space-x-4">
+            {/* min-w-0 here too: this group is itself a flex item, and its
+                own auto min-width would otherwise refuse to shrink below
+                its content -- pushing the whole row past a 375px phone.
+                With it, the switcher inside (min-w-0 + truncate) absorbs
+                the squeeze instead of the viewport. */}
+            <div className="flex min-w-0 items-center gap-2 md:gap-4">
+              {can('execution', 'create') && (
+                <Button
+                  variant="accent"
+                  size="md"
+                  data-testid="nav-new-test"
+                  aria-label="New Test"
+                  title="Start a new test"
+                  onClick={() => navigate('/executions/new')}
+                >
+                  <Plus className="h-5 w-5 md:mr-1 md:h-4 md:w-4" aria-hidden />
+                  {/* Full label from md up; icon-only below it -- a 375px
+                      phone cannot fit label + switcher + toggles in one
+                      bar, and the row must never push the viewport sideways
+                      (the exact bug phase 52's e2e F-check pins). */}
+                  <span className="hidden md:inline">New Test</span>
+                </Button>
+              )}
               <ProjectSwitcher />
               <Button
                 onClick={toggleTheme}

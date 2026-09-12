@@ -156,7 +156,7 @@ describe('Execution live section (mounted)', () => {
 
     const section = container!.querySelector('[data-testid="live-section"]');
     expect(section).not.toBeNull();
-    expect(section?.querySelector('h3')?.textContent).toBe('Live');
+    expect(section?.querySelector('h2')?.textContent).toBe('Live');
 
     // Before the first open: the disconnected banner, not the idle text.
     expect(container!.querySelector('[data-testid="live-disconnected"]')?.textContent).toContain(
@@ -692,5 +692,56 @@ describe('Execution lifecycle button variants (phase 51)', () => {
     expect(trigger.className).toContain('bg-gradient-to-r');
     expect(trigger.className).toContain('from-sky-500');
     expect(trigger.className).not.toContain('text-red-600');
+  });
+});
+
+// Phase 52 heading contract: the page h1 stays "Execution #5" and every
+// section is an h2 -- Past runs, Failure history across runs, Scenario
+// editor, Engine logs, Live -- with no h3 anywhere between. CardTitle used
+// to render h3, which skipped a level under the h1 (the operator audit's
+// outline finding); this test fails if the outline regresses.
+describe('Execution heading outline (phase 52)', () => {
+  it('renders the four sections as h2 and no h3 under the h1', async () => {
+    // A running execution with one deployed scenario: every section card
+    // renders (the scenario cards need status rows to exist).
+    await renderExecution('running', [], { execution_id: 5, grouped_by: 'label', groups: [] }, [], {}, {
+      status: [
+        { scenario_id: 1, engines: 1, engines_deployed: 1, engines_reachable: true, in_progress: false },
+      ],
+    });
+
+    const headings = Array.from(container!.querySelectorAll('h1, h2, h3'));
+    const h1s = headings.filter((h) => h.tagName === 'H1');
+    const h2s = headings.filter((h) => h.tagName === 'H2');
+    const h3s = headings.filter((h) => h.tagName === 'H3');
+
+    // Exactly one h1: the page title.
+    expect(h1s.map((h) => h.textContent)).toEqual(['Execution #5']);
+    // Every section is an h2: at least the five named ones.
+    expect(h2s.length).toBeGreaterThanOrEqual(5);
+    const h2Text = h2s.map((h) => h.textContent?.trim());
+    for (const label of ['Past runs', 'Failure history across runs', 'Scenario editor', 'Engine logs', 'Live']) {
+      expect(h2Text, `missing h2 section "${label}"`).toContain(label);
+    }
+    // No skipped level anywhere on the page.
+    expect(h3s).toEqual([]);
+  });
+});
+
+// Phase 52: the hub's breadcrumb -- "Executions / #5". One ancestor link
+// back to the list, the current page marked aria-current.
+describe('Execution breadcrumbs (phase 52)', () => {
+  it('renders the trail with one link and aria-current on the id', async () => {
+    await renderExecution('idle');
+
+    const nav = container!.querySelector('nav[aria-label="breadcrumb"]');
+    expect(nav).not.toBeNull();
+    const items = Array.from(nav!.querySelectorAll('li'));
+    expect(items.map((li) => li.textContent?.trim())).toEqual(['Executions', '#5']);
+    const links = Array.from(nav!.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    expect(links).toEqual(['/executions']);
+    const current = nav!.querySelector('[aria-current="page"]');
+    expect(current?.textContent).toBe('#5');
+    expect(nav!.querySelectorAll('svg[aria-hidden="true"]').length).toBe(1);
   });
 });

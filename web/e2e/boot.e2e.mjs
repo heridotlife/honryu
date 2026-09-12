@@ -15,6 +15,8 @@
  *   D. PURGE TWO-STEP        the destructive Purge control arms before it
  *                            fires, and fires exactly one request.
  *   E. ROW SANITY            no raw ISO timestamp leaks into a list row.
+ *   F. MOBILE NO OVERFLOW    at a 375px viewport the page must not scroll
+ *                            sideways (phase 52's 5px-overflow audit fix).
  *
  * It is NOT wired into `bun run test` or CI: it needs a live environment
  * (a running API + SPA, demo auth enabled, reachable engines for D). Run it
@@ -255,6 +257,46 @@ async function scenarioDandE(browser) {
   }
 }
 
+async function scenarioF(browser) {
+  // F owns a NARROW context: the audit measured ~5px of sideways scroll on
+  // every route at 375px (380 vs 375). The fix lives in the nav's flex
+  // chain (gap instead of phantom space-x margins, min-w-0 down to the
+  // switcher's truncating button), so the check drives both an
+  // unauthenticated and an authenticated page -- the CTA widens the nav's
+  // right group, which is exactly where the squeeze must be absorbed.
+  const ctx = await browser.newContext({ viewport: { width: 375, height: 667 } });
+  const page = await ctx.newPage();
+  try {
+    const alice = await openPicker(page);
+    const noOverflow = () =>
+      page.evaluate(() => ({
+        body: document.body.scrollWidth,
+        doc: document.documentElement.scrollWidth,
+        vw: document.documentElement.clientWidth,
+      }));
+    let m = await noOverflow();
+    if (m.body > m.vw || m.doc > m.vw) {
+      fail('F. mobile no horizontal overflow', `unauth /: body=${m.body} doc=${m.doc} > vw=${m.vw}`);
+    } else {
+      pass('F. mobile no horizontal overflow', `unauth /: body=${m.body} doc=${m.doc} <= vw=${m.vw}`);
+    }
+
+    await login(page, alice);
+    await page.goto(`${BASE_URL}/executions`, { waitUntil: 'domcontentloaded' });
+    await sleep(2_000); // let the list and the nav's switcher settle
+    m = await noOverflow();
+    if (m.body > m.vw || m.doc > m.vw) {
+      fail('F. mobile no horizontal overflow (authed)', `/executions: body=${m.body} doc=${m.doc} > vw=${m.vw}`);
+    } else {
+      pass('F. mobile no horizontal overflow (authed)', `/executions: body=${m.body} doc=${m.doc} <= vw=${m.vw}`);
+    }
+  } catch (err) {
+    fail('F. mobile no horizontal overflow', String(err));
+  } finally {
+    await ctx.close();
+  }
+}
+
 const executablePath = findChromium();
 if (!executablePath) {
   console.error('No Chromium found. Set CHROMIUM_PATH, or provision one with: bunx playwright install chromium');
@@ -267,6 +309,7 @@ const browser = await chromium.launch({ executablePath, args: ['--no-sandbox'] }
 try {
   await scenarioABandC(browser);
   await scenarioDandE(browser);
+  await scenarioF(browser);
 } finally {
   await browser.close();
 }
