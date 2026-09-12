@@ -1105,6 +1105,73 @@ func TestAdvanceOne_Exec16KeptPaceAndMustNotBisect(t *testing.T) {
 	}
 }
 
+// The Little's-Law retry must fire on a volume shortfall too: a TRUE pacing
+// limit at a high requested rate -- the bootstrap floor of 20 threads can
+// sustain only 20/latency rps, a fraction of the request -- classifies
+// engine_saturated by volume, and the retry is the mechanism that resolves it:
+// it re-runs the step with threads sized from the attempt's measured response
+// time instead of the floor. A rate shortfall classified the same way before
+// phase 53; this pin says the retry stays attached to the volume verdict now
+// that classification judges volume -- a true ceiling still gets its second,
+// correctly-sized chance, and the search continues up rather than bisecting
+// down on a problem thread sizing could fix.
+func TestAdvanceOne_VolumeShortfallStillSizesTheRetryFromMeasuredLatency(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	// 200 qps is far past what 20 threads hold at a 300ms response time:
+	// 20/0.3 = 66 rps at best.
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 200, MaxQPS: 1000, MaxSteps: 5, HoldSeconds: 10}
+	_, jobID, _ := seedTriggeredCalibration(t, store, spec)
+
+	// Both reports carry a real paced shape: a 17s measured span (5s ramp-up +
+	// 10s hold + 2s drain). The attempt undershoots the volume the hold implies
+	// (667 < 200*10*0.95); the retry, correctly sized, fills it.
+	attempt := report.Report{
+		Requested: report.Load{Throughput: 200, DurationSeconds: 10},
+		Achieved:  report.Load{Throughput: 667.0 / 17, DurationSeconds: 17, Samples: 667},
+		Latency:   report.Percentiles{95: 0.3},
+	}
+	retry := report.Report{
+		Requested: report.Load{Throughput: 200, DurationSeconds: 10},
+		Achieved:  report.Load{Throughput: 2000.0 / 17, DurationSeconds: 17, Samples: 2000},
+	}
+	runner := &stubRunner{responses: []stubRunnerResponse{
+		{report: attempt}, // attempt 1: floor-20 threads, pacing-limited, volume-short
+		{report: retry},   // retry: Little's Law sizes 180 threads; the hold fills
+	}}
+	svc := calibrationapp.NewService(store).WithRunner(runner).WithFingerprint(&stubFingerprinter{value: "fp"})
+
+	if _, err := svc.AdvanceOne(ctx, time.Now()); err != nil {
+		t.Fatalf("AdvanceOne: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("runner calls = %d, want 2 (pacing-limited attempt + sized retry)", len(runner.calls))
+	}
+	if runner.calls[0].latencyHintSec != 0 {
+		t.Fatalf("attempt 1 latency hint = %v, want 0 (bootstrap floor)", runner.calls[0].latencyHintSec)
+	}
+	// The pin: the retry is sized from the attempt's measured p95 -- 180
+	// threads by Little's Law (200 * 0.3 * 3), not the 20-thread floor that
+	// could not keep pace.
+	if runner.calls[1].latencyHintSec != 0.3 {
+		t.Fatalf("retry latency hint = %v, want the attempt's measured p95 (0.3s)", runner.calls[1].latencyHintSec)
+	}
+
+	job, err := svc.Get(ctx, jobID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(job.Steps) != 1 || job.Steps[0].Classification != calibration.ClassificationClean {
+		t.Fatalf("steps = %+v, want the retry's single clean step", job.Steps)
+	}
+	// And the search continues upward: a true pacing limit is a sizing
+	// problem, not an engine ceiling.
+	if job.NextRequestedQPS != 400 {
+		t.Fatalf("next requested QPS = %v, want 400 -- the search must continue up", job.NextRequestedQPS)
+	}
+}
+
 func TestAdvanceOne_TargetLimitedTerminatesInOneTick(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
