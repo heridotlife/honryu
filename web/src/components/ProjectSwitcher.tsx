@@ -136,15 +136,25 @@ export default function ProjectSwitcher({ onSelect }: { onSelect?: (id: string) 
         : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
     } focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-500`;
 
+  // min-w-0: this root is the flex item the nav's control group lays
+  // out -- with the default auto min-width its min-content is the longest
+  // unbreakable project name, which alone overflows a 375px nav bar. With
+  // it the truncating button inside can actually shrink (phase 52's
+  // 5px-overflow fix, chain end).
   return (
-    <div className="project-switcher relative" data-testid="project-switcher">
+    <div className="project-switcher relative min-w-0" data-testid="project-switcher">
+      {/* min-w-0 (phase 52's 5px-overflow fix): a flex item's default
+          min-width is auto, so this button refused to shrink below its
+          content and pushed the nav row past a 375px viewport. With
+          min-w-0 the truncate below can actually engage -- the row
+          squeezes instead of overflowing. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
         title="Switch project"
-        className="flex min-h-[44px] max-w-44 items-center gap-1 rounded-md px-2 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-sky-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-400"
+        className="flex min-h-[44px] min-w-0 max-w-44 items-center gap-1 rounded-md px-2 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-sky-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-400"
       >
         <span className="truncate">{selectedName !== '' ? selectedName : 'All projects'}</span>
         <ChevronDown aria-hidden className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />

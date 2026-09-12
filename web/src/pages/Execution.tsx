@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ApiError, errorDetails } from '../api/client';
@@ -604,6 +605,14 @@ export default function Execution() {
 
   return (
     <div className="space-y-6">
+      {/* Phase 52: the trail back up -- the hub is one click away, named
+          rather than guessed from the back button. */}
+      <Breadcrumbs
+        items={[
+          { label: 'Executions', href: '/executions' },
+          { label: `#${executionId}` },
+        ]}
+      />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-display-sm text-slate-900 dark:text-white">Execution #{executionId}</h1>
@@ -713,9 +722,11 @@ export default function Execution() {
           </Card>
           {(status.phase === 'running' || series.length > 0) && (
             <section aria-labelledby="live-heading" data-testid="live-section">
-              <h3 id="live-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
+              {/* h2: a top-level section of the page, same as the CardTitles
+                  around it (phase 52's outline fix). */}
+              <h2 id="live-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
                 Live
-              </h3>
+              </h2>
               <div className="mt-3">
                 {!connected && (
                   <p className="text-body-sm text-amber-600 dark:text-amber-400" role="status" data-testid="live-disconnected">

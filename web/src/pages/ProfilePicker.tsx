@@ -8,8 +8,9 @@ import { useSession } from '../hooks/useSession';
  * `/` -- the demo profile picker (phase 20, Approach F). Selecting a persona
  * IS the authentication: POST /api/session mints the HttpOnly cookie, the
  * refresh re-asks /api/me, and the authenticated state redirects to
- * /reports. Unauthenticated is a normal state here, not an error -- the
- * picker is what unauthenticated looks like.
+ * /home (phase 52's dashboard; it used to be the bare run list at
+ * /reports). Unauthenticated is a normal state here, not an error --
+ * the picker is what unauthenticated looks like.
  */
 export default function ProfilePicker() {
   const { loading, session, profiles, profilesError, refresh } = useSession();
@@ -22,7 +23,7 @@ export default function ProfilePicker() {
   }
 
   if (session !== null) {
-    return <Navigate to="/reports" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   const select = async (id: string) => {
@@ -34,7 +35,7 @@ export default function ProfilePicker() {
       // refresh() flips the session, which alone redirects via the Navigate
       // above; navigating explicitly keeps the contract local to the click
       // even if a future refresh change stops re-rendering this page.
-      navigate('/reports');
+      navigate('/home');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'failed to select profile');
       setSelecting(null);
