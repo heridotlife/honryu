@@ -387,10 +387,17 @@ func (s *Service) fail(ctx context.Context, jobID int64, runErr error) error {
 }
 
 // runClassifiedStep runs one real step at requestedQPS and classifies its
-// settled report: engine-saturation (ShortOfRequest or EngineImpaired) is
+// settled report: engine-saturation (ShortOfVolume or EngineImpaired) is
 // checked before the target-health criterion, since a report's overall
 // ErrorRate -- unlike TargetErrorRate -- counts the engine's own failures
 // too, and an engine-impaired run must never be misread as target distress.
+//
+// The shortfall judgement is by VOLUME, not rate: a paced step's measured span
+// stretches past its hold with ramp-up and drain, so its achieved rate can
+// never reach the requested one even when the engine kept pace throughout --
+// judging the sample count against what the hold implies (ShortOfVolume) is
+// what keeps a healthy engine from being misread as saturated (phase 53).
+// ShortOfRequest stays the rate reading for humans, in trend and reports.
 //
 // latencyHintSec sizes the run's virtual users (see RunStep). It also returns
 // the response time this run measured, so a caller re-running the step can
@@ -402,7 +409,7 @@ func (s *Service) runClassifiedStep(ctx context.Context, executionID int64, requ
 	}
 	class := calibration.ClassificationClean
 	switch {
-	case rpt.ShortOfRequest() || rpt.EngineImpaired():
+	case rpt.ShortOfVolume() || rpt.EngineImpaired():
 		class = calibration.ClassificationEngineSaturated
 	case len(rpt.EvaluateCriteria(calibration.SplitCriterion(spec.Criterion))) > 0:
 		class = calibration.ClassificationTargetSaturated
