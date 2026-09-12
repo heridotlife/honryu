@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, Moon, Sun, X } from 'lucide-react';
+import { LogOut, Menu, Moon, Plus, Sun, X } from 'lucide-react';
 import Button from './ui/Button';
 import ProjectSwitcher from './ProjectSwitcher';
 import { useSession } from '../hooks/useSession';
@@ -194,10 +194,29 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </div>
 
             {/* One right-side control group for every viewport (phase 32):
-                the project switcher leads, then the theme toggle, then the
+                the New Test CTA leads (phase 52: the one amber accent per
+                view -- the audit's "no visible primary action" finding),
+                then the project switcher, then the theme toggle, then the
                 burger (mobile only). A single switcher/theme instance keeps
                 the nav to one /api/projects fetch per page. */}
             <div className="flex items-center space-x-2 md:space-x-4">
+              {can('execution', 'create') && (
+                <Button
+                  variant="accent"
+                  size="md"
+                  data-testid="nav-new-test"
+                  aria-label="New Test"
+                  title="Start a new test"
+                  onClick={() => navigate('/executions/new')}
+                >
+                  <Plus className="h-5 w-5 md:mr-1 md:h-4 md:w-4" aria-hidden />
+                  {/* Full label from md up; icon-only below it -- a 375px
+                      phone cannot fit label + switcher + toggles in one
+                      bar, and the row must never push the viewport sideways
+                      (the exact bug phase 52's e2e F-check pins). */}
+                  <span className="hidden md:inline">New Test</span>
+                </Button>
+              )}
               <ProjectSwitcher />
               <Button
                 onClick={toggleTheme}

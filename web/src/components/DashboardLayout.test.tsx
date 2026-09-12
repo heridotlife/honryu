@@ -140,6 +140,16 @@ const carol: SessionInfo = {
   demo: true,
 };
 
+const alice: SessionInfo = {
+  subject: 'demo:alice',
+  name: 'Alice (service provider admin)',
+  email: '',
+  global_roles: ['service_provider_admin'],
+  tenants: { '1': ['service_provider_admin'] },
+  permissions: personas.alice,
+  demo: true,
+};
+
 function stubApi(handlers: Record<string, () => Response>, calls: string[] = []) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -224,6 +234,34 @@ describe('DashboardLayout (mounted)', () => {
 
     expect(container?.querySelectorAll('[data-testid="nav-links"] a').length).toBe(0);
     expect(container?.querySelector('[data-testid="demo-banner"]')).toBeNull();
+  });
+
+  // Phase 52: the nav's New Test CTA -- the one amber accent control --
+  // exists exactly when the session may create executions, the same grant
+  // the Executions page's "+ New test" link and the /executions/new route
+  // demand. Hidden, not disabled: a control you may not use should not
+  // advertise itself.
+  it('renders the New Test accent CTA for a session with execution:create', async () => {
+    await renderLayout(stubApi({ '/api/me': () => json(alice) }));
+
+    const cta = container?.querySelector('[data-testid="nav-new-test"]');
+    expect(cta).not.toBeNull();
+    expect(cta?.textContent).toContain('New Test');
+    // The accent contract, pinned: amber ground + amber focus ring, and
+    // NOT the sky the rest of the nav speaks in.
+    expect(cta?.className).toContain('bg-amber-600');
+    expect(cta?.className).toContain('focus:ring-amber-500');
+    expect(cta?.className).not.toContain('sky');
+    // The label collapses to an icon below md (a 375px bar cannot fit
+    // label + switcher + toggles); the accessible name survives.
+    expect(cta?.getAttribute('aria-label')).toBe('New Test');
+    expect(cta?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('hides the New Test CTA without execution:create (viewer persona)', async () => {
+    await renderLayout(stubApi({ '/api/me': () => json(carol) }));
+
+    expect(container?.querySelector('[data-testid="nav-new-test"]')).toBeNull();
   });
 
   it('logout DELETEs the session, re-resolves to unauthenticated, and lands on /', async () => {
