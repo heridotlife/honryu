@@ -146,7 +146,7 @@ export default function LiveStatus() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" role="region" aria-label="Live status panel">
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Live Status</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
@@ -191,7 +191,10 @@ export default function LiveStatus() {
               </div>
               <PhaseBadge phase={status.phase} />
             </CardHeader>
-            <CardContent className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+            <CardContent
+              className="grid grid-cols-1 gap-6 sm:grid-cols-3"
+              aria-live="polite"
+            >
               <StatCard
                 label="Throughput"
                 value={`${stats.throughput.toFixed(1)}/s`}

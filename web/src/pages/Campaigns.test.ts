@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import campaignsSource from './Campaigns.tsx?raw';
-import {
+import Campaigns, {
   campaignStatus,
   comparisonStatusClasses,
   comparisonStatusLabels,
@@ -8,6 +10,7 @@ import {
   parseBaselineId,
   serviceStatus,
 } from './Campaigns';
+import { SessionProvider } from '../hooks/useSession';
 import type { Campaign, ServiceVerdict } from '../api/campaigns';
 import type { ComparisonStatus } from '../api/comparison';
 
@@ -145,5 +148,66 @@ describe('Campaigns gating (phase 20)', () => {
   it('gates the create control on the session permission map', () => {
     expect(campaignsSource).toContain("can('campaign', 'create')");
     expect(campaignsSource).toContain('no-create-permission');
+  });
+});
+
+// Phase 51 landmark gate (mounted, Executions.test.tsx's aria-pressed style;
+// createElement so this stays a .ts file). Campaigns reads useSession, so
+// the provider (and its mount-time /api/me) must be stubbed in; the page
+// itself fetches nothing until a tenant id is submitted.
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  const r = root;
+  if (r !== null && container !== null) {
+    act(() => {
+      r.unmount();
+    });
+  }
+  container?.remove();
+  container = null;
+  root = null;
+});
+
+describe('Campaigns landmarks (phase 51)', () => {
+  it('renders the page as a labelled region', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).endsWith('/api/me')) {
+          return new Response(
+            JSON.stringify({
+              subject: 'demo:alice',
+              name: 'Alice',
+              email: '',
+              global_roles: [],
+              tenants: {},
+              permissions: { '*': ['*'] },
+              demo: true,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({ message: `no stub for ${input}` }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(SessionProvider, null, createElement(Campaigns)));
+    });
+    await act(async () => {}); // flush the /api/me fetch
+
+    const region = container!.querySelector('[role="region"]');
+    expect(region).not.toBeNull();
+    expect(region!.getAttribute('aria-label')).toBe('Campaigns panel');
   });
 });
