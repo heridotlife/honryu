@@ -9,6 +9,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CapacityPanel from './CapacityPanel';
+import { formatDay } from '../lib/executionRow';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -288,5 +289,37 @@ describe('CapacityPanel planner (mounted)', () => {
 
     expect(plannerPods()).toBe('3 pods for 100 qps');
     expect(plannerBasis()).toBeNull();
+  });
+
+  it('a fresh calibration shows the short-form date and no stale hint', async () => {
+    const day = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await renderPlanner(plannerStubs({ status: 'ok', engines: 7 }, plannerProfile(day.toISOString())));
+    await click(computeButton());
+
+    const line = container!.querySelector('[data-testid="planner-calibrated"]')?.textContent ?? '';
+    expect(line).toContain(`calibrated ${formatDay(day.toISOString())}`);
+    expect(line).not.toContain('stale');
+    expect(container!.querySelector('[data-testid="planner-stale"]')).toBeNull();
+  });
+
+  it('a calibration older than 7 days adds the muted stale hint', async () => {
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await renderPlanner(plannerStubs({ status: 'ok', engines: 7 }, plannerProfile(old.toISOString())));
+    await click(computeButton());
+
+    expect(container!.querySelector('[data-testid="planner-calibrated"]')?.textContent).toContain(
+      `calibrated ${formatDay(old.toISOString())}`,
+    );
+    expect(container!.querySelector('[data-testid="planner-stale"]')?.textContent).toContain(
+      'stale calibration — re-run recommended',
+    );
+  });
+
+  it('an unparseable calibrated_at renders no freshness line at all', async () => {
+    await renderPlanner(plannerStubs({ status: 'ok', engines: 7 }, plannerProfile('not-a-date')));
+    await click(computeButton());
+
+    expect(container!.querySelector('[data-testid="planner-calibrated"]')).toBeNull();
+    expect(plannerPods()).toBe('7 pods for 100 qps');
   });
 });

@@ -15,6 +15,7 @@ import {
   type FanOutStatus,
 } from '../api/calibration';
 import type { ExecutionInfo } from '../api/status';
+import { formatDay } from '../lib/executionRow';
 
 export interface CapacityPanelProps {
   scenarioId: number;
@@ -147,6 +148,32 @@ export function formatPerPod(perPod: number): string {
   return Number.isInteger(perPod) ? String(perPod) : perPod.toFixed(1);
 }
 
+/** A calibration older than this is flagged stale in the planner (phase 54:
+ * time staleness -- deliberately NOT the fan-out 'stale' verdict, which is
+ * about the scenario's content having changed since calibration). */
+export const CALIBRATION_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The planner's freshness line, computed client-side from the stored
+ * profile's calibrated_at (no backend fields added): `null` when there is
+ * nothing honest to say (no timestamp, or one that fails to parse), else
+ * the short day form plus whether it is past the 7-day window. */
+export function calibrationFreshness(
+  calibratedAt: string | null | undefined,
+  now: Date,
+): { day: string; stale: boolean } | null {
+  if (!calibratedAt) {
+    return null;
+  }
+  const d = new Date(calibratedAt);
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
+  return {
+    day: formatDay(calibratedAt),
+    stale: now.getTime() - d.getTime() > CALIBRATION_STALE_AFTER_MS,
+  };
+}
+
 export default function CapacityPanel(props: CapacityPanelProps) {
   if (props.planner) {
     return <CapacityPlanner {...props} />;
@@ -251,6 +278,9 @@ function CapacityPlanner({ scenarioId, keyInfo }: CapacityPanelProps) {
   };
 
   const copy = result && result.status !== 'ok' ? fanOutCopy(result.status) : null;
+  // Freshness (phase 54): from the same profile lookup as the basis note,
+  // so it rides on Compute rather than any extra endpoint.
+  const freshness = profile ? calibrationFreshness(profile.calibrated_at, new Date()) : null;
 
   return (
     <Card role="region" aria-label="Capacity planner" data-testid="capacity-planner">
@@ -310,6 +340,19 @@ function CapacityPlanner({ scenarioId, keyInfo }: CapacityPanelProps) {
               {profile && (
                 <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="planner-basis">
                   based on calibrated {formatPerPod(profile.per_pod_qps)} qps/pod for this scenario
+                </p>
+              )}
+              {freshness && (
+                <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="planner-calibrated">
+                  calibrated {freshness.day}
+                  {freshness.stale && (
+                    <span
+                      className="ml-1 text-slate-400 dark:text-slate-500"
+                      data-testid="planner-stale"
+                    >
+                      · stale calibration — re-run recommended
+                    </span>
+                  )}
                 </p>
               )}
             </div>

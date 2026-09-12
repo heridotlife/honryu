@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { fanOutCopy, isCalibrationExecution, jobIsActive, jobProgressLine } from './CapacityPanel';
+import {
+  CALIBRATION_STALE_AFTER_MS,
+  calibrationFreshness,
+  fanOutCopy,
+  formatPerPod,
+  isCalibrationExecution,
+  jobIsActive,
+  jobProgressLine,
+} from './CapacityPanel';
 import type { CalibrationJob } from '../api/calibration';
 
 // R7's contract: the number only exists alongside "ok"; every other status
@@ -108,5 +116,48 @@ describe('isCalibrationExecution', () => {
     expect(isCalibrationExecution(null)).toBe(false);
     expect(isCalibrationExecution(undefined)).toBe(false);
     expect(isCalibrationExecution({ kind: 'calibrate_engine' })).toBe(false);
+  });
+});
+
+describe('formatPerPod', () => {
+  it('keeps integral counts bare and trims fractional to one decimal', () => {
+    expect(formatPerPod(310)).toBe('310');
+    expect(formatPerPod(608.5)).toBe('608.5');
+    expect(formatPerPod(608.25)).toBe('608.3');
+  });
+});
+
+// Phase 54: time-based freshness for the planner's basis profile. Stale is
+// an AGE question (>7 days) and must stay distinct from the fan-out
+// 'stale' verdict, which is about the scenario's content having changed.
+describe('calibrationFreshness', () => {
+  const now = new Date('2026-09-12T12:00:00Z');
+
+  it('a recent calibration is not stale', () => {
+    const f = calibrationFreshness('2026-09-11T12:00:00Z', now);
+    expect(f).toEqual({ day: 'Sep 11, 2026', stale: false });
+  });
+
+  it('an old calibration is stale', () => {
+    const f = calibrationFreshness('2026-08-01T12:00:00Z', now);
+    expect(f).toEqual({ day: 'Aug 1, 2026', stale: true });
+  });
+
+  it('exactly 7 days is not stale; a millisecond more is', () => {
+    const boundary = new Date(now.getTime() - CALIBRATION_STALE_AFTER_MS);
+    expect(calibrationFreshness(boundary.toISOString(), now)?.stale).toBe(false);
+    const past = new Date(now.getTime() - CALIBRATION_STALE_AFTER_MS - 1);
+    expect(calibrationFreshness(past.toISOString(), now)?.stale).toBe(true);
+  });
+
+  it('a future timestamp (clock skew) is fresh, not NaN-negative nonsense', () => {
+    const f = calibrationFreshness('2026-09-20T12:00:00Z', now);
+    expect(f?.stale).toBe(false);
+  });
+
+  it('absent or unparseable input says nothing at all', () => {
+    expect(calibrationFreshness(undefined, now)).toBeNull();
+    expect(calibrationFreshness(null, now)).toBeNull();
+    expect(calibrationFreshness('not-a-date', now)).toBeNull();
   });
 });
