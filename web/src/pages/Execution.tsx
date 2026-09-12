@@ -713,9 +713,11 @@ export default function Execution() {
           </Card>
           {(status.phase === 'running' || series.length > 0) && (
             <section aria-labelledby="live-heading" data-testid="live-section">
-              <h3 id="live-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
+              {/* h2: a top-level section of the page, same as the CardTitles
+                  around it (phase 52's outline fix). */}
+              <h2 id="live-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
                 Live
-              </h3>
+              </h2>
               <div className="mt-3">
                 {!connected && (
                   <p className="text-body-sm text-amber-600 dark:text-amber-400" role="status" data-testid="live-disconnected">

@@ -36,7 +36,12 @@ CardHeader.displayName = 'CardHeader';
 
 const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadingElement>>(
   ({ className = '', ...props }, ref) => (
-    <h3
+    // h2, not h3 (phase 52): every CardTitle is a top-level section of a
+    // page whose h1 is the page title -- h3 under h1 skipped a level (the
+    // operator audit's finding on /executions/:id), which screen readers
+    // announce as a broken outline. The visual size lives in the classes
+    // below; a heading's LEVEL is not its SIZE.
+    <h2
       ref={ref}
       className={`text-lg sm:text-xl font-semibold text-slate-900 dark:text-white ${className}`}
       {...props}

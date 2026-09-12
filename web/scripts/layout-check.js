@@ -594,7 +594,7 @@ try {
                 .catch(() => false);
               check(`${persona.id} ${liveRoute} renders the live section while running`, section);
               const heading = await page
-                .textContent('[data-testid="live-section"] h3')
+                .textContent('[data-testid="live-section"] h2')
                 .catch(() => null);
               check(
                 `${persona.id} ${liveRoute} live section carries its "Live" heading`,
@@ -817,12 +817,12 @@ try {
             const reportGeo = await settleAt(page, reportRoute);
             if (reportGeo) {
               checkLayout(reportRoute, reportGeo);
-              const sections = await page.$$eval('h3', (hs) => hs.map((h) => h.textContent?.trim() ?? ''));
+              const sections = await page.$$eval('h2', (hs) => hs.map((h) => h.textContent?.trim() ?? ''));
               for (const title of ['Time series', 'Requested vs achieved', 'Per-label results']) {
                 check(
                   `${reportRoute} renders the "${title}" section`,
                   sections.includes(title),
-                  `h3 titles: ${sections.join(', ')}`
+                  `h2 titles: ${sections.join(', ')}`
                 );
               }
               // Phase 28: the run page is a tabbed workspace -- the charts
