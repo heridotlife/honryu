@@ -260,4 +260,17 @@ describe('RunCompare (mounted)', () => {
     expect(container!.textContent).toContain('Invalid execution id.');
     expect(container!.querySelector('[data-testid="select-run-a"]')).toBeNull();
   });
+
+  // Phase 51 landmark gate: the page's outermost element is a labelled
+  // region a screen reader can jump to, in both the loaded and the
+  // no-runs state (the region div wraps every branch).
+  it('renders the page as a labelled region (phase 51)', async () => {
+    await renderCompare();
+    const region = container!.querySelector('[role="region"]');
+    expect(region).not.toBeNull();
+    expect(region!.getAttribute('aria-label')).toBe('Run comparison panel');
+
+    await renderCompare({ reports: [] });
+    expect(container!.querySelector('[role="region"]')!.getAttribute('aria-label')).toBe('Run comparison panel');
+  });
 });

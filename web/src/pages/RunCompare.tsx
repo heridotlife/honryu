@@ -313,7 +313,7 @@ export default function RunCompare() {
   const sameRun = runA !== null && runA === runB;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" role="region" aria-label="Run comparison panel">
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Compare runs</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">

@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { clusterCapacity, formatClusterTime, originDescription } from './Clusters';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import Clusters, { clusterCapacity, formatClusterTime, originDescription } from './Clusters';
 import type { Cluster } from '../api/clusters';
 
 describe('originDescription', () => {
@@ -51,5 +53,45 @@ describe('formatClusterTime', () => {
 
   it('passes an unparseable value through unchanged rather than rendering "Invalid Date"', () => {
     expect(formatClusterTime('not-a-date')).toBe('not-a-date');
+  });
+});
+
+// Phase 51 landmark gate (mounted; createElement so this stays a .ts file):
+// the page's outermost element is a labelled region a screen reader can jump to.
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  const r = root;
+  if (r !== null && container !== null) {
+    act(() => {
+      r.unmount();
+    });
+  }
+  container?.remove();
+  container = null;
+  root = null;
+});
+
+describe('Clusters landmarks (phase 51)', () => {
+  it('renders the page as a labelled region', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Clusters));
+    });
+    await act(async () => {}); // flush the listClusters fetch
+
+    const region = container!.querySelector('[role="region"]');
+    expect(region).not.toBeNull();
+    expect(region!.getAttribute('aria-label')).toBe('Clusters panel');
   });
 });
