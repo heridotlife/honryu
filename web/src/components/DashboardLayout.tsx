@@ -16,6 +16,10 @@ export interface NavItem {
 
 /** Every nav surface, in order; visibility is the session's call. */
 const allNavItems: NavItem[] = [
+  // report:read -- Home (phase 52) reads the same reports and executions
+  // the Reports page reads, so it rides the same grant and lands the
+  // authenticated session somewhere that answers "what is happening".
+  { href: '/home', label: 'Home', resource: 'report', action: 'read' },
   // report:read -- the Reports page's primary fetches are report reads.
   { href: '/reports', label: 'Reports', resource: 'report', action: 'read' },
   // execution:list -- GET /api/executions is the caller-scoped list.

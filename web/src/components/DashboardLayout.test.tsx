@@ -99,6 +99,7 @@ const personas: Record<string, Record<string, string[]>> = {
 describe('navItemsFor', () => {
   it('admin sees every surface', () => {
     expect(navItemsFor((r, a) => canOn(personas.alice, r, a)).map((i) => i.href)).toEqual([
+      '/home',
       '/reports',
       '/executions',
       '/reservations',
@@ -111,13 +112,13 @@ describe('navItemsFor', () => {
   it('the tenant roles see read surfaces only -- no campaigns, no clusters', () => {
     for (const who of ['bob', 'carol']) {
       const hrefs = navItemsFor((r, a) => canOn(personas[who], r, a)).map((i) => i.href);
-      expect(hrefs).toEqual(['/reports', '/executions', '/reservations']);
+      expect(hrefs).toEqual(['/home', '/reports', '/executions', '/reservations']);
     }
   });
 
   it('campaign_manager adds campaigns but never clusters (AC4)', () => {
     const hrefs = navItemsFor((r, a) => canOn(personas.dave, r, a)).map((i) => i.href);
-    expect(hrefs).toEqual(['/reports', '/executions', '/reservations', '/campaigns']);
+    expect(hrefs).toEqual(['/home', '/reports', '/executions', '/reservations', '/campaigns']);
   });
 
   it('unauthenticated holds nothing: the nav is just the logo', () => {
@@ -206,7 +207,7 @@ describe('DashboardLayout (mounted)', () => {
     const navHrefs = Array.from(container?.querySelectorAll('[data-testid="nav-links"] a') ?? []).map(
       (a) => (a as HTMLAnchorElement).getAttribute('href')
     );
-    expect(navHrefs).toEqual(['/reports', '/executions', '/reservations']);
+    expect(navHrefs).toEqual(['/home', '/reports', '/executions', '/reservations']);
 
     const banner = container?.querySelector('[data-testid="demo-banner"]');
     expect(banner).not.toBeNull();
