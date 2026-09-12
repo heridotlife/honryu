@@ -158,7 +158,6 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// fan-out) -- driving a step (AdvanceOne) is cmd/calibrator's and
 	// cmd/scheduler's own job, never a synchronous request here.
 	calibrations := calibrationapp.NewService(repo).WithFingerprint(scenarios)
-	startAutoPurge(ctx, admin, cfg.Cluster)
 	startReconcile(ctx, lifecycle, cfg.Cluster)
 
 	authProvider, err := newAuthProvider(ctx, cfg.Auth)
@@ -285,30 +284,6 @@ func newRepository(cfg config.DBConfig, deployContext string) (repository, error
 	default:
 		return nil, fmt.Errorf("db driver %q not supported", cfg.Driver)
 	}
-}
-
-// startAutoPurge launches the idle-engine sweeper unless it is disabled
-// (interval zero). It stops when ctx is cancelled.
-func startAutoPurge(ctx context.Context, admin *adminapp.Service, cfg config.ClusterConfig) {
-	if cfg.AutoPurgeInterval <= 0 {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(cfg.AutoPurgeInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if purged, err := admin.AutoPurgeStale(ctx, cfg.AutoPurgeIdle); err != nil {
-					slog.Warn("auto-purge sweep", "error", err)
-				} else if len(purged) > 0 {
-					slog.Info("auto-purged idle executions", "executions", purged)
-				}
-			}
-		}
-	}()
 }
 
 // newScheduler selects the Scheduler adapter. "fake" is in-memory; "k8s" builds

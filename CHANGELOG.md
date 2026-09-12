@@ -54,7 +54,7 @@ been removed.
   by the same conformance suite as its in-memory fake.
 * Repository (MySQL), scheduler (Kubernetes), executors (JMeter, k6), object
   storage (local filesystem, Sonatype Nexus), Prometheus metrics, SSE streaming,
-  usage tracking, and admin/auto-purge.
+  and usage tracking.
 * Pluggable authentication (no-auth, static token, OIDC), config-driven RBAC and
   multi-tenancy with tenant-scoped project access and an audit log.
 * CI enforces a ≥90% coverage gate across unit, integration (testcontainers),

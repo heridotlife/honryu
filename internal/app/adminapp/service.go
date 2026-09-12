@@ -1,6 +1,5 @@
 // Package adminapp is the operations use-case: it lists the executions
-// currently holding engines, reports cluster node pools, and auto-purges engines
-// left idle past a threshold.
+// currently holding engines and reports cluster node pools.
 package adminapp
 
 import (
@@ -58,12 +57,11 @@ type Service struct {
 	sched     ports.Scheduler
 	purger    Purger
 	campaigns CampaignScoper
-	now       func() time.Time
 }
 
 // NewService wires the admin service.
 func NewService(repo Repo, sched ports.Scheduler, purger Purger) *Service {
-	return &Service{repo: repo, sched: sched, purger: purger, campaigns: noopCampaignScoper{}, now: time.Now}
+	return &Service{repo: repo, sched: sched, purger: purger, campaigns: noopCampaignScoper{}}
 }
 
 // WithCampaigns attaches the kill-switch's campaign-scope resolver. Returns
@@ -110,31 +108,6 @@ func (s *Service) RunningExecutions(ctx context.Context) ([]RunningExecution, er
 // NodePools reports the cluster node pools.
 func (s *Service) NodePools(ctx context.Context) ([]ports.NodePool, error) {
 	return s.sched.NodePools(ctx, "")
-}
-
-// AutoPurgeStale purges every execution whose engines have been deployed longer
-// than idleFor and which has no run in progress. It returns the purged ids.
-func (s *Service) AutoPurgeStale(ctx context.Context, idleFor time.Duration) ([]int64, error) {
-	deployed, err := s.sched.DeployedExecutions(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	now := s.now()
-	var purged []int64
-	for executionID, deployedAt := range deployed {
-		if now.Sub(deployedAt) < idleFor {
-			continue
-		}
-		if _, running, err := s.repo.CurrentRun(ctx, executionID); err != nil || running {
-			continue
-		}
-		if err := s.purger.Purge(ctx, executionID); err != nil {
-			continue
-		}
-		purged = append(purged, executionID)
-	}
-	sort.Slice(purged, func(i, j int) bool { return purged[i] < purged[j] })
-	return purged, nil
 }
 
 // abortGracePeriod bounds how long one Abort call may take tearing down
