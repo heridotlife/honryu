@@ -169,7 +169,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <nav className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/80 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/80">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
-            <div className="flex items-center space-x-8">
+            {/* gap, not space-x (phase 52's 5px-overflow fix): Tailwind's
+                space-x utilities put the margin on the sibling selectors
+                themselves, so the logo carried a phantom 32px margin-inline-end
+                while the nav links were display:none at mobile -- pushing the
+                right-side control group out to x=380 on a 375px viewport, on
+                EVERY route. CSS gap only applies between boxes that actually
+                render, so hidden children cannot leak spacing. */}
+            <div className="flex items-center gap-8">
               <Link
                 to="/"
                 className={`text-xl font-bold tracking-tight text-slate-900 dark:text-white ${focusRing}`}
@@ -199,7 +206,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 then the project switcher, then the theme toggle, then the
                 burger (mobile only). A single switcher/theme instance keeps
                 the nav to one /api/projects fetch per page. */}
-            <div className="flex items-center space-x-2 md:space-x-4">
+            {/* min-w-0 here too: this group is itself a flex item, and its
+                own auto min-width would otherwise refuse to shrink below
+                its content -- pushing the whole row past a 375px phone.
+                With it, the switcher inside (min-w-0 + truncate) absorbs
+                the squeeze instead of the viewport. */}
+            <div className="flex min-w-0 items-center gap-2 md:gap-4">
               {can('execution', 'create') && (
                 <Button
                   variant="accent"
