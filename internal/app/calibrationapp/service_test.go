@@ -12,6 +12,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
+	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -729,35 +730,48 @@ func (r *stubRunner) RunStep(_ context.Context, executionID int64, requestedQPS 
 	return resp.report, resp.err
 }
 
-// cleanReport reports achievedQPS against requestedQPS with no failures --
-// engine kept up, target healthy.
-func cleanReport(requestedQPS, achievedQPS float64) report.Report {
+// stepHoldSeconds is the hold every seeded spec runs its steps with and every
+// stub report carries as its requested duration -- a real step's report gets
+// the same figure from the load-profile entry RunStep rewrites.
+const stepHoldSeconds = 1
+
+// stepReport is a settled one-second step's report: samples are the volume
+// achievedQPS actually produced over the hold, so a stub is faithful in volume
+// as well as rate -- calibration classifies steps by volume (ShortOfVolume),
+// not by the achieved rate the report also carries. A stub whose sample count
+// disagreed with its rate would survive rate-based classification and break
+// silently under volume-based.
+func stepReport(requestedQPS, achievedQPS float64) report.Report {
 	return report.Report{
-		Requested: report.Load{Throughput: requestedQPS},
-		Achieved:  report.Load{Throughput: achievedQPS, Samples: 1000},
+		Requested: report.Load{Throughput: requestedQPS, DurationSeconds: stepHoldSeconds},
+		Achieved: report.Load{
+			Throughput: achievedQPS, DurationSeconds: stepHoldSeconds,
+			Samples: int64(achievedQPS * stepHoldSeconds),
+		},
 	}
 }
 
-// engineSaturatedReport reports well under requestedQPS (ShortOfRequest),
+// cleanReport reports achievedQPS against requestedQPS with no failures --
+// engine kept pace, target healthy.
+func cleanReport(requestedQPS, achievedQPS float64) report.Report {
+	return stepReport(requestedQPS, achievedQPS)
+}
+
+// engineSaturatedReport reports well under the requested volume (ShortOfVolume),
 // with no target-attributed failures -- the pod itself could not sustain
 // the rate.
 func engineSaturatedReport(requestedQPS, achievedQPS float64) report.Report {
-	return report.Report{
-		Requested: report.Load{Throughput: requestedQPS},
-		Achieved:  report.Load{Throughput: achievedQPS, Samples: 1000},
-	}
+	return stepReport(requestedQPS, achievedQPS)
 }
 
 // targetSaturatedReport reports the engine keeping up (achieved at or above
 // requestedQPS's tolerance) while the overall error rate trips
 // validSpec()'s "failures>5%" criterion.
 func targetSaturatedReport(requestedQPS, achievedQPS float64) report.Report {
-	return report.Report{
-		Requested:   report.Load{Throughput: requestedQPS},
-		Achieved:    report.Load{Throughput: achievedQPS, Samples: 1000},
-		ErrorRate:   0.10,
-		Attribution: report.Attribution{Target: 100},
-	}
+	rpt := stepReport(requestedQPS, achievedQPS)
+	rpt.ErrorRate = 0.10
+	rpt.Attribution = report.Attribution{Target: 100}
+	return rpt
 }
 
 // stubFingerprinter returns a fixed fingerprint, or an error when set.
@@ -969,6 +983,125 @@ func TestAdvanceOne_RetrySizesThreadsFromMeasuredLatency(t *testing.T) {
 	// Retry: sized from the first attempt's measured p95.
 	if runner.calls[1].latencyHintSec != 0.2 {
 		t.Fatalf("retry latency hint = %v, want the first attempt's p95 (0.2s)", runner.calls[1].latencyHintSec)
+	}
+}
+
+// The incident this phase exists for, reproduced at exec 16's exact numbers
+// through the real accumulator. Exec 16 (vs httpbin, jobs 4/5/6) requested
+// 10 qps over a 30s hold at every step; the engine kept pace -- 293 samples --
+// yet the report read 293/37 ≈ 7.9/s, because the measured span covers the 5s
+// ramp-up and 2s drain as well as the hold. 7.9 < 10*0.95 then misclassified
+// every step engine_saturated, and since a paced run's rate can never clear
+// that bar (hold/(hold+ramp-up+drain) ≈ 81% < 95%), the search collapsed
+// 10→5→2.5→1.25→0.625 and concluded per_pod_qps = 0 -- while run 86, the same
+// pod unlimited, achieved 4,064 rps. Judging volume instead must read the very
+// same run clean and drive the search UP; a genuine shortfall at the same hold
+// must still bisect down.
+func TestAdvanceOne_Exec16KeptPaceAndMustNotBisect(t *testing.T) {
+	t.Parallel()
+
+	// Rebuilds a step's report as the accumulator really assembles it: 5s
+	// ramp-up (nothing completed yet), a 30s hold whose first second tapers off
+	// the ramp-up, then a 2s drain -- 37 measured seconds in all.
+	build := func(firstHoldSecond, holdPerSecond int64) report.Report {
+		var intervals []metrics.Interval
+		second := func(ts, perSec int64) {
+			intervals = append(intervals, metrics.Interval{
+				Timestamp: ts, Label: "get", Concurrency: 20,
+				Samples: perSec, Succeeded: perSec,
+			})
+		}
+		const start = int64(1000)
+		for ts := start; ts < start+5; ts++ {
+			second(ts, 0)
+		}
+		second(start+5, firstHoldSecond)
+		for ts := start + 6; ts < start+35; ts++ {
+			second(ts, holdPerSecond)
+		}
+		for ts := start + 35; ts < start+37; ts++ {
+			second(ts, 0)
+		}
+		rpt := report.Build(report.Input{
+			ExecutionID: 1, RunID: 1, Outcome: taurus.OutcomePassed,
+			Requested: report.Load{Throughput: 10, DurationSeconds: 30},
+			Intervals: intervals,
+		})
+		rpt.Latency = report.Percentiles{95: 0.3} // what a retry's threads would be sized from
+		return rpt
+	}
+
+	tests := []struct {
+		name            string
+		firstHoldSecond int64
+		holdPerSecond   int64
+		wantSamples     int64
+		wantClass       calibration.Classification
+		wantNextQPS     float64
+		wantCalls       int
+	}{
+		{
+			name:            "exec 16: engine kept pace (293 samples in the 30s hold) -- clean, search proceeds up, no retry burned",
+			firstHoldSecond: 3, holdPerSecond: 10, // 3 + 29*10 = 293
+			wantSamples: 293,
+			wantClass:   calibration.ClassificationClean, wantNextQPS: 20, wantCalls: 1,
+		},
+		{
+			name:            "control: hold filled exactly (300 samples) -- clean despite the span-deflated 8.1/s",
+			firstHoldSecond: 10, holdPerSecond: 10, // 10 + 29*10 = 300 = requested*hold
+			wantSamples: 300,
+			wantClass:   calibration.ClassificationClean, wantNextQPS: 20, wantCalls: 1,
+		},
+		{
+			name:            "genuine shortfall: half the hold's volume (150 samples) -- engine-saturated, bisects down",
+			firstHoldSecond: 5, holdPerSecond: 5, // 5 + 29*5 = 150
+			wantSamples: 150,
+			wantClass:   calibration.ClassificationEngineSaturated, wantNextQPS: 5, wantCalls: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := fake.NewStore()
+			spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, MaxQPS: 1000, MaxSteps: 5, HoldSeconds: 30}
+			_, jobID, _ := seedTriggeredCalibration(t, store, spec)
+
+			attempt := build(tt.firstHoldSecond, tt.holdPerSecond)
+			if attempt.Achieved.Samples != tt.wantSamples {
+				t.Fatalf("builder produced %d samples, want %d -- the reproduction must hold exec 16's numbers exactly", attempt.Achieved.Samples, tt.wantSamples)
+			}
+			if attempt.Achieved.DurationSeconds != 37 {
+				t.Fatalf("builder produced a %ds span, want 37 (5s ramp-up + 30s hold + 2s drain)", attempt.Achieved.DurationSeconds)
+			}
+			responses := []stubRunnerResponse{{report: attempt}}
+			if tt.wantClass == calibration.ClassificationEngineSaturated {
+				// The retry confirms: a genuine ceiling, not an anomaly.
+				responses = append(responses, stubRunnerResponse{report: build(tt.firstHoldSecond, tt.holdPerSecond)})
+			}
+			runner := &stubRunner{responses: responses}
+			svc := calibrationapp.NewService(store).WithRunner(runner).WithFingerprint(&stubFingerprinter{value: "fp"})
+
+			if _, err := svc.AdvanceOne(context.Background(), time.Now()); err != nil {
+				t.Fatalf("AdvanceOne: %v", err)
+			}
+			if len(runner.calls) != tt.wantCalls {
+				t.Fatalf("runner calls = %d, want %d", len(runner.calls), tt.wantCalls)
+			}
+			job, err := svc.Get(context.Background(), jobID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			// Only the retry's outcome is recorded; it carries the verdict.
+			if len(job.Steps) != 1 {
+				t.Fatalf("steps = %d, want 1 (a discarded attempt leaves no trace)", len(job.Steps))
+			}
+			if job.Steps[0].Classification != tt.wantClass {
+				t.Errorf("classification = %q, want %q", job.Steps[0].Classification, tt.wantClass)
+			}
+			if job.NextRequestedQPS != tt.wantNextQPS {
+				t.Errorf("next requested QPS = %v, want %v", job.NextRequestedQPS, tt.wantNextQPS)
+			}
+		})
 	}
 }
 

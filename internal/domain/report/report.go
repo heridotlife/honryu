@@ -234,6 +234,11 @@ func Build(in Input) Report {
 	return acc.Report(in.Meta())
 }
 
+// shortfallTolerance is how far below the request a run may land before it
+// counts as short -- both shortfall judgements allow a 5% margin for pacing
+// wobble.
+const shortfallTolerance = 0.95
+
 // ShortOfRequest reports whether the run produced materially less load than it
 // was asked for.
 //
@@ -241,12 +246,43 @@ func Build(in Input) Report {
 // little about how the target behaves under the real thing -- a reader who
 // misses that would draw a confident conclusion from a run that never happened
 // as designed.
+//
+// The comparison is a rate reading. The achieved rate is measured over the span
+// the samples cover, and a paced run's span stretches past its hold with ramp-up
+// and drain, so an engine that kept pace throughout can still land a few points
+// under its request. Callers that must judge whether the engine produced the
+// work the hold asked for -- calibration's search -- use ShortOfVolume instead.
 func (r Report) ShortOfRequest() bool {
 	if r.Requested.Throughput <= 0 {
 		return false // unlimited: there is no target rate to fall short of
 	}
-	const tolerance = 0.95
-	return r.Achieved.Throughput < r.Requested.Throughput*tolerance
+	return r.Achieved.Throughput < r.Requested.Throughput*shortfallTolerance
+}
+
+// ShortOfVolume reports whether the run produced materially fewer requests than
+// the hold it was asked for implies -- the volume reading of the same shortfall
+// ShortOfRequest makes as a rate reading.
+//
+// The rate reading punishes a paced run for its own measurement span: the span
+// the samples cover stretches past the hold with ramp-up and drain, seconds in
+// which a pacing engine completes few or no requests, so samples over span tops
+// out at hold/(hold+ramp-up+drain) -- for a 30s hold with a 5s ramp-up and 2s
+// drain, about 81%, far under the 95% tolerance. Every paced step then reads as
+// short no matter how faithfully the engine kept pace, which is exactly what a
+// live calibration did: exec 16 held a requested 10/s for 30s (293 samples) yet
+// reported 293/37 ≈ 7.9/s, and every step was misread engine_saturated until
+// the search collapsed to per_pod_qps = 0. Judging the sample COUNT against
+// what the hold implies is immune to that inflation: an engine that kept pace
+// produces ~requested*hold samples however long the span ran, and a genuinely
+// saturated engine produces a fraction of them.
+//
+// Calibration classifies steps by this; trend and campaign verdicts keep
+// ShortOfRequest, whose rate figure is the honest one for a human reader.
+func (r Report) ShortOfVolume() bool {
+	if r.Requested.Throughput <= 0 {
+		return false // unlimited: there is no volume to fall short of
+	}
+	return float64(r.Achieved.Samples) < r.Requested.Throughput*float64(r.Requested.DurationSeconds)*shortfallTolerance
 }
 
 // Validate checks a report can be stored and read back meaningfully.
