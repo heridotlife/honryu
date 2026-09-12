@@ -658,3 +658,39 @@ describe('Execution purge confirm (mounted)', () => {
     expect(calls.some((u) => u.endsWith('/api/executions/5/purge'))).toBe(false);
   });
 });
+
+// Phase 51 audit follow-up: the audit finding claimed the hub's lifecycle
+// controls were "all neutral". They are not -- Deploy and Trigger wear the
+// primary sky→cyan gradient (Button's default variant, wired explicitly in
+// the controls map), Stop keeps the neutral outline, Purge reads red at
+// rest. The wiring predates the audit; this pins it so a Button refactor
+// cannot silently drop the accent distinction. Test-only: no visual change.
+describe('Execution lifecycle button variants (phase 51)', () => {
+  it('paints Trigger and Deploy with the primary gradient, Stop outline, Purge red', async () => {
+    // running: stop + purge are the rendered pair.
+    await renderExecution('running');
+    const stop = container!.querySelector('[data-testid="lifecycle-stop"]') as HTMLButtonElement;
+    const purge = container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
+    expect(stop.className).toContain('border-slate-300');
+    expect(stop.className).not.toContain('from-sky-500');
+    expect(stop.className).not.toContain('text-red-600');
+    expect(purge.className).toContain('text-red-600');
+    expect(purge.className).toContain('border-red-600');
+    expect(purge.className).not.toContain('from-sky-500');
+
+    // idle: Deploy is the offered action (primary accent).
+    await renderExecution('idle');
+    const deploy = container!.querySelector('[data-testid="lifecycle-deploy"]') as HTMLButtonElement;
+    expect(deploy.className).toContain('bg-gradient-to-r');
+    expect(deploy.className).toContain('from-sky-500');
+    expect(deploy.className).not.toContain('text-red-600');
+
+    // deployed: Trigger renders even while locked until engines report
+    // reachable -- the variant is on the wiring, not the enabled state.
+    await renderExecution('deployed');
+    const trigger = container!.querySelector('[data-testid="lifecycle-trigger"]') as HTMLButtonElement;
+    expect(trigger.className).toContain('bg-gradient-to-r');
+    expect(trigger.className).toContain('from-sky-500');
+    expect(trigger.className).not.toContain('text-red-600');
+  });
+});
