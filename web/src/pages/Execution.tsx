@@ -798,10 +798,23 @@ export default function Execution() {
               this gate was just info?.engine, so a normal execution's
               Calibrate button could only ever earn a 400. Phase 44: the
               fan-out target is the panel's own editable input (persisted
-              per scenario), not a hardcoded prop. */}
+              per scenario), not a hardcoded prop. Phase 54: NORMAL
+              executions get the same fan-out question as a collapsible
+              planner -- pod size and engine user-selectable, compute on
+              demand -- but only when a scenario is actually bound (the
+              "No scenarios deployed yet" state has no scenario to ask
+              about). */}
           {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}
+              executionId={executionId}
+              keyInfo={capacityKey}
+            />
+          )}
+          {!isCalibrationExecution(info) && capacityKey && status.status.length > 0 && (
+            <CapacityPanel
+              planner
+              scenarioId={status.status[0].scenario_id}
               executionId={executionId}
               keyInfo={capacityKey}
             />
