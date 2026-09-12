@@ -9,6 +9,7 @@
 // error rate a regression, positive RPS an improvement.
 import { useEffect, useId, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+import Breadcrumbs from '../components/Breadcrumbs';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { ApiError } from '../api/client';
@@ -314,6 +315,15 @@ export default function RunCompare() {
 
   return (
     <div className="space-y-6" role="region" aria-label="Run comparison panel">
+      {/* Phase 52: the trail back up -- execution hub AND the executions
+          list, since compare is two levels deep. */}
+      <Breadcrumbs
+        items={[
+          { label: 'Executions', href: '/executions' },
+          { label: `#${executionId}`, href: `/executions/${executionId}` },
+          { label: 'Compare' },
+        ]}
+      />
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Compare runs</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
