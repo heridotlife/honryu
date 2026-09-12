@@ -745,3 +745,44 @@ describe('Execution breadcrumbs (phase 52)', () => {
     expect(nav!.querySelectorAll('svg[aria-hidden="true"]').length).toBe(1);
   });
 });
+
+// Phase 54: the fan-out planner extends to NORMAL executions -- but only
+// when a scenario is actually bound (an unbound execution has no scenario
+// to fan out from), and collapsed by default so an untouched card never
+// fetches.
+describe('Execution capacity planner (phase 54)', () => {
+  it('stays hidden when no scenario is bound', async () => {
+    await renderExecution('idle');
+
+    expect(container!.querySelector('[aria-label="Capacity planner"]')).toBeNull();
+  });
+
+  it('mounts collapsed for a bound normal execution', async () => {
+    const calls: string[] = [];
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls, {}, {
+      status: [
+        { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
+      ],
+    });
+
+    const region = container!.querySelector('[aria-label="Capacity planner"]');
+    expect(region).not.toBeNull();
+    const details = region!.querySelector('[data-testid="planner-details"]') as HTMLDetailsElement;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    // The planner's own Compute is explicit: no planner-driven fan-out at
+    // mount (the scenario editor's save-guard may probe separately).
+    expect(calls.some((url: string) => url.includes('target_qps=100'))).toBe(false);
+  });
+
+  it('stays off calibrate_engine executions, which keep the calibration panel', async () => {
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, [], { kind: 'calibrate_engine' }, {
+      status: [
+        { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
+      ],
+    });
+
+    expect(container!.querySelector('[aria-label="Capacity planner"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="capacity-panel"]')).not.toBeNull();
+  });
+});

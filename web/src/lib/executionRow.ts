@@ -39,3 +39,17 @@ export function formatRowTime(iso: string): string {
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Day-only short form ("Sep 10, 2026"), local time, same house rule as
+ * formatRowTime (phase 49: exactly one short rendering, never raw ISO) --
+ * for timestamps where the clock is noise, e.g. a capacity profile's
+ * calibration date. Junk input comes back verbatim.
+ */
+export function formatDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return iso;
+  }
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}

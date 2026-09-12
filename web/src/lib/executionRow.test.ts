@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { executionDisplayName, formatRowTime } from './executionRow';
+import { executionDisplayName, formatDay, formatRowTime } from './executionRow';
 
 describe('executionDisplayName', () => {
   it('strips the calibrate flow\'s trailing ISO timestamp', () => {
@@ -41,5 +41,28 @@ describe('formatRowTime', () => {
 
   it('returns junk input verbatim rather than "Invalid Date"', () => {
     expect(formatRowTime('not-a-date')).toBe('not-a-date');
+  });
+});
+
+describe('formatDay', () => {
+  // Pin the zone so the short-form assertions hold on any machine.
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'UTC');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('formats the day-only short form, no clock, no raw ISO (phase 49 rule)', () => {
+    expect(formatDay('2026-09-10T16:47:22.442Z')).toBe('Sep 10, 2026');
+  });
+
+  it('handles year boundaries and single-digit days', () => {
+    expect(formatDay('2026-01-05T00:30:00Z')).toBe('Jan 5, 2026');
+  });
+
+  it('returns junk input verbatim rather than "Invalid Date"', () => {
+    expect(formatDay('garbage')).toBe('garbage');
   });
 });
