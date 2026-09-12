@@ -106,7 +106,8 @@ type Classification string
 
 const (
 	// ClassificationEngineSaturated means the pod itself could not sustain
-	// the requested rate (ShortOfRequest or EngineImpaired).
+	// the requested rate, judged by the volume the hold implies
+	// (report.Report.ShortOfVolume or EngineImpaired).
 	ClassificationEngineSaturated Classification = "engine_saturated"
 	// ClassificationTargetSaturated means the engine kept up, but the
 	// target-health criterion tripped -- one pod already overloads the

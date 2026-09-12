@@ -453,6 +453,110 @@ func TestBuild_ThroughputExcludesEngineBootDeadTime(t *testing.T) {
 	}
 }
 
+// A paced run's measurement span stretches past its hold: ramp-up and drain
+// fall inside the span but complete few or no requests, so samples over span
+// can never reach the requested rate even when the engine kept pace throughout
+// -- 30s at a requested 10/s tops out at ~8.1/s over a 37s span. The two
+// readings must part ways here: ShortOfRequest keeps the (deflated) rate, which
+// is what a human reader of a trend sees; ShortOfVolume judges the sample
+// count against what the hold implies, which is what calibration's search --
+// the only caller that acts on the verdict -- must use to avoid calling a
+// healthy engine saturated (phase 53, exec 16).
+func TestShortOfVolume_JudgesTheHoldNotTheInflatedSpan(t *testing.T) {
+	t.Parallel()
+
+	// A calibration step as the engine actually ran it: 5s ramp-up with no
+	// completions, a 30s hold, then a 2s drain -- 37 measured seconds. What
+	// varies is the volume the hold itself produced.
+	build := func(requested report.Load, holdPerSecond int64) report.Report {
+		var intervals []metrics.Interval
+		for ts := int64(1000); ts < 1037; ts++ {
+			perSec := int64(0)
+			if ts >= 1005 && ts < 1035 {
+				perSec = holdPerSecond // the hold
+			}
+			intervals = append(intervals, interval(ts, "probe", perSec, 0, metrics.Histogram{0.002: perSec}))
+		}
+		return report.Build(report.Input{
+			ExecutionID: 1, RunID: 1, Outcome: taurus.OutcomePassed,
+			Requested: requested,
+			Intervals: intervals,
+		})
+	}
+
+	// The incident's own shape: the engine filled the hold exactly (300
+	// samples at the requested 10/s), yet the span-deflated rate reads 8.1/s.
+	kept := build(report.Load{Throughput: 10, DurationSeconds: 30}, 10)
+	if got := kept.Achieved.Samples; got != 300 {
+		t.Errorf("samples = %d, want the 300 the hold implies", got)
+	}
+	if got := kept.Achieved.DurationSeconds; got != 37 {
+		t.Errorf("span = %ds, want the 37 measured seconds (ramp-up + hold + drain)", got)
+	}
+	if got := kept.Achieved.Throughput; got > 9.5 {
+		t.Errorf("throughput = %v, want the span-deflated ~%.1f -- the scenario only bites when the rate reads short", got, 300.0/37)
+	}
+	// The rate reading flags this run -- documented old behaviour, and correct
+	// for a human: the achieved rate genuinely was 8.1/s, not 10.
+	if !kept.ShortOfRequest() {
+		t.Error("ShortOfRequest = false, want true -- the span-deflated rate IS below the request")
+	}
+	// The volume reading must clear it: the engine produced every request the
+	// hold asked for.
+	if kept.ShortOfVolume() {
+		t.Error("ShortOfVolume = true for a run that filled its hold exactly -- span inflation leaked into the volume judgement")
+	}
+
+	tests := []struct {
+		name          string
+		requested     report.Load
+		holdPerSecond int64
+		wantRequest   bool
+		wantVolume    bool
+	}{
+		{
+			name:          "kept pace: volume clears, span-deflated rate does not",
+			requested:     report.Load{Throughput: 10, DurationSeconds: 30},
+			holdPerSecond: 10,
+			wantRequest:   true,
+			wantVolume:    false,
+		},
+		{
+			name:          "genuine shortfall: half the hold's volume is short by both readings",
+			requested:     report.Load{Throughput: 10, DurationSeconds: 30},
+			holdPerSecond: 5, // 150 samples, and 150/37 also reads short as a rate
+			wantRequest:   true,
+			wantVolume:    true,
+		},
+		{
+			name:          "unlimited: no requested rate, nothing to fall short of",
+			requested:     report.Load{DurationSeconds: 30},
+			holdPerSecond: 10,
+			wantRequest:   false,
+			wantVolume:    false,
+		},
+		{
+			name:          "no hold recorded: volume cannot be judged, rate still can",
+			requested:     report.Load{Throughput: 10},
+			holdPerSecond: 10,
+			wantRequest:   true,
+			wantVolume:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := build(tt.requested, tt.holdPerSecond)
+			if got := r.ShortOfRequest(); got != tt.wantRequest {
+				t.Errorf("ShortOfRequest = %v, want %v", got, tt.wantRequest)
+			}
+			if got := r.ShortOfVolume(); got != tt.wantVolume {
+				t.Errorf("ShortOfVolume = %v, want %v", got, tt.wantVolume)
+			}
+		})
+	}
+}
+
 func TestReport_Validate(t *testing.T) {
 	t.Parallel()
 
