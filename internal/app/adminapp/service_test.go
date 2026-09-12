@@ -69,59 +69,6 @@ func TestNodePools(t *testing.T) {
 	}
 }
 
-func TestAutoPurgeStale_PurgesIdle(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	_, sched, purger, svc, executionID := seed(t)
-	// Engines deployed two hours ago.
-	sched.Now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
-	if err := sched.DeployScenario(ctx, ports.DeploySpec{ProjectID: 3, ExecutionID: executionID, ScenarioID: 1, Shards: deployShards(1)}); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-
-	purged, err := svc.AutoPurgeStale(ctx, time.Hour)
-	if err != nil {
-		t.Fatalf("AutoPurgeStale: %v", err)
-	}
-	if len(purged) != 1 || purged[0] != executionID {
-		t.Fatalf("purged = %v, want [%d]", purged, executionID)
-	}
-	if len(purger.purged) != 1 {
-		t.Fatalf("purger called %d times, want 1", len(purger.purged))
-	}
-}
-
-func TestAutoPurgeStale_SkipsFreshAndRunning(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	store, sched, purger, svc, executionID := seed(t)
-
-	// Fresh deployment (now): not stale.
-	if err := sched.DeployScenario(ctx, ports.DeploySpec{ProjectID: 3, ExecutionID: executionID, ScenarioID: 1, Shards: deployShards(1)}); err != nil {
-		t.Fatalf("deploy: %v", err)
-	}
-	if purged, _ := svc.AutoPurgeStale(ctx, time.Hour); len(purged) != 0 {
-		t.Fatalf("fresh purged = %v, want none", purged)
-	}
-
-	// Old but running: skipped.
-	sched.Now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
-	c2, _ := execution.New("busy", 3)
-	c2ID, _ := store.CreateExecution(ctx, c2)
-	if err := sched.DeployScenario(ctx, ports.DeploySpec{ProjectID: 3, ExecutionID: c2ID, ScenarioID: 2, Shards: deployShards(1)}); err != nil {
-		t.Fatalf("deploy c2: %v", err)
-	}
-	if _, err := store.StartRun(ctx, c2ID, ""); err != nil {
-		t.Fatalf("StartRun: %v", err)
-	}
-	if purged, _ := svc.AutoPurgeStale(ctx, time.Hour); len(purged) != 0 {
-		t.Fatalf("running purged = %v, want none", purged)
-	}
-	if len(purger.purged) != 0 {
-		t.Fatalf("purger should not have been called")
-	}
-}
-
 func TestAbort_ExecutionList_PurgesExactlyTheGivenExecutions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

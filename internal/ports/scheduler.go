@@ -116,7 +116,8 @@ type Scheduler interface {
 	// rather than only for the first.
 	PodLog(ctx context.Context, cluster ClusterRef, executionID, scenarioID int64, shard int) (string, error)
 	// DeployedExecutions maps deployed execution id to its earliest deploy time;
-	// used by the auto-purge garbage collector.
+	// used by the idle reaper, campaign kill-switch scoping, and admin
+	// listings.
 	DeployedExecutions(ctx context.Context, cluster ClusterRef) (map[int64]time.Time, error)
 	// NodePools summarises the node pools backing engine capacity.
 	NodePools(ctx context.Context, cluster ClusterRef) ([]NodePool, error)

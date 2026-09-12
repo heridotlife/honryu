@@ -260,8 +260,6 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		"untagged engine image":         {"HONRYU_ENGINE_IMAGES": "jmeter=honryu/engine-jmeter"},
 		"bad engine port":               {"HONRYU_ENGINE_PORT": "99999"},
 		"non-numeric port":              {"HONRYU_ENGINE_PORT": "eighty"},
-		"bad purge interval":            {"HONRYU_AUTOPURGE_INTERVAL": "soon"},
-		"bad purge idle":                {"HONRYU_AUTOPURGE_IDLE": "forever"},
 		"bad run reconcile after":       {"HONRYU_RUN_RECONCILE_AFTER": "eventually"},
 		"bad engine idle ttl":           {"HONRYU_ENGINE_IDLE_TTL": "when its done"},
 		"unknown auth mode":             {"HONRYU_AUTH_MODE": "ldap"},

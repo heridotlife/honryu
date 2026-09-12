@@ -11,6 +11,7 @@
     "test": "vitest run",
     "typecheck": "tsc -b --noEmit",
     "test:watch": "vitest",
+    "e2e": "bun run e2e/boot.e2e.mjs",
     "layout-check": "node scripts/layout-check.js"
   },
   "dependencies": {
