@@ -429,6 +429,140 @@ func TestGetCapacityProfile_InvalidScenarioID_400(t *testing.T) {
 	}
 }
 
+// TestListCapacityProfiles_MatrixOrderedSummary pins the fleet-wide
+// capacity matrix: rows across scenarios ordered by scenario then biggest
+// pod first, every summary field present, calibrated_at on the wire as
+// RFC3339, and the internal staleness detail (fingerprint) plus job id
+// absent -- the per-scenario GET keeps those; the matrix does not.
+func TestListCapacityProfiles_MatrixOrderedSummary(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	_, _, scenarioID := seedCalibration(t, h, store)
+	ctx := context.Background()
+	calibrated := time.Date(2026, 9, 12, 8, 30, 0, 0, time.UTC)
+
+	// Seed out of order on purpose: the endpoint, not the seeder, owes the
+	// scenario-ascending, biggest-pod-first order.
+	rows := []capacityprofile.CapacityProfile{
+		{Key: capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "250m", Memory: "256Mi"},
+			PerPodQPS: 8.24, SaturatedBy: calibration.SaturatedByTarget, ScenarioFingerprint: "fp-250", JobID: 9, CalibratedAt: calibrated},
+		{Key: capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "2", Memory: "2Gi"},
+			PerPodQPS: 4543.9, SaturatedBy: calibration.SaturatedByEngine, ScenarioFingerprint: "fp-2", JobID: 21, CalibratedAt: calibrated},
+		{Key: capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "500m", Memory: "512Mi"},
+			PerPodQPS: 608.5, SaturatedBy: calibration.SaturatedByEngine, ScenarioFingerprint: "fp-500", JobID: 11, CalibratedAt: calibrated},
+	}
+	for _, p := range rows {
+		if err := store.UpsertCapacityProfile(ctx, p); err != nil {
+			t.Fatalf("UpsertCapacityProfile: %v", err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/capacity-profiles")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list capacity profiles = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []capacityProfileSummaryWire
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if len(got) != 3 {
+		t.Fatalf("list = %d rows, want 3 (%s)", len(got), rec.Body.String())
+	}
+	wantCPU := []string{"2", "500m", "250m"} // biggest pod first
+	wantQPS := []float64{4543.9, 608.5, 8.24}
+	wantSaturated := []string{"engine", "engine", "target"}
+	for i, want := range wantCPU {
+		if got[i].CPU != want || got[i].PerPodQPS != wantQPS[i] || got[i].SaturatedBy != wantSaturated[i] {
+			t.Fatalf("row %d = %+v, want cpu %q qps %v saturated %q", i, got[i], want, wantQPS[i], wantSaturated[i])
+		}
+		if got[i].ScenarioID != scenarioID || got[i].Engine != "jmeter" || got[i].Memory == "" {
+			t.Fatalf("row %d = %+v, want scenario %d jmeter with memory set", i, got[i], scenarioID)
+		}
+		if !got[i].CalibratedAt.Equal(calibrated) {
+			t.Fatalf("row %d calibrated_at = %v, want %v", i, got[i].CalibratedAt, calibrated)
+		}
+	}
+	// Wire-format shape: RFC3339 timestamp, and no internal-detail fields.
+	if !strings.Contains(rec.Body.String(), `"calibrated_at":"2026-09-12T08:30:00Z"`) {
+		t.Fatalf("calibrated_at is not RFC3339 on the wire: %s", rec.Body.String())
+	}
+	for _, absent := range []string{"scenario_fingerprint", "job_id"} {
+		if strings.Contains(rec.Body.String(), absent) {
+			t.Fatalf("list body exposes internal detail %q: %s", absent, rec.Body.String())
+		}
+	}
+}
+
+// TestListCapacityProfiles_EmptyIsEmptyArray pins the empty state the
+// matrix UI renders its "no calibrations yet" from: 200 with [], never an
+// error or a null.
+func TestListCapacityProfiles_EmptyIsEmptyArray(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	seedCalibration(t, h, store) // a calibration without a terminal job: no profiles yet
+	rec := do(t, h, http.MethodGet, "/api/capacity-profiles")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list capacity profiles (empty) = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("empty list body = %q, want []", body)
+	}
+}
+
+// TestListCapacityProfiles_HidesOtherOwnersProjects pins the visibility
+// rule in legacy (no-RBAC) mode: a profile is served only when the caller
+// may see the project its scenario lives in, exactly as GET
+// /api/executions scopes its own list.
+func TestListCapacityProfiles_HidesOtherOwnersProjects(t *testing.T) {
+	t.Parallel()
+	h, store, _ := newCalibrationRouter(t)
+	projectID, _, ownScenario := seedCalibration(t, h, store)
+	ctx := context.Background()
+
+	// A second project the DefaultOwners do not own, with its own scenario
+	// and a profile on it.
+	otherProject := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"theirs"}, "owner": {"someone-else"}}))
+	_ = projectID
+	otherScenario := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"hidden"}, "project_id": {itoa(otherProject)}}))
+	for _, p := range []capacityprofile.CapacityProfile{
+		{Key: capacityprofile.Key{ScenarioID: ownScenario, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"},
+			PerPodQPS: 42, SaturatedBy: calibration.SaturatedByEngine, CalibratedAt: time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)},
+		{Key: capacityprofile.Key{ScenarioID: otherScenario, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"},
+			PerPodQPS: 7, SaturatedBy: calibration.SaturatedByEngine, CalibratedAt: time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)},
+	} {
+		if err := store.UpsertCapacityProfile(ctx, p); err != nil {
+			t.Fatalf("UpsertCapacityProfile: %v", err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/capacity-profiles")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list capacity profiles = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []capacityProfileSummaryWire
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if len(got) != 1 || got[0].ScenarioID != ownScenario {
+		t.Fatalf("list = %+v, want only the own-project scenario %d", got, ownScenario)
+	}
+	if got[0].PerPodQPS != 42 {
+		t.Fatalf("row = %+v, want the own-project profile", got[0])
+	}
+}
+
+// capacityProfileSummaryWire mirrors the list endpoint's wire shape for
+// decoding in tests.
+type capacityProfileSummaryWire struct {
+	ScenarioID   int64     `json:"scenario_id"`
+	Engine       string    `json:"engine"`
+	CPU          string    `json:"cpu"`
+	Memory       string    `json:"memory"`
+	PerPodQPS    float64   `json:"per_pod_qps"`
+	SaturatedBy  string    `json:"saturated_by"`
+	CalibratedAt time.Time `json:"calibrated_at"`
+}
+
 func TestFanOutCapacity_ReturnsOKForAFreshEngineLimitedProfile(t *testing.T) {
 	t.Parallel()
 	h, store, obj := newCalibrationRouter(t)
@@ -646,6 +780,7 @@ func TestCalibrationHandlers_CalibrationsNotConfigured(t *testing.T) {
 		{http.MethodGet, "/api/calibrations/1"},
 		{http.MethodGet, "/api/scenarios/1/capacity-profile?engine=jmeter&cpu=1&memory=512Mi"},
 		{http.MethodGet, "/api/scenarios/1/capacity-profile/fanout?engine=jmeter&cpu=1&memory=512Mi&target_qps=1"},
+		{http.MethodGet, "/api/capacity-profiles"},
 	}
 	for _, tc := range cases {
 		if rec := do(t, h, tc.method, tc.path); rec.Code != http.StatusNotFound {

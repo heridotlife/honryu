@@ -5,7 +5,7 @@
 // path, query order and encoding, the number-to-string target encoding,
 // and the "engines only ever accompanies status ok" response shape.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fanOutCapacity, getCapacityProfile } from './calibration';
+import { fanOutCapacity, getCapacityProfile, listCapacityProfiles } from './calibration';
 import { ApiError } from './client';
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -115,5 +115,58 @@ describe('getCapacityProfile wire shape', () => {
     await expect(getCapacityProfile(7, { engine: 'jmeter', cpu: '500m', memory: '512Mi' })).rejects.toBeInstanceOf(
       ApiError,
     );
+  });
+});
+
+// Phase 56: the fleet-wide matrix client. The wire shape is pinned --
+// exactly /api/capacity-profiles, rows passed through unchanged -- and the
+// summary type carries NO staleness detail: fingerprint and job id stay
+// the per-scenario GET's fields, so nothing downstream can grow a
+// dependency on them here.
+describe('listCapacityProfiles wire shape', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('GETs the fleet-wide matrix and passes the rows through unchanged', async () => {
+    let seenUrl = '';
+    const rows = [
+      {
+        scenario_id: 6,
+        engine: 'jmeter',
+        cpu: '2',
+        memory: '2Gi',
+        per_pod_qps: 4543.9,
+        saturated_by: 'engine',
+        calibrated_at: '2026-09-12T08:30:00Z',
+      },
+      {
+        scenario_id: 6,
+        engine: 'jmeter',
+        cpu: '250m',
+        memory: '256Mi',
+        per_pod_qps: 8.24,
+        saturated_by: 'target',
+        calibrated_at: '2026-09-10T16:47:22Z',
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        seenUrl = String(input);
+        return jsonResponse(rows);
+      }),
+    );
+
+    const got = await listCapacityProfiles();
+
+    expect(seenUrl).toBe('/api/capacity-profiles');
+    expect(got).toEqual(rows);
+  });
+
+  it('resolves to an empty array for an empty matrix (no calibrations yet)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])));
+
+    await expect(listCapacityProfiles()).resolves.toEqual([]);
   });
 });

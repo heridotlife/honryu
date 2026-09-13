@@ -236,6 +236,11 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/calibrations/{job_id}", decision: "execution:read"},
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/capacity-profile", decision: "scenario:read"},
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/capacity-profile/fanout", decision: "scenario:read"},
+	// The fleet-wide matrix is a scoped list: any authenticated caller may
+	// ask, but a row is served only when its scenario's project is one the
+	// caller may see (visibleProjects -- the listExecutions rule), so an
+	// ungranted caller sees an empty list, never another tenant's rows.
+	{method: "GET", pattern: "/api/capacity-profiles", decision: decisionScopedList},
 
 	{method: "GET", pattern: "/api/files/{kind}/{id}/{name}", decision: "scenario:read|execution:read"},
 
