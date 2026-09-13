@@ -230,7 +230,24 @@ ingress:
   host: ""
 
 grafana:
-  enabled: false
+  # ON by default (phase 57), paired with prometheus.enabled: the two are one
+  # surface -- all three dashboards query the prometheus datasource, so
+  # grafana without prometheus renders nothing but empty panels.
+  #
+  # No chart-side datasource or dashboard wiring exists, by design: both are
+  # baked into the image at docker build time (grafana/Dockerfile copies
+  # datasources/ -> /etc/grafana/provisioning/datasources and dashboards/ ->
+  # /var/lib/grafana/dashboards). The datasource file (grafana/datasources/
+  # local.yml, datasource name "honryu_prom" -- the name every dashboard
+  # panel pins) hardcodes http://prometheus:9090, which is why
+  # prometheus-service.yaml names the Service literally "prometheus", not
+  # fullname-prefixed: the image is built before Helm runs, so a release
+  # rename must not break it. Renaming that Service quietly empties every
+  # dashboard. A ConfigMap mounting the same files would only duplicate what
+  # the image already ships, and the deployment deliberately sets
+  # GF_PATHS_DATA=/var/lib/grafana-data so the data PVC can never shadow the
+  # baked-in dashboards directory.
+  enabled: true
   storageClassName: local-path
   size: 1Gi
   # Anonymous read access. Moved out of grafana/Dockerfile (where it was
