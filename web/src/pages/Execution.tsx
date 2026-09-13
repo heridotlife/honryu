@@ -4,7 +4,7 @@ import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ApiError, errorDetails } from '../api/client';
-import { getExecutionInfo, getExecutionStatus, getScenarioPodLog } from '../api/status';
+import { getExecutionInfo, getExecutionStatus, getScenarioPodLog, type CalibrationSpecInfo } from '../api/status';
 import { listExecutionReports, type Report } from '../api/reports';
 import { getExecutionTrend, getErrorSignatures } from '../api/trends';
 import type { ErrorSignatureHistory, SignatureGroupBy, TrendPoint } from '../api/trends';
@@ -143,6 +143,25 @@ export function shortTime(iso: string): string {
   }
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Whole QPS render bare, everything else one decimal -- the same
+ * information density CapacityPanel's formatPerPod uses, so a spec number
+ * and a result number read the same way. */
+export function formatSpecQps(qps: number): string {
+  return Number.isInteger(qps) ? String(qps) : qps.toFixed(1);
+}
+
+/** Phase 62: the spec card's compact lines, minus the criterion (which is
+ * rendered as code, not prose): the search range, the step budget, and the
+ * pinned pod size. One line per fact, no sentence glue, matching the
+ * Capacity panel's caption style. */
+export function calibrationSpecLines(spec: CalibrationSpecInfo): string[] {
+  return [
+    `seed ${formatSpecQps(spec.seed_qps)} → max ${formatSpecQps(spec.max_qps)} qps`,
+    `up to ${spec.max_steps} steps · ${spec.hold_seconds}s hold per step`,
+    `pod: ${spec.cpu} CPU · ${spec.memory} memory`,
+  ];
 }
 
 /** Outcome→colour for the recent-runs strip's pills (phase 33): passed
@@ -804,6 +823,31 @@ export default function Execution() {
               demand -- but only when a scenario is actually bound (the
               "No scenarios deployed yet" state has no scenario to ask
               about). */}
+          {/* Phase 62: WHAT the search was configured with, before the
+              Capacity card's live view of what it found. Present only when
+              the backend served a spec -- normal executions and unconfigured
+              calibrate rows render nothing here. */}
+          {info?.calibration && (
+            <Card data-testid="calibration-spec">
+              <CardHeader>
+                <CardTitle>Calibration spec</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1 text-caption text-slate-500 dark:text-slate-400">
+                <p>
+                  {'criterion '}
+                  <code
+                    className="rounded bg-slate-100 px-1 py-0.5 font-mono text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    data-testid="calibration-spec-criterion"
+                  >
+                    {info.calibration.criterion}
+                  </code>
+                </p>
+                {calibrationSpecLines(info.calibration).map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </CardContent>
+            </Card>
+          )}
           {isCalibrationExecution(info) && capacityKey && (
             <CapacityPanel
               scenarioId={status.status[0]?.scenario_id ?? 0}

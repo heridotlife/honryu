@@ -83,6 +83,21 @@ export interface FileRef {
  * Field names mirror httpapi's executionResponse JSON tags exactly. engine
  * and cluster are omitempty: absent means the deployment defaults.
  */
+/** Phase 62: the calibration search a calibrate_engine execution was
+ * configured with (criterion, bounds, pinned pod size) -- the same spec
+ * calibrationapp's SpecFor reconstructs, served additively on the execution
+ * detail. Present only on calibrate_engine executions whose search was
+ * actually configured. */
+export interface CalibrationSpecInfo {
+  criterion: string;
+  seed_qps: number;
+  max_qps: number;
+  max_steps: number;
+  hold_seconds: number;
+  cpu: string;
+  memory: string;
+}
+
 export interface ExecutionInfo {
   id: number;
   name: string;
@@ -96,6 +111,9 @@ export interface ExecutionInfo {
   created_time: string;
   load_profile: LoadProfileEntry[];
   data: FileRef[];
+  /** The search this calibrate_engine execution was configured with
+   * (phase 62); absent on normal executions and unconfigured searches. */
+  calibration?: CalibrationSpecInfo;
 }
 
 /**

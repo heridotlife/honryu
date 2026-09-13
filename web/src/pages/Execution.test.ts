@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { engineShortfall, gateControls, outcomeBadge, phaseControls, shortTime } from './Execution';
+import { calibrationSpecLines, engineShortfall, formatSpecQps, gateControls, outcomeBadge, phaseControls, shortTime } from './Execution';
+
+// Phase 62: the calibration spec card's number/line formatting. The
+// criterion is rendered as code by the card itself; these lines are the
+// rest of the compact spec.
+describe('calibrationSpecLines', () => {
+  const spec = {
+    criterion: 'failures>5%',
+    seed_qps: 10,
+    max_qps: 10000,
+    max_steps: 20,
+    hold_seconds: 30,
+    cpu: '1',
+    memory: '512Mi',
+  };
+
+  it('renders range, budget, and pod size as three caption lines', () => {
+    expect(calibrationSpecLines(spec)).toEqual([
+      'seed 10 → max 10000 qps',
+      'up to 20 steps · 30s hold per step',
+      'pod: 1 CPU · 512Mi memory',
+    ]);
+  });
+
+  it('keeps fractional qps honest at one decimal', () => {
+    expect(formatSpecQps(608.5)).toBe('608.5');
+    expect(formatSpecQps(310)).toBe('310');
+  });
+});
 
 // R2's control matrix: which actions the hub offers per phase, and when
 // trigger unlocks (only once every engine is reachable). This is the
