@@ -49,7 +49,8 @@ type Deps struct {
 	Campaigns *campaignapp.Service
 	// Calibrations administers engine-capacity searches and the fan-out
 	// calculator. Optional; nil disables the /api/calibrations,
-	// /api/executions/{execution_id}/calibration/trigger, and
+	// /api/executions/{execution_id}/calibration/trigger,
+	// /api/capacity-profiles, and
 	// /api/scenarios/{scenario_id}/capacity-profile[/fanout] endpoints.
 	Calibrations *calibrationapp.Service
 	Usage        *usageapp.Service
@@ -323,6 +324,10 @@ var routes = []Route{
 	{"GET", "/api/calibrations/{job_id}", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCalibrationJob })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCapacityProfile })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile/fanout", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.fanOutCapacity })},
+	// The fleet-wide capacity matrix: every stored profile, project
+	// visibility applied (scoped-list, like GET /api/executions -- a row is
+	// visible only when its scenario's project is).
+	{"GET", "/api/capacity-profiles", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.listCapacityProfiles })},
 
 	{"GET", "/api/files/{kind}/{id}/{name}", "files", hf(func(h *handlers) http.HandlerFunc { return h.downloadFile })},
 

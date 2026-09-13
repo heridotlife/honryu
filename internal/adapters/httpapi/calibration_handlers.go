@@ -91,6 +91,29 @@ func toCapacityProfileResponse(p capacityprofile.CapacityProfile) capacityProfil
 	}
 }
 
+// capacityProfileSummaryResponse is one row of the fleet-wide capacity
+// matrix (GET /api/capacity-profiles): what one engine pod of this size was
+// found to sustain for one scenario. The scenario fingerprint and job id
+// are deliberately absent -- fingerprint is the fan-out calculator's
+// internal staleness detail, and neither helps an operator read the
+// matrix; the per-scenario GET keeps them for tooling that does.
+type capacityProfileSummaryResponse struct {
+	ScenarioID   int64           `json:"scenario_id"`
+	Engine       taurus.Executor `json:"engine"`
+	CPU          string          `json:"cpu"`
+	Memory       string          `json:"memory"`
+	PerPodQPS    float64         `json:"per_pod_qps"`
+	SaturatedBy  string          `json:"saturated_by"`
+	CalibratedAt time.Time       `json:"calibrated_at"`
+}
+
+func toCapacityProfileSummaryResponse(p capacityprofile.CapacityProfile) capacityProfileSummaryResponse {
+	return capacityProfileSummaryResponse{
+		ScenarioID: p.ScenarioID, Engine: p.Engine, CPU: p.CPU, Memory: p.Memory,
+		PerPodQPS: p.PerPodQPS, SaturatedBy: string(p.SaturatedBy), CalibratedAt: p.CalibratedAt,
+	}
+}
+
 // fanOutResponse is the fan-out calculator's answer: an engine count only
 // ever accompanies StatusOK, so a caller can never read Engines without its
 // own caveat sitting right next to it.
@@ -285,6 +308,48 @@ func (h *handlers) getCapacityProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toCapacityProfileResponse(profile))
+}
+
+// listCapacityProfiles returns every stored capacity profile the caller
+// may see, ordered by scenario then biggest pod first (calibrationapp
+// Profiles' own order) -- the fleet-wide capacity matrix the per-scenario
+// GET serves one key of. Visibility follows listExecutions' rule: a row is
+// served only when the caller may see the project its scenario lives in,
+// so a cross-tenant list can never leak a profile whose scenario the
+// caller could not read on its own.
+func (h *handlers) listCapacityProfiles(w http.ResponseWriter, r *http.Request) {
+	if !h.calibrationsConfigured(w) {
+		return
+	}
+	projects, err := h.visibleProjects(r)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	visible := make(map[int64]bool, len(projects))
+	for _, p := range projects {
+		visible[p.ID] = true
+	}
+	profiles, err := h.deps.Calibrations.Profiles(r.Context())
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	out := make([]capacityProfileSummaryResponse, 0, len(profiles))
+	for _, p := range profiles {
+		scenario, err := h.deps.Scenarios.Get(r.Context(), p.ScenarioID)
+		if err != nil {
+			// A profile whose scenario cannot be resolved cannot be
+			// authorized either -- skip it (fail closed) rather than fail
+			// the whole list for one orphaned row.
+			continue
+		}
+		if !visible[scenario.ProjectID] {
+			continue
+		}
+		out = append(out, toCapacityProfileSummaryResponse(p))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // fanOutCapacity turns a target aggregate QPS into a required engine count
