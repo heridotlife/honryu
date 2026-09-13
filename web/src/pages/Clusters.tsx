@@ -41,15 +41,18 @@ export function formatClusterTime(iso: string): string {
 }
 
 /** Capacity numbers for one cluster row, when the backend offers any.
- * Honest scope (phase 22): GET /api/clusters' clusterResponse carries
- * registration fields only -- no engine counts, no ceiling -- so this
- * returns nothing today and every row renders the meter's "no capacity
- * reported" state. This mapping is the single place to light the meters
- * up when the API grows real fields (phase 23 backend candidate). */
+ * Phase 25 wired the fields: GET /api/clusters' listClusters handler runs
+ * every row through withCapacity, which fills engines_used/engines_ceiling
+ * when the quota ledger is wired (nil Quota or a failed read omits them via
+ * pointers + omitempty -- wire shape stays backward compatible). Both
+ * fields must be present -- one without the other is a half-wired read,
+ * and the meter's no-data state is the honest render for that too.
+ *
+ * Known gap (phase 55; backend out of scope): the endpoint lists
+ * registered clusters only -- the deployment's default cluster never gets
+ * a row, so its capacity is structurally invisible on this page even when
+ * the quota ledger covers it. Nothing here can render it today. */
 export function clusterCapacity(cluster: Cluster): { used?: number; ceiling?: number } {
-  // Phase 25: the quota ledger's aggregate rides the cluster row. Both
-  // fields must be present -- one without the other is a half-wired read,
-  // and the meter's no-data state is the honest render for that too.
   if (typeof cluster.engines_used === 'number' && typeof cluster.engines_ceiling === 'number') {
     return { used: cluster.engines_used, ceiling: cluster.engines_ceiling };
   }
