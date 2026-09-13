@@ -91,7 +91,9 @@ interface MetricSpec {
   format: (v: number) => string;
 }
 
-/** The delta table's rows, in display order. RPS is the achieved figure. */
+/**
+ * The delta table's rows, in display order. RPS is the achieved figure.
+ */
 const METRICS: MetricSpec[] = [
   { key: 'p50', label: 'p50', better: 'lower', value: (r) => r.latency?.['50'], format: formatMs },
   { key: 'p95', label: 'p95', better: 'lower', value: (r) => r.latency?.['95'], format: formatMs },
@@ -105,6 +107,22 @@ const METRICS: MetricSpec[] = [
   },
   { key: 'errorRate', label: 'Error rate', better: 'lower', value: (r) => r.error_rate, format: formatErrorRate },
 ];
+
+/**
+ * Metrics whose B-vs-A delta reads as a regression, in table order. Phase
+ * 59: feeds the delta card's summary chip -- the per-metric cells already
+ * say which direction each number moved; this is the one-line verdict over
+ * all of them, from the same deltas the table itself renders (there is no
+ * compare endpoint; the reports list IS this page's data source).
+ */
+export function summarizeRegressions(a: Report, b: Report): { metric: string; delta: number }[] {
+  return METRICS.flatMap((m) => {
+    const va = m.value(a);
+    const vb = m.value(b);
+    const delta = va !== undefined && vb !== undefined ? pctDelta(va, vb) : null;
+    return deltaKind(m.better, delta) === 'regression' && delta !== null ? [{ metric: m.label, delta }] : [];
+  });
+}
 
 function RunSelect({
   label,
@@ -144,12 +162,25 @@ function RunSelect({
 }
 
 function DeltaTable({ a, b }: { a: Report; b: Report }) {
+  const regressions = summarizeRegressions(a, b);
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
         <CardTitle>
           Delta — run #{b.run_id} against run #{a.run_id}
         </CardTitle>
+        {/* Verdict chip: present only when at least one metric regressed --
+            a clean comparison gets no chip at all (house minimalism: the
+            absence IS the "stable" signal, and the row cells already color
+            the individual movements). Real text, not a color-only cue. */}
+        {regressions.length > 0 && (
+          <span
+            data-testid="compare-regression-chip"
+            className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
+          >
+            regressed
+          </span>
+        )}
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto" data-testid="delta-table">

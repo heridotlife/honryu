@@ -132,4 +132,20 @@ describe('TrendSection requested-throughput column (mounted, phase 49)', () => {
     // Achieved is untouched by this fix.
     expect(rows[0].textContent).toContain('95.4');
   });
+
+  // Phase 59: the regressed chip (a phase-42 verdict rendered here since the
+  // trend table landed) is pinned at last -- present on a run that missed
+  // its target QPS while its comparable baseline met it, absent from a
+  // comparable run that did not. The chip is real text, not a color-only cue.
+  it('chips a regressed run and leaves a comparable stable run unchipped (phase 59)', async () => {
+    await renderTrend([
+      point({ run_id: 2, hit_target_qps: false, has_comparable_predecessor: true, regressed: true }),
+      point({ run_id: 1, hit_target_qps: true, has_comparable_predecessor: true, regressed: false }),
+    ]);
+
+    const rows = Array.from(container!.querySelectorAll('tbody tr'));
+    expect(rows[0].querySelector('[data-testid="trend-regression-chip"]')).not.toBeNull();
+    expect(rows[0].textContent).toContain('regressed');
+    expect(rows[1].querySelector('[data-testid="trend-regression-chip"]')).toBeNull();
+  });
 });

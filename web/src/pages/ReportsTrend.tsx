@@ -97,8 +97,17 @@ export function TrendSection({ executionId }: { executionId: number }) {
                         <td className="px-3 py-2 whitespace-nowrap">{(p.error_rate * 100).toFixed(1)}%</td>
                         <td className="px-3 py-2">
                           <span className="flex flex-wrap items-center gap-1.5">
+                            {/* Phase 42 verdict, long rendered here and now
+                                pinned by tests: a run that missed its target
+                                QPS while its nearest comparable baseline met
+                                it. Phase 59 gives the chip a test hook and
+                                (below, phase 59 too) a title explaining the
+                                miss. */}
                             {p.regressed && (
-                              <span className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                              <span
+                                data-testid="trend-regression-chip"
+                                className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                              >
                                 regressed
                               </span>
                             )}
