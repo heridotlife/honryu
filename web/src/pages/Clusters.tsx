@@ -41,25 +41,44 @@ export function formatClusterTime(iso: string): string {
 }
 
 /** Capacity numbers for one cluster row, when the backend offers any.
- * Honest scope (phase 22): GET /api/clusters' clusterResponse carries
- * registration fields only -- no engine counts, no ceiling -- so this
- * returns nothing today and every row renders the meter's "no capacity
- * reported" state. This mapping is the single place to light the meters
- * up when the API grows real fields (phase 23 backend candidate). */
+ * Phase 25 wired the fields: GET /api/clusters' listClusters handler runs
+ * every row through withCapacity, which fills engines_used/engines_ceiling
+ * when the quota ledger is wired (nil Quota or a failed read omits them via
+ * pointers + omitempty -- wire shape stays backward compatible). Both
+ * fields must be present -- one without the other is a half-wired read,
+ * and the meter's no-data state is the honest render for that too.
+ *
+ * Known gap (phase 55; backend out of scope): the endpoint lists
+ * registered clusters only -- the deployment's default cluster never gets
+ * a row, so its capacity is structurally invisible on this page even when
+ * the quota ledger covers it. Nothing here can render it today. */
 export function clusterCapacity(cluster: Cluster): { used?: number; ceiling?: number } {
-  // Phase 25: the quota ledger's aggregate rides the cluster row. Both
-  // fields must be present -- one without the other is a half-wired read,
-  // and the meter's no-data state is the honest render for that too.
   if (typeof cluster.engines_used === 'number' && typeof cluster.engines_ceiling === 'number') {
     return { used: cluster.engines_used, ceiling: cluster.engines_ceiling };
   }
   return {};
 }
 
+/** Distinct sidecar images across the registry, first-seen order, blanks
+ * dropped -- the fleet summary's engine-images row renders exactly what
+ * cluster rows carry (phase 55: the engine images config has no API
+ * surface, so there is nothing else to show). */
+export function engineImages(clusters: Cluster[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of clusters) {
+    if (c.sidecar_image === '' || seen.has(c.sidecar_image)) continue;
+    seen.add(c.sidecar_image);
+    out.push(c.sidecar_image);
+  }
+  return out;
+}
+
 /** The cluster registry, read-only. */
 export default function Clusters() {
   const [clusters, setClusters] = useState<Cluster[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fleetImages = clusters === null ? null : engineImages(clusters);
 
   useEffect(() => {
     listClusters()
@@ -149,6 +168,41 @@ export default function Clusters() {
           )}
         </CardContent>
       </Card>
+
+      {clusters && (
+        <Card role="region" aria-label="Fleet summary">
+          <CardContent className="space-y-2">
+            <h2 className="text-caption font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">
+              Fleet summary
+            </h2>
+            {/* Phase 55: no capacity-profiles row here -- there is no list
+                endpoint for them. The only capacity-profile routes are
+                per-scenario reads (/api/scenarios/{scenario_id}/capacity-profile
+                [/fanout]); inventing a fleet-wide client over those would be
+                wrong. If the API grows a profile listing, this card is the
+                slot for it. */}
+            <p className="text-body-sm">
+              <span className="text-caption mr-2 text-slate-500 dark:text-slate-400">Engine images</span>
+              {fleetImages && fleetImages.length > 0 ? (
+                <span className="inline-flex flex-wrap gap-1.5">
+                  {fleetImages.map((image) => (
+                    <code
+                      key={image}
+                      className="text-caption rounded bg-slate-100 px-1.5 py-0.5 break-all dark:bg-slate-900"
+                    >
+                      {image}
+                    </code>
+                  ))}
+                </span>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400">
+                  No registered clusters — engine images appear here once clusters are registered.
+                </span>
+              )}
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
