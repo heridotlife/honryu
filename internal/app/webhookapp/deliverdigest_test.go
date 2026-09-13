@@ -2,7 +2,9 @@ package webhookapp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/domain/webhook"
@@ -195,6 +197,173 @@ func TestDeliverDigestRegistryFailure(t *testing.T) {
 	}
 	if delivered {
 		t.Error("DeliverDigest = delivered=true, want false (nothing was attempted)")
+	}
+}
+
+// slackDigestPayload is a realistic stored digest body -- the same wire
+// shape digestapp.Payload marshals -- for the Slack transport tests.
+func slackDigestPayload() []byte {
+	return []byte(`{` +
+		`"event":"report.digest","project_id":7,"period":"daily",` +
+		`"window_start":"2026-09-16T00:00:00Z","window_end":"2026-09-17T00:00:00Z",` +
+		`"runs_total":4,"by_outcome":{"passed":3,"failed":1,"aborted":0},` +
+		`"threshold_failures":1,"executions":[]}`)
+}
+
+// TestDeliverDigestSlackSinkReceivesSummary: the Slack transport's contract
+// -- the configured slack:// target gets Slack's message shape, not the raw
+// payload: {"text": ...} summarising the window (period, dates, run counts,
+// threshold failures, where to read the full digest). Unsigned -- Slack's
+// credential is the URL path, there is no shared secret to sign with.
+func TestDeliverDigestSlackSinkReceivesSummary(t *testing.T) {
+	slack := tlsReceiver(200)
+	defer slack.close()
+	repo := fake.NewStore()
+
+	svc := fastTLS(t, repo, slack.srv).WithSlackSink(slack.url())
+	delivered, err := svc.DeliverDigest(context.Background(), 7, slackDigestPayload())
+	if err != nil {
+		t.Fatalf("DeliverDigest: %v", err)
+	}
+	if !delivered {
+		t.Fatal("DeliverDigest = delivered=false, want true (slack confirmed)")
+	}
+	if slack.calls() != 1 {
+		t.Fatalf("slack receiver saw %d calls, want 1", slack.calls())
+	}
+	var msg struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(slack.last().body, &msg); err != nil {
+		t.Fatalf("slack body did not parse as {\"text\"...}: %v", err)
+	}
+	for _, want := range []string{
+		"daily window 2026-09-16", // which window
+		"4 runs",                  // runs count
+		"3 passed", "1 failed", "0 aborted",
+		"1 threshold failure",     // the regression count
+		"/executions (project 7)", // where the full digest lives
+	} {
+		if !strings.Contains(msg.Text, want) {
+			t.Errorf("slack text %q missing %q", msg.Text, want)
+		}
+	}
+	if slack.last().sig != "" {
+		t.Errorf("slack delivery carried signature %q; slack targets are secret-less and unsigned", slack.last().sig)
+	}
+}
+
+// TestDeliverDigestSlackKeepsRawTargetsIntact: slack is an ADDITIONAL
+// transport -- project webhooks still get the stored bytes verbatim, and
+// both confirming means delivered with a nil error (the happy tri-state).
+func TestDeliverDigestSlackKeepsRawTargetsIntact(t *testing.T) {
+	hook := newReceiver(200)
+	defer hook.close()
+	slack := tlsReceiver(200)
+	defer slack.close()
+	repo := fake.NewStore()
+	register(t, repo, 7, hook.url(), "", true)
+
+	svc := fastTLS(t, repo, slack.srv).WithSlackSink(slack.url())
+	body := slackDigestPayload()
+	delivered, err := svc.DeliverDigest(context.Background(), 7, body)
+	if err != nil || !delivered {
+		t.Fatalf("DeliverDigest = (%v, %v), want (true, nil)", delivered, err)
+	}
+	if got := string(hook.last().body); got != string(body) {
+		t.Errorf("webhook body = %q, want the stored bytes %q (slack must not re-render other targets)", got, body)
+	}
+}
+
+// TestDeliverDigestSlackMixedSuccess: a dead project webhook must not fail
+// the digest when slack confirms -- a single healthy receiver is enough
+// for delivered, the same rule the raw targets follow.
+func TestDeliverDigestSlackMixedSuccess(t *testing.T) {
+	dead := newReceiver(500, 500, 500)
+	defer dead.close()
+	slack := tlsReceiver(200)
+	defer slack.close()
+	repo := fake.NewStore()
+	register(t, repo, 7, dead.url(), "", true)
+
+	svc := fastTLS(t, repo, slack.srv).WithSlackSink(slack.url())
+	delivered, err := svc.DeliverDigest(context.Background(), 7, slackDigestPayload())
+	if err != nil {
+		t.Fatalf("DeliverDigest: %v", err)
+	}
+	if !delivered {
+		t.Error("DeliverDigest = delivered=false, want true (slack confirmed)")
+	}
+	if slack.calls() != 1 {
+		t.Errorf("slack saw %d calls, want 1", slack.calls())
+	}
+}
+
+// TestWithSlackSinkRejectsCleartext: the slack transport is subject to the
+// same https-only rule as the digest sink -- a non-https or malformed
+// target is refused (never stored) so a mistyped slack://... URL fails
+// loudly at startup (config.Load's gate) and defensively here, not as a
+// silent undeliverable address.
+func TestWithSlackSinkRejectsCleartext(t *testing.T) {
+	receiver := newReceiver(200)
+	defer receiver.close()
+	repo := fake.NewStore()
+
+	for name, url := range map[string]string{
+		"cleartext":  "http://" + receiver.srv.Listener.Addr().String() + "/services/T0/B0/xyz",
+		"schemeless": "//hooks.slack.com/services/T0/B0/xyz",
+		"garbage":    "::not a url",
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := fast(t, repo).WithSlackSink(url)
+			delivered, err := svc.DeliverDigest(context.Background(), 7, slackDigestPayload())
+			if err != nil {
+				t.Fatalf("DeliverDigest: %v", err)
+			}
+			if delivered {
+				t.Error("DeliverDigest = delivered=true, want false (no valid slack sink was configured)")
+			}
+			if receiver.calls() != 0 {
+				t.Errorf("receiver saw %d calls, want 0 (the slack sink was rejected)", receiver.calls())
+			}
+		})
+	}
+}
+
+// TestWithSlackSinkEmptyIsUnconfigured: the empty URL is the unconfigured
+// default -- nothing extra is attempted, and a deployment with no targets
+// at all stays (false, nil), the pending-not-failed verdict.
+func TestWithSlackSinkEmptyIsUnconfigured(t *testing.T) {
+	repo := fake.NewStore()
+	svc := fast(t, repo).WithSlackSink("")
+	delivered, err := svc.DeliverDigest(context.Background(), 7, slackDigestPayload())
+	if err != nil {
+		t.Fatalf("DeliverDigest: %v", err)
+	}
+	if delivered {
+		t.Error("DeliverDigest = delivered=true, want false (nothing was configured)")
+	}
+}
+
+// TestDeliverDigestSlackSkipsUnparseablePayload: a body that is no longer
+// valid JSON cannot be summarised -- the transport is skipped (logged),
+// not used to deliver a garbage message, and the call reports nothing
+// delivered when slack was the only target.
+func TestDeliverDigestSlackSkipsUnparseablePayload(t *testing.T) {
+	slack := tlsReceiver(200)
+	defer slack.close()
+	repo := fake.NewStore()
+
+	svc := fastTLS(t, repo, slack.srv).WithSlackSink(slack.url())
+	delivered, err := svc.DeliverDigest(context.Background(), 7, []byte(`{not json`))
+	if err == nil {
+		t.Fatal("DeliverDigest = nil error, want the slack target's absence of success")
+	}
+	if delivered {
+		t.Error("DeliverDigest = delivered=true, want false (nothing could be rendered)")
+	}
+	if slack.calls() != 0 {
+		t.Errorf("slack receiver saw %d calls, want 0 (the payload did not parse)", slack.calls())
 	}
 }
 

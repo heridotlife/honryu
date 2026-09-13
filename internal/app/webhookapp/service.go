@@ -91,6 +91,12 @@ type Service struct {
 	// phase 60): one https endpoint every fired report.digest is also
 	// POSTed to, alongside the firing project's own webhooks.
 	sink *webhook.Webhook
+	// slack, when non-nil, is the deploy-wide Slack transport (WithSlackSink,
+	// phase 62): the digest is re-rendered as Slack's {"text": ...} message
+	// shape and posted here after the raw-JSON targets. Secret-less by
+	// construction -- Slack's token lives in the URL path, so there is
+	// nothing to sign.
+	slack *webhook.Webhook
 	// startOnce starts the workers lazily on the first delivery, so a
 	// deployment with no webhooks registered runs zero background
 	// goroutines.
@@ -184,6 +190,29 @@ func (s *Service) WithDigestSink(raw, secret string) *Service {
 		return s
 	}
 	s.sink = &webhook.Webhook{URL: strings.TrimSpace(raw), Secret: secret}
+	return s
+}
+
+// WithSlackSink points the digest lane (DeliverDigest) at a Slack incoming
+// webhook (phase 62), the digest lane's second transport: the stored digest
+// payload is summarised into Slack's {"text": ...} message shape (see
+// slackDigestBody) and POSTed there after the raw-JSON targets, while
+// project webhooks and the digest sink keep receiving the bytes as stored.
+// The same https-only rule as WithDigestSink, for the same reason -- a
+// cleartext or malformed target is refused here, logged, and never stored,
+// with config.Load's gate as the deployment-level enforcement that fails
+// startup outright. No secret: Slack's credential is the URL path itself,
+// so the delivery goes out unsigned exactly like a secret-less webhook.
+func (s *Service) WithSlackSink(raw string) *Service {
+	if raw == "" {
+		return s
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.Scheme != "https" {
+		s.log.Error("webhook: slack sink rejected (must be an absolute https URL); slack digest delivery disabled", "url", redact(raw))
+		return s
+	}
+	s.slack = &webhook.Webhook{URL: strings.TrimSpace(raw)}
 	return s
 }
 
@@ -313,12 +342,16 @@ func (s *Service) Deliver(ctx context.Context, rep report.Report, hooks []webhoo
 
 // DeliverDigest synchronously POSTs an already-serialised report.digest
 // payload to every enabled webhook of the project and, when one is
-// configured (WithDigestSink), to the deploy-wide digest sink. The digest
-// lane's own entry point (phase 42 minted the payload, phase 60 added the
-// sink): the same signing, bounds, and HTTP client as a run.completed
-// delivery, and the caller's bytes are posted as-is -- the signature covers
-// exactly what was stored, so a receiver can cross-check a digest row
-// against its delivery. Synchronous on purpose: the caller is a background
+// configured (WithDigestSink), to the deploy-wide digest sink; a Slack
+// transport (WithSlackSink, phase 62) is attempted after them with the
+// same digest re-rendered as Slack's message shape. The digest lane's own
+// entry point (phase 42 minted the payload, phase 60 added the sink): the
+// same signing, bounds, and HTTP client as a run.completed delivery, and
+// the caller's bytes are posted as-is -- the signature covers exactly what
+// was stored, so a receiver can cross-check a digest row against its
+// delivery. (The Slack transport is the one exception: its summary body is
+// derived from the stored bytes, because Slack renders messages, not JSON
+// documents.) Synchronous on purpose: the caller is a background
 // loop (the digest scheduler's finalize), not a request path, so wanting
 // the outcome is free.
 //
@@ -343,7 +376,7 @@ func (s *Service) DeliverDigest(ctx context.Context, projectID int64, body []byt
 	if s.sink != nil {
 		targets = append(targets, *s.sink)
 	}
-	if len(targets) == 0 {
+	if len(targets) == 0 && s.slack == nil {
 		return false, nil
 	}
 	var (
@@ -359,6 +392,28 @@ func (s *Service) DeliverDigest(ctx context.Context, projectID int64, body []byt
 			continue
 		}
 		delivered = true
+	}
+	if s.slack != nil {
+		if slackBody, ok := slackDigestBody(body); ok {
+			if err := s.deliverOne(ctx, *s.slack, slackBody); err != nil {
+				s.log.Warn("webhook: digest delivery failed", "transport", "slack", "url", redact(s.slack.URL), "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				delivered = true
+			}
+		} else {
+			// A stored digest is always digestapp's own JSON, so this means
+			// a bug or a corrupted row. Slack was configured and never
+			// confirmed: surface a failure rather than let the record sit
+			// pending (or pass on a sibling's success) with no trace of why.
+			err := fmt.Errorf("webhook: digest payload did not parse; slack transport cannot render")
+			s.log.Warn("webhook: digest delivery failed", "transport", "slack", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
 	if delivered {
 		return true, nil
@@ -498,6 +553,67 @@ func runIDOf(body []byte) string {
 		return "?"
 	}
 	return fmt.Sprint(ev.RunID)
+}
+
+// digestView is the delivery layer's own minimal read of a stored
+// report.digest payload -- just the fields a Slack summary line needs.
+// Deliberately NOT digestapp.Payload: the delivery layer stays decoupled
+// from the digest use-case (the same independence runCompletedEvent has in
+// reverse), so digestapp can grow fields without this reader caring, and a
+// payload older than a new field still renders.
+type digestView struct {
+	ProjectID   int64     `json:"project_id"`
+	Period      string    `json:"period"`
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+	RunsTotal   int       `json:"runs_total"`
+	ByOutcome   struct {
+		Passed  int `json:"passed"`
+		Failed  int `json:"failed"`
+		Aborted int `json:"aborted"`
+	} `json:"by_outcome"`
+	// ThresholdFailures is the number a reader scanning for regressions
+	// looks for first -- the Slack summary leads with it.
+	ThresholdFailures int `json:"threshold_failures"`
+}
+
+// slackDigestBody renders a stored digest payload as Slack's message shape:
+// {"text": "<compact summary>"}. Three lines -- which window for which
+// project, the run/outcome counts with the threshold failures up front in
+// the reader's eye, and where to read the full digest (the same relative
+// path hint runCompletedEvent's report_url uses: the receiver knows its own
+// origin, Honryu does not presume to know it). Returns false when the bytes
+// no longer parse as a digest -- the transport is skipped (logged) rather
+// than delivering a garbage or empty message.
+func slackDigestBody(body []byte) ([]byte, bool) {
+	var v digestView
+	if err := json.Unmarshal(body, &v); err != nil {
+		return nil, false
+	}
+	text := fmt.Sprintf(
+		"*honryu digest* -- %s window %s → %s\n%d runs · %d passed · %d failed · %d aborted · %d threshold failure%s\nDetails: /executions (project %d)",
+		v.Period,
+		v.WindowStart.Format("2006-01-02"), v.WindowEnd.Format("2006-01-02"),
+		v.RunsTotal, v.ByOutcome.Passed, v.ByOutcome.Failed, v.ByOutcome.Aborted,
+		v.ThresholdFailures, pluralSuffix(v.ThresholdFailures),
+		v.ProjectID,
+	)
+	msg, err := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: text})
+	if err != nil {
+		return nil, false
+	}
+	return msg, true
+}
+
+// pluralSuffix is "" for one ("1 failure") and "s" otherwise ("0
+// failures") -- the only pluralisation a summary line needs.
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // redact keeps query strings and fragments out of delivery log lines --
