@@ -59,6 +59,27 @@ export function getCapacityProfile(scenarioId: number, key: CapacityKey): Promis
   return apiClient.get(`/scenarios/${scenarioId}/capacity-profile?${q.toString()}`);
 }
 
+/** One row of the fleet-wide capacity matrix (GET /api/capacity-profiles,
+ * phase 56): a CapacityProfile WITHOUT its internal staleness detail -- no
+ * scenario_fingerprint, no job_id; only the per-scenario GET serves those
+ * to tooling that needs them. */
+export interface CapacityProfileSummary {
+  scenario_id: number;
+  engine: string;
+  cpu: string;
+  memory: string;
+  per_pod_qps: number;
+  saturated_by: string;
+  calibrated_at: string;
+}
+
+/** The fleet-wide capacity matrix, ordered by scenario then biggest pod
+ * first (the backend owns the order -- cpu compared as milli-cores),
+ * scoped server-side to projects the caller may see. */
+export function listCapacityProfiles(): Promise<CapacityProfileSummary[]> {
+  return apiClient.get<CapacityProfileSummary[]>(`/capacity-profiles`);
+}
+
 export interface CalibrationStep {
   requested_qps: number;
   achieved_qps: number;
