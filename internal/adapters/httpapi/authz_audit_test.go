@@ -169,6 +169,11 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/executions/{execution_id}/reports", decision: "report:read"},
 	{method: "GET", pattern: "/api/executions/{execution_id}/trend", decision: "report:read"},
 	{method: "GET", pattern: "/api/executions/{execution_id}/error-signatures", decision: "report:read"},
+	{method: "GET", pattern: "/api/runs/compare", decision: "report:read",
+		// The probe carries the seeded run so the handler reaches the
+		// per-report authorization read; an unparseable selection would 400
+		// before authz, which would prove nothing about the gate.
+		query: url.Values{"run_ids[]": {"{run_id}"}}},
 	{method: "GET", pattern: "/api/runs/{run_id}/report", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/series", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/export", decision: "report:read",
@@ -346,6 +351,13 @@ func seedAuditFixture(t *testing.T, f *rbacFixture) auditSeed {
 
 // path substitutes the seeded ids into a route pattern.
 func (s auditSeed) path(pattern string) string {
+	return s.replace(pattern)
+}
+
+// replace substitutes the seeded ids into any route text -- a pattern, or a
+// query string a probe needs to carry so its handler reaches the
+// authorization read instead of stopping at a parse error.
+func (s auditSeed) replace(v string) string {
 	r := strings.NewReplacer(
 		"{tenant_id}", strconv.FormatInt(s.tenant1, 10),
 		"{project_id}", strconv.FormatInt(s.projectID, 10),
@@ -362,7 +374,7 @@ func (s auditSeed) path(pattern string) string {
 		"{id}", strconv.FormatInt(s.scenarioID, 10),
 		"{token}", s.shareToken,
 	)
-	return r.Replace(pattern)
+	return r.Replace(v)
 }
 
 // TestAuthzAuditCoversRoutes is AC3's enforcement: every route must carry an
@@ -461,7 +473,15 @@ func TestAuthzAuditRejectsUngrantedCaller(t *testing.T) {
 			}
 			path := seed.path(e.pattern)
 			if len(e.query) > 0 {
-				path += "?" + e.query.Encode()
+				// Substitute before encoding: the {id} markers would otherwise
+				// be percent-escaped out of reach.
+				subbed := url.Values{}
+				for k, vs := range e.query {
+					for _, v := range vs {
+						subbed.Add(seed.replace(k), seed.replace(v))
+					}
+				}
+				path += "?" + subbed.Encode()
 			}
 			switch e.decision {
 			case decisionPublic:

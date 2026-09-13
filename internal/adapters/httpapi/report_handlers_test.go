@@ -936,3 +936,218 @@ func TestRunReport_APMDepthLayerOmitted(t *testing.T) {
 		}
 	})
 }
+
+// --- GET /api/runs/compare (phase 61) ---------------------------------------
+
+// Three runs by repeated run_ids[] params: one 200 carrying all three
+// reports, request order preserved -- the first id is the caller's baseline,
+// so the wire must not reorder by id or recency.
+func TestRunCompare_ThreeRunsInRequestOrder(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	for _, runID := range []int64{42, 43, 44} {
+		if err := reports.SaveReport(context.Background(), sampleReport(1, runID)); err != nil {
+			t.Fatalf("SaveReport(%d): %v", runID, err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids%5B%5D=44&run_ids%5B%5D=42&run_ids%5B%5D=43")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET compare = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []report.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("compare = %d reports, want 3", len(got))
+	}
+	for i, wantID := range []int64{44, 42, 43} {
+		if got[i].RunID != wantID {
+			t.Errorf("compare[%d] = run %d, want %d (request order preserved)", i, got[i].RunID, wantID)
+		}
+	}
+}
+
+// One comma-separated run_ids= value selects the same N runs as the
+// repeated spelling.
+func TestRunCompare_CommaSeparatedRunIDs(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	for _, runID := range []int64{42, 43} {
+		if err := reports.SaveReport(context.Background(), sampleReport(1, runID)); err != nil {
+			t.Fatalf("SaveReport(%d): %v", runID, err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids=42,43")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET compare = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []report.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 || got[0].RunID != 42 || got[1].RunID != 43 {
+		t.Errorf("compare = %+v, want runs 42 then 43", got)
+	}
+}
+
+// The two-run pair form (run_a/run_b) keeps working -- the spelling older
+// compare links baked into their URLs.
+func TestRunCompare_PairFormRunAAndRunB(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	for _, runID := range []int64{42, 43} {
+		if err := reports.SaveReport(context.Background(), sampleReport(1, runID)); err != nil {
+			t.Fatalf("SaveReport(%d): %v", runID, err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_a=43&run_b=42")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET compare = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []report.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 || got[0].RunID != 43 || got[1].RunID != 42 {
+		t.Errorf("compare = %+v, want runs 43 then 42", got)
+	}
+}
+
+// The spellings mix: repeated run_ids[] and comma-separated run_ids values
+// in one query all contribute, in request order.
+func TestRunCompare_MixesSpellings(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	for _, runID := range []int64{42, 43, 44} {
+		if err := reports.SaveReport(context.Background(), sampleReport(1, runID)); err != nil {
+			t.Fatalf("SaveReport(%d): %v", runID, err)
+		}
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids%5B%5D=44&run_ids=42,43")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET compare = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []report.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 3 || got[0].RunID != 44 || got[1].RunID != 42 || got[2].RunID != 43 {
+		t.Errorf("compare = %+v, want runs 44, 42, 43", got)
+	}
+}
+
+// Malformed or absent selections are a 400 naming the problem, never a
+// guess; the count cap keeps one request from spinning the store.
+func TestRunCompare_RejectsBadSelections(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	t.Run("no ids at all", func(t *testing.T) {
+		rec := do(t, h, http.MethodGet, "/api/runs/compare")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET compare = %d, want 400", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "no runs to compare") {
+			t.Errorf("body = %s, want the no-runs guidance", rec.Body.String())
+		}
+	})
+
+	t.Run("non-numeric id", func(t *testing.T) {
+		rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids=42,abc")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET compare = %d, want 400", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "invalid run id") {
+			t.Errorf("body = %s, want the invalid-id naming", rec.Body.String())
+		}
+	})
+
+	t.Run("over the cap", func(t *testing.T) {
+		q := "run_ids=42"
+		for i := 0; i < 20; i++ {
+			q += fmt.Sprintf("&run_ids%%5B%%5D=%d", 100+i)
+		}
+		rec := do(t, h, http.MethodGet, "/api/runs/compare?"+q)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET compare = %d, want 400", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "too many runs") {
+			t.Errorf("body = %s, want the cap naming", rec.Body.String())
+		}
+	})
+}
+
+// One unknown run fails the whole request with the store's own 404: a
+// compare of N-1 runs answers a question nobody asked.
+func TestRunCompare_UnknownRunFailsWholeRequest(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids=42,999")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET compare = %d, want 404", rec.Code)
+	}
+}
+
+// Every element carries the Phase 29 verdict layer, exactly as the
+// single-run route serves it -- the compare endpoint is a batch of that
+// route, not a new shape.
+func TestRunCompare_CarriesCriteriaVerdictPerRun(t *testing.T) {
+	t.Parallel()
+	h, reports, store := newCriteriaReportEnv(t)
+	ctx := context.Background()
+	for _, runID := range []int64{42, 43} {
+		// Same shape the single-run verdict test uses: p95 at 0.7s trips
+		// "p95>500ms", the for-window clause is unparsed.
+		rep := report.Build(report.Input{
+			ExecutionID: 1, RunID: runID,
+			Engine:    taurus.ExecutorJMeter,
+			StartedAt: time.Unix(1000, 0).UTC(),
+			EndedAt:   time.Unix(1030, 0).UTC(),
+			Outcome:   taurus.OutcomeFailed,
+			Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
+			Intervals: []metrics.Interval{{
+				Timestamp: 1000, Label: "checkout", Samples: 10, Failed: 3, Succeeded: 7,
+				Latency: metrics.Histogram{0.01: 7, 0.7: 3},
+				Errors:  []metrics.ErrorGroup{{Message: "Not Found", ResponseCode: "404", Count: 3}},
+			}},
+		})
+		if err := reports.SaveReport(ctx, rep); err != nil {
+			t.Fatalf("SaveReport(%d): %v", runID, err)
+		}
+	}
+	if err := store.SetExecutionCriteria(ctx, 1, []string{"failures>50%", "p95>500ms", "p99<1s for 5s"}); err != nil {
+		t.Fatalf("SetExecutionCriteria: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/compare?run_ids=42,43")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET compare = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got []verdictShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("compare = %d reports, want 2", len(got))
+	}
+	for i, g := range got {
+		if len(g.Criteria) != 3 {
+			t.Errorf("compare[%d].criteria = %v, want the execution's three", i, g.Criteria)
+		}
+		if len(g.FailingCriteria) != 2 {
+			t.Errorf("compare[%d].failing_criteria = %+v, want the tripped p95 and the unparsed window clause", i, g.FailingCriteria)
+		}
+	}
+}

@@ -1,19 +1,27 @@
-// Run comparison: two runs of one execution side by side, a signed-percent
-// delta table (improvement green, regression red), and an overlaid p95
-// chart. Route /executions/:id/compare?runs=a,b; the run list comes from
-// the same reports endpoint the Reports page uses (most recent first), and
-// each run's per-second shape from the series endpoint (task 5).
+// Run comparison: one execution's runs side by side — two by default, N on
+// request — a signed-percent delta table (improvement green, regression
+// red) with a chip per candidate column that regressed, and an overlaid p95
+// chart. Route /executions/:id/compare?runs=a,b[,c,…]; the run menu comes
+// from the same reports endpoint the Reports page uses (most recent first).
 //
-// Delta semantics: A is the baseline, B the candidate, and every delta
-// reads "B against A" -- negative latency is an improvement, positive
-// error rate a regression, positive RPS an improvement.
-import { useEffect, useId, useState } from 'react';
+// Data source (phase 61): the selected runs' summaries come from
+// GET /api/runs/compare (run_ids[] in request order, first id = baseline),
+// each element exactly the single-run report shape. While that fetch is in
+// flight — or if it fails — the table renders from the already-loaded
+// reports list instead, which carries the same fields: the comparison must
+// not blink just because the batch endpoint did.
+//
+// Delta semantics: the first slot is the baseline, every later slot a
+// candidate, and every delta reads "candidate against baseline" — negative
+// latency is an improvement, positive error rate a regression, positive RPS
+// an improvement.
+import { Fragment, useEffect, useId, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { ApiError } from '../api/client';
-import { listExecutionReports } from '../api/reports';
+import { compareRuns, listExecutionReports } from '../api/reports';
 import type { Report } from '../api/reports';
 import { fetchSeries } from '../api/series';
 import type { SeriesPoint } from '../api/series';
@@ -109,11 +117,10 @@ const METRICS: MetricSpec[] = [
 ];
 
 /**
- * Metrics whose B-vs-A delta reads as a regression, in table order. Phase
- * 59: feeds the delta card's summary chip -- the per-metric cells already
- * say which direction each number moved; this is the one-line verdict over
- * all of them, from the same deltas the table itself renders (there is no
- * compare endpoint; the reports list IS this page's data source).
+ * Metrics whose candidate-vs-baseline delta reads as a regression, in table
+ * order. Phase 59: feeds the per-column verdict chips — the per-metric cells
+ * already say which direction each number moved; the chip is the one-line
+ * verdict over all of them, from the same deltas the table itself renders.
  */
 export function summarizeRegressions(a: Report, b: Report): { metric: string; delta: number }[] {
   return METRICS.flatMap((m) => {
@@ -122,6 +129,38 @@ export function summarizeRegressions(a: Report, b: Report): { metric: string; de
     const delta = va !== undefined && vb !== undefined ? pctDelta(va, vb) : null;
     return deltaKind(m.better, delta) === 'regression' && delta !== null ? [{ metric: m.label, delta }] : [];
   });
+}
+
+/**
+ * The selection slot's letter: A is the baseline, B the first candidate, C…
+ * onward. Past Z the labels keep counting (AA, AB) — an honest label beats
+ * a hard cap the server side already enforces.
+ */
+export function slotLetter(index: number): string {
+  let n = index;
+  let out = '';
+  do {
+    out = String.fromCharCode(65 + (n % 26)) + out;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return out;
+}
+
+/** Slot label: the two leading roles keep their long-standing names. */
+function slotLabel(index: number): string {
+  if (index === 0) {
+    return 'Run A (baseline)';
+  }
+  if (index === 1) {
+    return 'Run B (candidate)';
+  }
+  return `Run ${slotLetter(index)}`;
+}
+
+/** Selector test ids: select-run-a/b are the long-standing two; C onward
+ * extends the same lowercase pattern. */
+function slotTestId(index: number): string {
+  return `select-run-${slotLetter(index).toLowerCase()}`;
 }
 
 function RunSelect({
@@ -161,27 +200,14 @@ function RunSelect({
   );
 }
 
-function DeltaTable({ a, b }: { a: Report; b: Report }) {
-  const regressions = summarizeRegressions(a, b);
+function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Report[] }) {
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-4">
+      <CardHeader>
         <CardTitle>
-          Delta — run #{b.run_id} against run #{a.run_id}
+          Delta — {candidates.length === 1 ? `run #${candidates[0].run_id}` : `${candidates.length} runs`} against run #
+          {baseline.run_id}
         </CardTitle>
-        {/* Verdict chip: present only when at least one metric regressed --
-            a clean comparison gets no chip at all (house minimalism: the
-            absence IS the "stable" signal, and the row cells already color
-            the individual movements). Real text, not a color-only cue. */}
-        {regressions.length > 0 && (
-          <span
-            data-testid="compare-regression-chip"
-            title={`${regressions.map((r) => `${r.metric} ${formatDelta(r.delta)}`).join(' · ')} vs run #${a.run_id}`}
-            className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
-          >
-            regressed
-          </span>
-        )}
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto" data-testid="delta-table">
@@ -192,28 +218,61 @@ function DeltaTable({ a, b }: { a: Report; b: Report }) {
                   Metric
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  Run #{a.run_id}
+                  Run #{baseline.run_id}
                 </th>
-                <th scope="col" className="px-3 py-2 font-medium">
-                  Run #{b.run_id}
-                </th>
-                <th scope="col" className="px-3 py-2 font-medium">
-                  Delta
-                </th>
+                {/* One value/delta column pair per candidate, in slot order.
+                    The verdict chip rides the candidate's own column header
+                    (phase 61): per column, exactly where the numbers it
+                    summarizes sit. Only-when-regressed -- a clean comparison
+                    gets no chip, the row cells already color the individual
+                    movements. Real text, not a color-only cue. */}
+                {candidates.map((c) => {
+                  const regressions = summarizeRegressions(baseline, c);
+                  return (
+                    <Fragment key={c.run_id}>
+                      <th scope="col" data-run-id={c.run_id} className="px-3 py-2 font-medium">
+                        <span className="inline-flex items-center gap-2">
+                          Run #{c.run_id}
+                          {regressions.length > 0 && (
+                            <span
+                              data-testid="compare-regression-chip"
+                              data-run-id={c.run_id}
+                              title={`${regressions.map((r) => `${r.metric} ${formatDelta(r.delta)}`).join(' · ')} vs run #${baseline.run_id}`}
+                              className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                            >
+                              regressed
+                            </span>
+                          )}
+                        </span>
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium">
+                        Δ vs #{baseline.run_id}
+                      </th>
+                    </Fragment>
+                  );
+                })}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {METRICS.map((m) => {
-                const va = m.value(a);
-                const vb = m.value(b);
-                const delta = va !== undefined && vb !== undefined ? pctDelta(va, vb) : null;
-                const kind = deltaKind(m.better, delta);
+                const vBase = m.value(baseline);
                 return (
                   <tr key={m.key} data-metric={m.key}>
                     <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{m.label}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{va !== undefined ? m.format(va) : '—'}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{vb !== undefined ? m.format(vb) : '—'}</td>
-                    <td className={`px-3 py-2 font-medium whitespace-nowrap ${deltaClass(kind)}`}>{formatDelta(delta)}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{vBase !== undefined ? m.format(vBase) : '—'}</td>
+                    {candidates.map((c) => {
+                      const vCand = m.value(c);
+                      const delta = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
+                      const kind = deltaKind(m.better, delta);
+                      return (
+                        <Fragment key={c.run_id}>
+                          <td className="px-3 py-2 whitespace-nowrap">{vCand !== undefined ? m.format(vCand) : '—'}</td>
+                          <td className={`px-3 py-2 font-medium whitespace-nowrap ${deltaClass(kind)}`}>
+                            {formatDelta(delta)}
+                          </td>
+                        </Fragment>
+                      );
+                    })}
                   </tr>
                 );
               })}
@@ -225,29 +284,44 @@ function DeltaTable({ a, b }: { a: Report; b: Report }) {
   );
 }
 
+/** Chart series colors, cycled per candidate slot; the first two keep the
+ * long-standing sky/amber pair. */
+const CHART_COLORS = [
+  'text-sky-500',
+  'text-amber-500',
+  'text-emerald-500',
+  'text-violet-500',
+  'text-rose-500',
+  'text-cyan-500',
+];
+
 /**
- * The overlaid p95 chart: one series per run, fetched together once both
- * selections exist. Hidden entirely when either run has no series (runs
- * finalised before the series store existed) or a fetch fails -- the delta
- * table stays the page's primary source either way.
+ * The overlaid p95 chart: one series per selected run, fetched together
+ * once the selection stands. Hidden entirely when any run has no series
+ * (runs finalised before the series store existed) or a fetch fails -- the
+ * delta table stays the page's primary source either way.
  */
-function CompareChart({ runIdA, runIdB }: { runIdA: number; runIdB: number }) {
+function CompareChart({ runIds }: { runIds: number[] }) {
   const [state, setState] = useState<
-    { kind: 'loading' } | { kind: 'ready'; a: SeriesPoint[]; b: SeriesPoint[] } | { kind: 'hidden' }
+    { kind: 'loading' } | { kind: 'ready'; series: SeriesPoint[][] } | { kind: 'hidden' }
   >({ kind: 'loading' });
+  const selectionKey = runIds.join(',');
 
   useEffect(() => {
+    // Re-read through the key: the effect re-runs exactly when the joined
+    // selection changes, and runIds is captured fresh on each such run.
+    const ids = selectionKey.split(',').map(Number);
     let cancelled = false;
     setState({ kind: 'loading' });
-    Promise.all([fetchSeries(runIdA), fetchSeries(runIdB)])
-      .then(([sa, sb]) => {
+    Promise.all(ids.map((rid) => fetchSeries(rid)))
+      .then((all) => {
         if (cancelled) {
           return;
         }
-        if (sa.points.length === 0 || sb.points.length === 0) {
+        if (all.some((s) => s.points.length === 0)) {
           setState({ kind: 'hidden' });
         } else {
-          setState({ kind: 'ready', a: sa.points, b: sb.points });
+          setState({ kind: 'ready', series: all.map((s) => s.points) });
         }
       })
       .catch(() => {
@@ -258,7 +332,7 @@ function CompareChart({ runIdA, runIdB }: { runIdA: number; runIdB: number }) {
     return () => {
       cancelled = true;
     };
-  }, [runIdA, runIdB]);
+  }, [selectionKey]);
 
   if (state.kind !== 'ready') {
     return null;
@@ -279,10 +353,11 @@ function CompareChart({ runIdA, runIdB }: { runIdA: number; runIdB: number }) {
           <TimeSeriesChart
             xType="time"
             yLabel="ms"
-            series={[
-              { name: `run #${runIdA} p95`, color: 'text-sky-500', points: p95(state.a) },
-              { name: `run #${runIdB} p95`, color: 'text-amber-500', points: p95(state.b) },
-            ]}
+            series={runIds.map((rid, i) => ({
+              name: `run #${rid} p95`,
+              color: CHART_COLORS[i % CHART_COLORS.length],
+              points: p95(state.series[i]),
+            }))}
           />
         </div>
       </CardContent>
@@ -298,37 +373,43 @@ export default function RunCompare() {
 
   const [reports, setReports] = useState<Report[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [runA, setRunA] = useState<number | null>(null);
-  const [runB, setRunB] = useState<number | null>(null);
+  // The selection, in slot order: index 0 is the baseline, the rest are
+  // candidates. Two slots by default; "Add run" extends it.
+  const [selected, setSelected] = useState<number[]>([]);
+  // The selected runs' summaries off GET /api/runs/compare, request order.
+  // Null while the fetch is in flight or after it failed -- the render then
+  // falls back to the already-loaded reports list, same fields.
+  const [summaries, setSummaries] = useState<Report[] | null>(null);
 
   useEffect(() => {
     if (!validId) {
       setError('Invalid execution id.');
       setReports(null);
+      setSelected([]);
       return;
     }
     let cancelled = false;
     setReports(null);
     setError(null);
-    setRunA(null);
-    setRunB(null);
+    setSelected([]);
     listExecutionReports(executionId)
       .then((rows) => {
         if (cancelled) {
           return;
         }
         setReports(rows);
-        // Preselect: ?runs=a,b wins when BOTH ids belong to this execution;
-        // otherwise A = the oldest run (baseline) and B = the newest
-        // (candidate) -- the list arrives most-recent-first.
+        // Preselect: ?runs=a,b,c… wins when EVERY id belongs to this
+        // execution (two is the smallest ask -- the long-standing
+        // ?runs=a,b spelling); otherwise slot A = the oldest run (baseline)
+        // and slot B = the newest (candidate) -- the list arrives
+        // most-recent-first.
         const ids = rows.map((r) => r.run_id);
         const wanted = (searchParams.get('runs') ?? '')
           .split(',')
           .map((part) => Number(part.trim()))
           .filter((n) => Number.isInteger(n) && n > 0);
-        const fromQuery = wanted.length >= 2 && ids.includes(wanted[0]) && ids.includes(wanted[1]);
-        setRunA(fromQuery ? wanted[0] : ids[ids.length - 1] ?? null);
-        setRunB(fromQuery ? wanted[1] : ids[0] ?? null);
+        const fromQuery = wanted.length >= 2 && wanted.every((n) => ids.includes(n));
+        setSelected(fromQuery ? wanted : ids.length > 0 ? [ids[ids.length - 1], ids[0]] : []);
       })
       .catch((err: unknown) => {
         if (cancelled) {
@@ -341,9 +422,52 @@ export default function RunCompare() {
     };
   }, [executionId, validId, searchParams]);
 
-  const reportA = reports?.find((r) => r.run_id === runA) ?? null;
-  const reportB = reports?.find((r) => r.run_id === runB) ?? null;
-  const sameRun = runA !== null && runA === runB;
+  // Fetch the selection's summaries off the batch endpoint. Keyed on the
+  // joined selection: the effect re-runs exactly when the runs compared
+  // change, never on the array's render-time identity.
+  const selectionKey = selected.join(',');
+  useEffect(() => {
+    const ids = selectionKey === '' ? [] : selectionKey.split(',').map(Number);
+    if (ids.length < 2) {
+      setSummaries(null);
+      return;
+    }
+    let cancelled = false;
+    compareRuns(ids)
+      .then((rows) => {
+        if (!cancelled) {
+          setSummaries(rows);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSummaries(null); // fall back to the reports list below
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectionKey]);
+
+  const sameRun = new Set(selected).size !== selected.length;
+  const pool = summaries ?? reports;
+  const byId = new Map((pool ?? []).map((r) => [r.run_id, r] as const));
+  const selectedReports = selected.map((sid) => byId.get(sid) ?? null);
+  const ready = !sameRun && selectedReports.length >= 2 && selectedReports.every((r) => r !== null);
+  const baseline = ready ? selectedReports[0] : null;
+  const candidates = ready ? (selectedReports.slice(1) as Report[]) : [];
+
+  const addRun = () => {
+    if (reports === null) {
+      return;
+    }
+    // Newest run not already in a slot (the list is most-recent-first).
+    const next = reports.find((r) => !selected.includes(r.run_id));
+    if (next !== undefined) {
+      setSelected((prev) => [...prev, next.run_id]);
+    }
+  };
+  const removeRun = (index: number) => setSelected((prev) => prev.filter((_, i) => i !== index));
 
   return (
     <div className="space-y-6" role="region" aria-label="Run comparison panel">
@@ -359,7 +483,7 @@ export default function RunCompare() {
       <div>
         <h1 className="text-display-sm text-slate-900 dark:text-white">Compare runs</h1>
         <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
-          Execution #{executionId} — one run against another, metric by metric.
+          Execution #{executionId} — two or more runs against one baseline, metric by metric.
         </p>
       </div>
 
@@ -388,21 +512,53 @@ export default function RunCompare() {
               <CardTitle>Runs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <RunSelect label="Run A (baseline)" testId="select-run-a" value={runA} reports={reports} onChange={setRunA} />
-                <RunSelect label="Run B (candidate)" testId="select-run-b" value={runB} reports={reports} onChange={setRunB} />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {selected.map((runId, i) => (
+                  <div key={i} className="flex items-end gap-2">
+                    <div className="min-w-0 grow">
+                      <RunSelect
+                        label={slotLabel(i)}
+                        testId={slotTestId(i)}
+                        value={runId}
+                        reports={reports}
+                        onChange={(rid) => setSelected((prev) => prev.map((v, j) => (j === i ? (rid ?? v) : v)))}
+                      />
+                    </div>
+                    {selected.length > 2 && (
+                      <button
+                        type="button"
+                        data-testid={`remove-run-${i}`}
+                        aria-label={`Remove slot ${slotLetter(i)}`}
+                        onClick={() => removeRun(i)}
+                        className="min-h-[44px] shrink-0 rounded-lg border border-slate-300 px-3 text-slate-500 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
+              {reports.length > selected.length && (
+                <button
+                  type="button"
+                  data-testid="add-run"
+                  onClick={addRun}
+                  className="min-h-[44px] rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  + Add run
+                </button>
+              )}
               {sameRun && (
                 <p className="text-body-sm text-amber-600 dark:text-amber-400" data-testid="compare-same-run">
-                  Both selectors point at the same run — pick two different runs to compare.
+                  Two slots point at the same run — pick a different run for each slot.
                 </p>
               )}
             </CardContent>
           </Card>
-          {reportA !== null && reportB !== null && !sameRun && (
+          {baseline !== null && (
             <>
-              <DeltaTable a={reportA} b={reportB} />
-              <CompareChart runIdA={reportA.run_id} runIdB={reportB.run_id} />
+              <DeltaTable baseline={baseline} candidates={candidates} />
+              <CompareChart runIds={selected.filter((sid) => byId.has(sid))} />
             </>
           )}
         </>

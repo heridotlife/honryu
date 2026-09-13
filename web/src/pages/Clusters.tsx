@@ -68,19 +68,32 @@ export function clusterCapacity(cluster: Cluster): { used?: number; ceiling?: nu
   return {};
 }
 
-/** Distinct sidecar images across the registry, first-seen order, blanks
- * dropped -- the fleet summary's engine-images row renders exactly what
- * cluster rows carry (phase 55: the engine images config has no API
- * surface, so there is nothing else to show). */
-export function engineImages(clusters: Cluster[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
+/** One unique engine image across the registry, and the clusters that run
+ * it (registry order, first-seen image order, blanks dropped) -- the fleet
+ * summary's engine-image rows render exactly what cluster rows carry
+ * (phase 55: the engine images config has no API surface, so there is
+ * nothing else to show; phase 61: one line per unique image, attributed
+ * across the fleet). */
+export function engineImageRows(clusters: Cluster[]): { image: string; clusters: string[] }[] {
+  const rows: { image: string; clusters: string[] }[] = [];
+  const byImage = new Map<string, string[]>();
   for (const c of clusters) {
-    if (c.sidecar_image === '' || seen.has(c.sidecar_image)) continue;
-    seen.add(c.sidecar_image);
-    out.push(c.sidecar_image);
+    if (c.sidecar_image === '') continue;
+    let names = byImage.get(c.sidecar_image);
+    if (names === undefined) {
+      names = [];
+      byImage.set(c.sidecar_image, names);
+      rows.push({ image: c.sidecar_image, clusters: names });
+    }
+    names.push(c.name);
   }
-  return out;
+  return rows;
+}
+
+/** Distinct sidecar images across the registry, first-seen order, blanks
+ * dropped -- the image half of engineImageRows. */
+export function engineImages(clusters: Cluster[]): string[] {
+  return engineImageRows(clusters).map((r) => r.image);
 }
 
 /** The cluster registry, read-only. */
@@ -92,7 +105,7 @@ export default function Clusters() {
   // registry view down with it.
   const [profiles, setProfiles] = useState<CapacityProfileSummary[] | null>(null);
   const [profilesError, setProfilesError] = useState(false);
-  const fleetImages = clusters === null ? null : engineImages(clusters);
+  const fleetImageRows = clusters === null ? null : engineImageRows(clusters);
 
   useEffect(() => {
     listClusters()
@@ -192,25 +205,31 @@ export default function Clusters() {
             <h2 className="text-caption font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">
               Fleet summary
             </h2>
-            <p className="text-body-sm">
-              <span className="text-caption mr-2 text-slate-500 dark:text-slate-400">Engine images</span>
-              {fleetImages && fleetImages.length > 0 ? (
-                <span className="inline-flex flex-wrap gap-1.5">
-                  {fleetImages.map((image) => (
-                    <code
-                      key={image}
-                      className="text-caption rounded bg-slate-100 px-1.5 py-0.5 break-all dark:bg-slate-900"
-                    >
+            <p className="text-caption text-slate-500 dark:text-slate-400">Engine images</p>
+            {fleetImageRows && fleetImageRows.length > 0 ? (
+              /* Phase 61: one compact line per unique image, attributed
+                 across the fleet -- a fleet running mixed engine versions
+                 reads which clusters are on which image without scanning
+                 the registry table. */
+              <div data-testid="fleet-engine-images" className="space-y-1">
+                {fleetImageRows.map(({ image, clusters: names }) => (
+                  <p key={image} className="text-body-sm">
+                    <code className="text-caption rounded bg-slate-100 px-1.5 py-0.5 break-all dark:bg-slate-900">
                       {image}
                     </code>
-                  ))}
-                </span>
-              ) : (
-                <span className="text-slate-500 dark:text-slate-400">
-                  No registered clusters — engine images appear here once clusters are registered.
-                </span>
-              )}
-            </p>
+                    <span className="text-caption ml-2 text-slate-500 dark:text-slate-400">
+                      {names.length} {names.length === 1 ? 'cluster' : 'clusters'}: {names.join(', ')}
+                    </span>
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-body-sm text-slate-500 dark:text-slate-400">
+                {clusters !== null && clusters.length > 0
+                  ? 'No registered cluster carries an engine image — set one when registering.'
+                  : 'No registered clusters — engine images appear here once clusters are registered.'}
+              </p>
+            )}
 
             {profilesError && (
               <p className="text-body-sm text-slate-500 dark:text-slate-400">

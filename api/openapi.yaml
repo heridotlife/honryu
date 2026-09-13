@@ -2268,6 +2268,50 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorSignatureHistory' }
 
+  /api/runs/compare:
+    get:
+      tags: [reports]
+      summary: Fetch several runs' reports in one response, request order preserved
+      description: >-
+        One compare payload, N runs: every element is exactly the shape
+        GET /api/runs/{run_id}/report serves. The first id is the caller's
+        baseline and the order is preserved verbatim; duplicates pass
+        through. Ids arrive as repeated run_ids[] parameters, one
+        comma-separated run_ids value (any mix of the two), or the two-run
+        run_a/run_b pair. Each run is authorized through its own execution,
+        exactly as the single-run route authorizes it, and the first failure
+        (unknown run, unauthorized execution) fails the whole request.
+      parameters:
+        - name: run_ids[]
+          in: query
+          required: false
+          description: >-
+            Run ids to compare, one id per parameter or comma-separated
+            within a value. Repeatable; mixes with run_ids.
+          schema:
+            type: array
+            items: { type: integer, format: int64 }
+        - name: run_a
+          in: query
+          required: false
+          description: The baseline run (two-run pair form; use with run_b).
+          schema: { type: integer, format: int64 }
+        - name: run_b
+          in: query
+          required: false
+          description: The candidate run (two-run pair form; use with run_a).
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Run reports in request order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Report' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/runs/{run_id}/report:
     get:
       tags: [reports]
