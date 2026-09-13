@@ -280,6 +280,10 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		"digest webhook not a url":      {"HONRYU_DIGEST_WEBHOOK_URL": "::not a url"},
 		"digest slack not https":        {"HONRYU_DIGEST_SLACK_WEBHOOK_URL": "http://hooks.slack.com/services/T0/B0/xyz"},
 		"digest slack not a url":        {"HONRYU_DIGEST_SLACK_WEBHOOK_URL": "::not a url"},
+		"digest smtp wrong scheme":      {"HONRYU_DIGEST_SMTP_URL": "https://relay.example:587?from=a@b.c&to=d@e.f"},
+		"digest smtp no host":           {"HONRYU_DIGEST_SMTP_URL": "smtp://?from=a@b.c&to=d@e.f"},
+		"digest smtp no from":           {"HONRYU_DIGEST_SMTP_URL": "smtp://relay.example:587?to=d@e.f"},
+		"digest smtp no to":             {"HONRYU_DIGEST_SMTP_URL": "smtp://relay.example:587?from=a@b.c"},
 		"apm links not json":            {"HONRYU_APM_LINK_TEMPLATES": "{not json"},
 		"apm links not an array":        {"HONRYU_APM_LINK_TEMPLATES": `{"name":"x"}`},
 		"apm template empty name":       {"HONRYU_APM_LINK_TEMPLATES": `[{"name":"","urlTemplate":"https://x/{{run_id}}"}]`},
@@ -350,6 +354,36 @@ func TestLoad_DigestSlack(t *testing.T) {
 	}
 	if cfg.Digest.SlackWebhookURL != "https://hooks.slack.com/services/T0000/B0000/xyz" {
 		t.Fatalf("Digest.SlackWebhookURL = %q, want the configured target", cfg.Digest.SlackWebhookURL)
+	}
+}
+
+func TestLoad_DigestSMTP(t *testing.T) {
+	t.Parallel()
+
+	// Unconfigured is the default: no email transport.
+	cfg, err := Load(envMap(nil))
+	if err != nil {
+		t.Fatalf("Load(nil): unexpected error: %v", err)
+	}
+	if cfg.Digest.SMTPURL != "" {
+		t.Fatalf("Digest.SMTPURL default = %q, want empty", cfg.Digest.SMTPURL)
+	}
+
+	// A well-shaped relay URL loads as-is: scheme, relay host, and the
+	// from/to addresses ride the URL; allow_insecure is the deliverer's
+	// send-time decision (and its refusal documents the override), not a
+	// load-time one -- both spellings load.
+	for _, raw := range []string{
+		"smtp://ops:s3cret@relay.example:2525?from=honryu%40ops.example&to=ops@example.com",
+		"smtp://relay.example:2525?from=honryu%40ops.example&to=ops@example.com&allow_insecure=true",
+	} {
+		cfg, err = Load(envMap(map[string]string{"HONRYU_DIGEST_SMTP_URL": raw}))
+		if err != nil {
+			t.Fatalf("Load(digest smtp %q): unexpected error: %v", raw, err)
+		}
+		if cfg.Digest.SMTPURL != raw {
+			t.Fatalf("Digest.SMTPURL = %q, want the configured relay %q", cfg.Digest.SMTPURL, raw)
+		}
 	}
 }
 

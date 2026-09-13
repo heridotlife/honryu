@@ -135,11 +135,12 @@ func run(parent context.Context, getenv func(string) string) error {
 	// never wires RunCompleted's queue (no metrics service here), so the
 	// service stays delivery-only. WithDigestSink adds the deploy-wide
 	// digest sink when one is configured (phase 60); WithSlackSink the
-	// Slack transport (phase 62); with no env vars set they are the
-	// unconfigured no-ops.
+	// Slack transport and WithEmailSink the SMTP transport (phase 62);
+	// with no env vars set they are the unconfigured no-ops.
 	webhooks := webhookapp.NewService(repo).
 		WithDigestSink(cfg.Digest.WebhookURL, cfg.Digest.WebhookSecret).
-		WithSlackSink(cfg.Digest.SlackWebhookURL)
+		WithSlackSink(cfg.Digest.SlackWebhookURL).
+		WithEmailSink(cfg.Digest.SMTPURL)
 	digests := digestapp.NewService(repo).WithDeliverer(webhooks)
 
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)

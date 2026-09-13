@@ -18,11 +18,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -97,6 +99,20 @@ type Service struct {
 	// construction -- Slack's token lives in the URL path, so there is
 	// nothing to sign.
 	slack *webhook.Webhook
+	// email, when non-nil, is the deploy-wide SMTP transport (WithEmailSink,
+	// phase 62): the digest rides net/smtp to the relay as a plain message
+	// after the HTTP targets.
+	email *emailSink
+	// dial opens the email transport's relay connection, bounded by the
+	// per-attempt context. A seam, not a global: tests hand back scripted
+	// connections, and nothing else in the process shares it.
+	dial dialFunc
+	// emailTLS, when set, is the STARTTLS client config for the email
+	// transport (WithEmailTLSConfig) -- for deployments pinning their own
+	// trust roots and for tests facing a relay whose chain the process does
+	// not trust. Nil means Go's default verification against the relay's
+	// hostname.
+	emailTLS *tls.Config
 	// startOnce starts the workers lazily on the first delivery, so a
 	// deployment with no webhooks registered runs zero background
 	// goroutines.
@@ -119,6 +135,10 @@ func NewService(repo Repo) *Service {
 		timeout: deliverTimeout,
 		backoff: deliverBackoff,
 		queue:   make(chan delivery, defaultQueueCapacity),
+		dial: func(ctx context.Context, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", addr)
+		},
 	}
 }
 
@@ -213,6 +233,61 @@ func (s *Service) WithSlackSink(raw string) *Service {
 		return s
 	}
 	s.slack = &webhook.Webhook{URL: strings.TrimSpace(raw)}
+	return s
+}
+
+// WithEmailSink points the digest lane (DeliverDigest) at an SMTP relay
+// (phase 62), the digest lane's third transport: the stored digest payload
+// is wrapped as a plain email (buildDigestEmail) and delivered over net/smtp
+// after the HTTP targets, with the same attempt/backoff/timeout bounds.
+// The URL shape is
+//
+//	smtp://[user:pass@]host[:port]?from=<sender>&to=<comma-separated recipients>[&allow_insecure=true]
+//
+// STARTTLS is REQUIRED: the transport refuses a relay that does not offer
+// it, with an error naming the allow_insecure=true override -- plaintext
+// SMTP is opt-in per relay, never a fallback. (Credentials on an insecure
+// connection are additionally refused by net/smtp's own PlainAuth guard,
+// which only allows them unencrypted to localhost.) An empty url unsets
+// nothing and configures nothing -- the unconfigured default. A malformed
+// URL (wrong scheme, no host, no from=/to=, a line break smuggled into an
+// address) is refused here, logged with the credentials stripped, and never
+// stored, with config.Load's gate as the deployment-level enforcement that
+// fails startup outright. Returns the receiver for chaining.
+func (s *Service) WithEmailSink(raw string) *Service {
+	if raw == "" {
+		return s
+	}
+	sink, err := parseEmailSink(raw)
+	if err != nil {
+		s.log.Error("webhook: email sink rejected; email digest delivery disabled", "url", redactSMTPURL(raw), "error", err)
+		return s
+	}
+	s.email = sink
+	return s
+}
+
+// WithEmailTLSConfig overrides the email transport's STARTTLS client
+// config. The default is Go's standard certificate verification against
+// the relay's hostname; an override exists for deployments pinning their
+// own trust roots and for tests (a relay whose chain the process does not
+// trust). Returns the receiver for chaining.
+func (s *Service) WithEmailTLSConfig(conf *tls.Config) *Service {
+	if conf != nil {
+		s.emailTLS = conf
+	}
+	return s
+}
+
+// WithEmailDial overrides how the email transport opens its relay
+// connection. The default is a plain net.Dialer bounded by the delivery
+// attempt's context; an override exists for tests (scripted connections),
+// and like the HTTP client it must stay dedicated to deliveries. Returns
+// the receiver for chaining.
+func (s *Service) WithEmailDial(fn func(ctx context.Context, addr string) (net.Conn, error)) *Service {
+	if fn != nil {
+		s.dial = fn
+	}
 	return s
 }
 
@@ -376,7 +451,7 @@ func (s *Service) DeliverDigest(ctx context.Context, projectID int64, body []byt
 	if s.sink != nil {
 		targets = append(targets, *s.sink)
 	}
-	if len(targets) == 0 && s.slack == nil {
+	if len(targets) == 0 && s.slack == nil && s.email == nil {
 		return false, nil
 	}
 	var (
@@ -410,6 +485,26 @@ func (s *Service) DeliverDigest(ctx context.Context, projectID int64, body []byt
 			// pending (or pass on a sibling's success) with no trace of why.
 			err := fmt.Errorf("webhook: digest payload did not parse; slack transport cannot render")
 			s.log.Warn("webhook: digest delivery failed", "transport", "slack", "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if s.email != nil {
+		if msg, err := buildDigestEmail(s.email, body, time.Now()); err == nil {
+			if err := s.deliverDigestEmail(ctx, s.email, msg); err != nil {
+				s.log.Warn("webhook: digest delivery failed", "transport", "email", "relay", s.email.hostport, "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				delivered = true
+			}
+		} else {
+			// Same honesty as the slack transport above: the email target
+			// was configured and never confirmed, so the record must say
+			// failed rather than silently pass on a sibling's success.
+			s.log.Warn("webhook: digest delivery failed", "transport", "email", "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}

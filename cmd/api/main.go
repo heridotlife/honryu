@@ -134,11 +134,13 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// webhook use-case is the metrics service's Notifier, which delivers
 	// on background workers and never delays the run. WithDigestSink adds
 	// the deploy-wide digest sink when one is configured (phase 60);
-	// WithSlackSink the Slack transport (phase 62); with neither env var
-	// set they are the unconfigured no-ops.
+	// WithSlackSink the Slack transport and WithEmailSink the SMTP
+	// transport (phase 62); with none of the env vars set they are the
+	// unconfigured no-ops.
 	webhooks := webhookapp.NewService(repo).
 		WithDigestSink(cfg.Digest.WebhookURL, cfg.Digest.WebhookSecret).
-		WithSlackSink(cfg.Digest.SlackWebhookURL)
+		WithSlackSink(cfg.Digest.SlackWebhookURL).
+		WithEmailSink(cfg.Digest.SMTPURL)
 	collector := metricsapp.NewService(repo, sink, bus, repo, repo).WithNotifier(webhooks)
 	// Digests deliver through the same webhook machinery a run completion
 	// rides on -- one signing path, one set of delivery bounds (phase 42).
