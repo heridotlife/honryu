@@ -23,6 +23,8 @@ type DigestStore struct {
 	ListErr error
 	// LastWindowEndErr, when set, is returned by LastDigestWindowEnd.
 	LastWindowEndErr error
+	// MarkErr, when set, is returned by MarkDigestDelivery.
+	MarkErr error
 }
 
 // NewDigestStore builds an empty store.
@@ -32,7 +34,9 @@ func NewDigestStore() *DigestStore {
 
 var _ ports.ReportDigestStore = (*DigestStore)(nil)
 
-// SaveDigest records a digest, assigning the row id and stamp.
+// SaveDigest records a digest, assigning the row id and stamp. Every row
+// is born pending -- the port's law: whatever d carries in DeliveryStatus
+// is not persisted, MarkDigestDelivery is the only path that moves it.
 func (s *DigestStore) SaveDigest(_ context.Context, d digest.Digest) (int64, error) {
 	if s.SaveErr != nil {
 		return 0, s.SaveErr
@@ -42,8 +46,33 @@ func (s *DigestStore) SaveDigest(_ context.Context, d digest.Digest) (int64, err
 	s.seq++
 	d.ID = s.seq
 	d.CreatedTime = time.Now().UTC()
+	d.DeliveryStatus = digest.DeliveryPending
+	d.DeliveredAt = nil
 	s.digests[d.ID] = d
 	return d.ID, nil
+}
+
+// MarkDigestDelivery moves one digest's delivery status off pending. Only
+// delivered carries a stamp; failed clears it (nothing confirmed).
+func (s *DigestStore) MarkDigestDelivery(_ context.Context, id int64, status digest.DeliveryStatus, deliveredAt time.Time) error {
+	if s.MarkErr != nil {
+		return s.MarkErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.digests[id]
+	if !ok {
+		return ports.ErrNotFound
+	}
+	d.DeliveryStatus = status
+	if status == digest.DeliveryDelivered {
+		stamp := deliveredAt
+		d.DeliveredAt = &stamp
+	} else {
+		d.DeliveredAt = nil
+	}
+	s.digests[id] = d
+	return nil
 }
 
 // ListDigestsByProject returns the project's digests, newest first, with

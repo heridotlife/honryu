@@ -204,14 +204,27 @@ func TestDigestListScopedNewestFirstAndLimited(t *testing.T) {
 		t.Fatalf("SaveDigest(foreign): %v", err)
 	}
 
+	// The middle digest was delivered (phase 60): its row carries the
+	// confirmation stamp the feed must surface.
+	rows0, err := store.ListDigestsByProject(ctx, projectID, 0)
+	if err != nil {
+		t.Fatalf("ListDigestsByProject: %v", err)
+	}
+	middle := rows0[1].ID
+	if err := store.MarkDigestDelivery(ctx, middle, digest.DeliveryDelivered, base.Add(48*time.Hour)); err != nil {
+		t.Fatalf("MarkDigestDelivery: %v", err)
+	}
+
 	rec := do(t, h, http.MethodGet, "/api/projects/"+itoa(projectID)+"/digests")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list digests = %d (%s)", rec.Code, rec.Body.String())
 	}
 	var rows []struct {
-		ID        int64 `json:"id"`
-		RunsTotal int   `json:"runs_total"`
-		ByOutcome struct {
+		ID             int64      `json:"id"`
+		RunsTotal      int        `json:"runs_total"`
+		DeliveryStatus string     `json:"delivery_status"`
+		DeliveredAt    *time.Time `json:"delivered_at"`
+		ByOutcome      struct {
 			Passed  int `json:"passed"`
 			Failed  int `json:"failed"`
 			Aborted int `json:"aborted"`
@@ -231,6 +244,24 @@ func TestDigestListScopedNewestFirstAndLimited(t *testing.T) {
 	}
 	if rows[2].RunsTotal != 1 || rows[1].RunsTotal != 2 || rows[0].RunsTotal != 3 {
 		t.Errorf("runs_total order = %d,%d,%d, want payload order 1,2,3 newest-first", rows[2].RunsTotal, rows[1].RunsTotal, rows[0].RunsTotal)
+	}
+
+	// The delivery outcome rides the feed: the marked digest reads
+	// delivered with its stamp; untouched rows stay pending with no stamp.
+	confirmedAt := base.Add(48 * time.Hour)
+	for i, want := range []struct {
+		status string
+		stamp  *time.Time
+	}{{"pending", nil}, {"delivered", &confirmedAt}, {"pending", nil}} {
+		if rows[i].DeliveryStatus != want.status {
+			t.Errorf("rows[%d].delivery_status = %q, want %q", i, rows[i].DeliveryStatus, want.status)
+		}
+		switch {
+		case want.stamp == nil && rows[i].DeliveredAt != nil:
+			t.Errorf("rows[%d].delivered_at = %v, want absent", i, rows[i].DeliveredAt)
+		case want.stamp != nil && (rows[i].DeliveredAt == nil || !rows[i].DeliveredAt.Equal(*want.stamp)):
+			t.Errorf("rows[%d].delivered_at = %v, want %v", i, rows[i].DeliveredAt, want.stamp)
+		}
 	}
 
 	// ?limit=1 truncates.
