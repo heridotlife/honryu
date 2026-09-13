@@ -117,20 +117,35 @@ type APMConfig struct {
 	LinkTemplates []APMLinkTemplate
 }
 
-// DigestConfig configures the deploy-wide digest delivery sink
-// (HONRYU_DIGEST_WEBHOOK_URL / HONRYU_DIGEST_WEBHOOK_SECRET): one https
-// endpoint every fired report.digest is also POSTed to, alongside the
-// firing project's own webhooks. Empty by default -- a deployment that
-// configures no sink delivers digests to project webhooks only, exactly as
-// before. The https-only rule is enforced at load: a cleartext target would
-// carry the payload (and the signature's proof) in the clear, so it fails
-// startup rather than being silently accepted and quietly undeliverable.
+// DigestConfig configures the deploy-wide digest delivery transports
+// (HONRYU_DIGEST_WEBHOOK_URL / HONRYU_DIGEST_WEBHOOK_SECRET, and since
+// phase 62 HONRYU_DIGEST_SLACK_WEBHOOK_URL): one https endpoint every
+// fired report.digest is also POSTed to, alongside the firing project's
+// own webhooks, and a Slack incoming webhook the same digest is rendered
+// for. Empty by default -- a deployment that configures none delivers
+// digests to project webhooks only, exactly as before. The https-only
+// rule is enforced at load: a cleartext target would carry the payload
+// (and the signature's proof) in the clear, so it fails startup rather
+// than being silently accepted and quietly undeliverable.
 type DigestConfig struct {
 	// WebhookURL is the sink's https URL; empty means unconfigured.
 	WebhookURL string
 	// WebhookSecret, when set, signs the sink's deliveries with the same
 	// X-Honryu-Signature scheme the per-project webhooks use.
 	WebhookSecret string
+	// SlackWebhookURL is a Slack incoming webhook's https URL
+	// (https://hooks.slack.com/services/...); empty means unconfigured.
+	// The field itself is the channel-type discriminator: a digest aimed
+	// here is rendered as Slack's {"text": ...} message shape instead of
+	// posted as raw JSON. Same https-only gate as WebhookURL.
+	SlackWebhookURL string
+	// SMTPURL is the email transport's relay
+	// (smtp://[user:pass@]host[:port]?from=&to=[&allow_insecure=true]);
+	// empty means unconfigured. STARTTLS is required at send time unless
+	// allow_insecure=true is set explicitly -- plaintext SMTP is opt-in
+	// per relay, documented in the deliverer's refusal error. The load
+	// gate checks the scheme, the host, and the from/to addresses.
+	SMTPURL string
 }
 
 // APMLinkTemplate is one entry in HONRYU_APM_LINK_TEMPLATES (JSON array).
@@ -415,6 +430,8 @@ func Load(getenv func(string) string) (Config, error) {
 
 	cfg.Digest.WebhookURL = strEnv(getenv, "DIGEST_WEBHOOK_URL", cfg.Digest.WebhookURL)
 	cfg.Digest.WebhookSecret = strEnv(getenv, "DIGEST_WEBHOOK_SECRET", cfg.Digest.WebhookSecret)
+	cfg.Digest.SlackWebhookURL = strEnv(getenv, "DIGEST_SLACK_WEBHOOK_URL", cfg.Digest.SlackWebhookURL)
+	cfg.Digest.SMTPURL = strEnv(getenv, "DIGEST_SMTP_URL", cfg.Digest.SMTPURL)
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -515,13 +532,33 @@ func (c Config) validate() error {
 	if c.Calibrator.TickInterval <= 0 {
 		return fmt.Errorf("config: %sCALIBRATOR_TICK_INTERVAL must be positive", envPrefix)
 	}
-	// The digest sink's https-only rule, enforced at the only gate a
+	// The digest transports' https-only rule, enforced at the only gate a
 	// deployment-level value has: startup. A malformed or cleartext URL must
 	// fail the load, not surface later as a deliverer that can never deliver.
-	if c.Digest.WebhookURL != "" {
-		u, err := url.Parse(c.Digest.WebhookURL)
+	for _, rule := range []struct{ env, raw string }{
+		{"DIGEST_WEBHOOK_URL", c.Digest.WebhookURL},
+		{"DIGEST_SLACK_WEBHOOK_URL", c.Digest.SlackWebhookURL},
+	} {
+		if rule.raw == "" {
+			continue
+		}
+		u, err := url.Parse(rule.raw)
 		if err != nil || u.Host == "" || u.Scheme != "https" {
-			return fmt.Errorf("config: %sDIGEST_WEBHOOK_URL must be an absolute https URL, got %q", envPrefix, c.Digest.WebhookURL)
+			return fmt.Errorf("config: %s%s must be an absolute https URL, got %q", envPrefix, rule.env, rule.raw)
+		}
+	}
+	// The email transport's URL shape, checked at the same gate: scheme,
+	// relay host, and the sender/recipient addresses the message needs. A
+	// URL missing any of them would parse fine and deliver nothing, so it
+	// fails startup instead.
+	if c.Digest.SMTPURL != "" {
+		u, err := url.Parse(c.Digest.SMTPURL)
+		if err != nil || u.Scheme != "smtp" || u.Host == "" {
+			return fmt.Errorf("config: %sDIGEST_SMTP_URL must be smtp://[user:pass@]host[:port]?from=&to= (add allow_insecure=true only for a relay without STARTTLS), got %q", envPrefix, c.Digest.SMTPURL)
+		}
+		q := u.Query()
+		if q.Get("from") == "" || q.Get("to") == "" {
+			return fmt.Errorf("config: %sDIGEST_SMTP_URL needs from= and to= query parameters (the digest's sender and recipients), got %q", envPrefix, c.Digest.SMTPURL)
 		}
 	}
 	return nil

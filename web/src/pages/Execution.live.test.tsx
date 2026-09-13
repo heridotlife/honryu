@@ -786,3 +786,40 @@ describe('Execution capacity planner (phase 54)', () => {
     expect(container!.querySelector('[data-testid="capacity-panel"]')).not.toBeNull();
   });
 });
+
+// Phase 62: the "Calibration spec" card -- what a calibrate_engine execution
+// was configured with, served additively on the execution detail. Rendered
+// only when the backend actually served a spec; a normal execution (and a
+// calibrate-kind row without recorded bounds) gets no section at all.
+describe('Execution calibration spec (phase 62)', () => {
+  const spec = {
+    criterion: 'failures>5%',
+    seed_qps: 10,
+    max_qps: 10000,
+    max_steps: 20,
+    hold_seconds: 30,
+    cpu: '1',
+    memory: '512Mi',
+  };
+
+  it('renders criterion as code plus the range/budget/pod lines on a calibrate execution', async () => {
+    await renderExecution('running', [], undefined, [], { kind: 'calibrate_engine', calibration: spec });
+    const card = container!.querySelector('[data-testid="calibration-spec"]');
+    expect(card).not.toBeNull();
+    expect(card!.querySelector('[data-testid="calibration-spec-criterion"]')?.textContent).toBe('failures>5%');
+    const text = card!.textContent ?? '';
+    expect(text).toContain('seed 10 → max 10000 qps');
+    expect(text).toContain('up to 20 steps · 30s hold per step');
+    expect(text).toContain('pod: 1 CPU · 512Mi memory');
+  });
+
+  it('renders no section on a normal execution', async () => {
+    await renderExecution('running');
+    expect(container!.querySelector('[data-testid="calibration-spec"]')).toBeNull();
+  });
+
+  it('renders no section on a calibrate_kind execution whose spec the backend omitted', async () => {
+    await renderExecution('running', [], undefined, [], { kind: 'calibrate_engine' });
+    expect(container!.querySelector('[data-testid="calibration-spec"]')).toBeNull();
+  });
+});
