@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -14,19 +15,40 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
+	"github.com/heridotlife/honryu/internal/ports"
 )
 
+// calibrationSpecResponse is the calibration search a calibrate_engine
+// execution was configured with (phase 62): the target-health criterion, the
+// search bounds, and the pinned pod size -- the same reconstruction
+// calibrationapp.Trigger drives steps from, so an operator reading the
+// execution months later sees exactly what the search was pointed at.
+type calibrationSpecResponse struct {
+	Criterion   string  `json:"criterion"`
+	SeedQPS     float64 `json:"seed_qps"`
+	MaxQPS      float64 `json:"max_qps"`
+	MaxSteps    int     `json:"max_steps"`
+	HoldSeconds int     `json:"hold_seconds"`
+	CPU         string  `json:"cpu"`
+	Memory      string  `json:"memory"`
+}
+
+// The single-execution wire shape. Calibration is additive and omitempty:
+// present only on calibrate_engine executions whose search was actually
+// configured (and only when the deployment has the calibration service at
+// all), so every other execution serialises exactly as before.
 type executionResponse struct {
-	ID          int64                  `json:"id"`
-	Name        string                 `json:"name"`
-	ProjectID   int64                  `json:"project_id"`
-	Engine      taurus.Executor        `json:"engine,omitempty"`
-	Kind        execution.Kind         `json:"kind"`
-	Cluster     string                 `json:"cluster,omitempty"`
-	CSVSplit    bool                   `json:"csv_split"`
-	CreatedTime time.Time              `json:"created_time"`
-	LoadProfile []loadprofile.Entry    `json:"load_profile"`
-	Data        []executionapp.FileRef `json:"data"`
+	ID          int64                    `json:"id"`
+	Name        string                   `json:"name"`
+	ProjectID   int64                    `json:"project_id"`
+	Engine      taurus.Executor          `json:"engine,omitempty"`
+	Kind        execution.Kind           `json:"kind"`
+	Cluster     string                   `json:"cluster,omitempty"`
+	CSVSplit    bool                     `json:"csv_split"`
+	CreatedTime time.Time                `json:"created_time"`
+	LoadProfile []loadprofile.Entry      `json:"load_profile"`
+	Data        []executionapp.FileRef   `json:"data"`
+	Calibration *calibrationSpecResponse `json:"calibration,omitempty"`
 }
 
 // executionSummary is the list-item wire shape: identity and metadata only,
@@ -100,7 +122,7 @@ func (h *handlers) getExecution(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, executionResponse{
+	resp := executionResponse{
 		ID:          c.ID,
 		Name:        c.Name,
 		ProjectID:   c.ProjectID,
@@ -111,7 +133,28 @@ func (h *handlers) getExecution(w http.ResponseWriter, r *http.Request) {
 		CreatedTime: c.CreatedTime,
 		LoadProfile: cfg.Content.Tests,
 		Data:        files,
-	})
+	}
+	// Phase 62: a calibrate_engine execution carries the search it was
+	// configured with. Only when the deployment has the calibration service
+	// (the same nil gate the calibration routes have); a calibrate-kind row
+	// with no recorded bounds (ErrNotFound) serves without the section --
+	// the spec is additive metadata, never a reason to hide the execution.
+	if c.Kind == execution.KindCalibrateEngine && h.deps.Calibrations != nil {
+		spec, err := h.deps.Calibrations.SpecFor(r.Context(), id)
+		switch {
+		case errors.Is(err, ports.ErrNotFound):
+		case err != nil:
+			respondError(w, err)
+			return
+		default:
+			resp.Calibration = &calibrationSpecResponse{
+				Criterion: spec.Criterion, SeedQPS: spec.SeedQPS, MaxQPS: spec.MaxQPS,
+				MaxSteps: spec.MaxSteps, HoldSeconds: spec.HoldSeconds,
+				CPU: spec.CPU, Memory: spec.Memory,
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *handlers) createExecution(w http.ResponseWriter, r *http.Request) {
