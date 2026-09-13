@@ -1375,6 +1375,107 @@ func TestAdvanceOne_MixedSearchStillWritesProfile(t *testing.T) {
 	}
 }
 
+// The exec 21 incident itself (2026-09-13 07:43Z), at its exact numbers:
+// calibration job 12 (2 CPU / 2 Gi, max_qps 20000) against a pod whose
+// honest capacity row read 4543.9 qps. Mid-run the node's flannel and
+// ingress-nginx restarted, and every step of the search classified
+// engine-saturated from the very first -- the opening 10 → 7.47 shortfall,
+// then the monotone descent 5 → 3.08, 2.5 → 2.13, 1.25 → 1.37, 0.625 →
+// 0.625 (the later steps produced full volume; the rig's own failures
+// dominated them, EngineImpaired's exact verdict). Bisection collapsed to
+// the 1 qps tolerance and wrote per_pod_qps = 0 over the honest row.
+// This pin freezes that shape: the guard fires, the job fails
+// environment_impaired, and the 4543.9 row survives byte for byte.
+func TestAdvanceOne_Exec21EnvironmentImpairmentPinsIncidentShape(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "2", Memory: "2Gi", SeedQPS: 10, MaxQPS: 20000, MaxSteps: 20, HoldSeconds: 30}
+	_, jobID, scenarioID := seedTriggeredCalibration(t, store, spec)
+
+	// The honest capacity_profile row job 12's overwrite destroyed (retry
+	// later restored it at 6684.4) -- what the guard must keep intact.
+	key := capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "2", Memory: "2Gi"}
+	honest := capacityprofile.CapacityProfile{
+		Key: key, PerPodQPS: 4543.9, SaturatedBy: calibration.SaturatedByEngine,
+		ScenarioFingerprint: "honest-fp", JobID: 11,
+	}
+	if err := store.UpsertCapacityProfile(ctx, honest); err != nil {
+		t.Fatalf("UpsertCapacityProfile (honest row): %v", err)
+	}
+
+	// Each incident step at its recorded request/achievement. The first
+	// three fall short of the 30s hold's implied volume (ShortOfVolume);
+	// the last two produced full volume but the impaired network made the
+	// generator's own failures dominate (EngineImpaired). All five must
+	// classify engine_saturated, and each burns its confirming retry.
+	type incidentStep struct {
+		requested, achieved float64
+		engineFailures      int64
+	}
+	steps := []incidentStep{
+		{requested: 10, achieved: 7.47},
+		{requested: 5, achieved: 3.08},
+		{requested: 2.5, achieved: 2.13},
+		{requested: 1.25, achieved: 1.37, engineFailures: 5},
+		{requested: 0.625, achieved: 0.625, engineFailures: 5},
+	}
+	var responses []stubRunnerResponse
+	for _, s := range steps {
+		rpt := report.Report{
+			Requested: report.Load{Throughput: s.requested, DurationSeconds: 30},
+			Achieved: report.Load{
+				Throughput: s.achieved, DurationSeconds: 30,
+				Samples: int64(s.achieved * 30),
+			},
+			Attribution: report.Attribution{Engine: s.engineFailures},
+		}
+		responses = append(responses, stubRunnerResponse{report: rpt}, stubRunnerResponse{report: rpt})
+	}
+	runner := &stubRunner{responses: responses}
+	svc := calibrationapp.NewService(store).WithRunner(runner).WithFingerprint(&stubFingerprinter{value: "fp"})
+
+	for tick := 1; tick <= 4; tick++ {
+		if found, err := svc.AdvanceOne(ctx, time.Now()); err != nil || !found {
+			t.Fatalf("tick %d: found=%v, err=%v", tick, found, err)
+		}
+	}
+	if found, err := svc.AdvanceOne(ctx, time.Now()); !found || !errors.Is(err, calibrationapp.ErrEnvironmentImpaired) {
+		t.Fatalf("terminal tick: found=%v, err=%v, want ErrEnvironmentImpaired", found, err)
+	}
+	if len(runner.calls) != 10 {
+		t.Fatalf("runner calls = %d, want 10 (5 saturated steps, each with its confirming retry)", len(runner.calls))
+	}
+
+	job, err := svc.Get(ctx, jobID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if job.Phase != calibration.PhaseFailed || job.FailureReason != calibrationapp.ErrEnvironmentImpaired.Error() {
+		t.Fatalf("job = %+v, want failed with the environment_impaired reason", job.CalibrationJob)
+	}
+
+	// The recorded history IS the incident: five engine-saturated steps on
+	// the monotone descent, not one clean.
+	if len(job.Steps) != 5 {
+		t.Fatalf("recorded steps = %d, want 5", len(job.Steps))
+	}
+	for i, want := range steps {
+		got := job.Steps[i]
+		if got.Classification != calibration.ClassificationEngineSaturated || got.RequestedQPS != want.requested || got.AchievedQPS != want.achieved {
+			t.Fatalf("step %d = %+v, want %v → %v engine_saturated", i, got, want.requested, want.achieved)
+		}
+	}
+
+	got, err := store.GetCapacityProfile(ctx, key)
+	if err != nil {
+		t.Fatalf("GetCapacityProfile: %v", err)
+	}
+	if got.PerPodQPS != 4543.9 || got.JobID != 11 || got.ScenarioFingerprint != "honest-fp" {
+		t.Fatalf("profile = %+v, want the honest 4543.9 row preserved", got)
+	}
+}
+
 func TestAdvanceOne_SpecForFailureMarksJobFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
