@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchShared, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
+import { compareRuns, fetchShared, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
 
 describe('listExecutionReports', () => {
   afterEach(() => {
@@ -47,6 +47,46 @@ describe('listExecutionReports', () => {
     await listExecutionReports(1, 10);
 
     expect(seenUrl).toBe('/api/executions/1/reports?limit=10');
+  });
+});
+
+// Phase 61: the batch compare fetch — ids as repeated run_ids[] params,
+// order preserved, verdict arrays normalized like every other report fetch.
+describe('compareRuns', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends run_ids[] params in request order and returns the payload', async () => {
+    let seenUrl = '';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return new Response(
+        JSON.stringify([{ run_id: 9, criteria: null }, { run_id: 8, criteria: ['p95>500ms'] }, { run_id: 10 }]),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const got = await compareRuns([9, 8, 10]);
+
+    expect(seenUrl).toBe('/api/runs/compare?run_ids[]=9&run_ids[]=8&run_ids[]=10');
+    expect(got.map((r) => r.run_id)).toEqual([9, 8, 10]);
+    // The verdict arrays normalize: null -> [], present stays.
+    expect(got[0].criteria).toEqual([]);
+    expect(got[1].criteria).toEqual(['p95>500ms']);
+  });
+
+  it('normalizes a null response body to an empty array', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('null', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    );
+
+    expect(await compareRuns([1, 2])).toEqual([]);
   });
 });
 

@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Clusters, { clusterCapacity, engineImages, formatCalibratedShortDate, formatClusterTime, originDescription } from './Clusters';
+import Clusters, { clusterCapacity, engineImageRows, engineImages, formatCalibratedShortDate, formatClusterTime, originDescription } from './Clusters';
 import type { Cluster } from '../api/clusters';
 import type { CapacityProfileSummary } from '../api/calibration';
 
@@ -81,6 +81,28 @@ describe('engineImages', () => {
   });
 });
 
+// Phase 61: the fleet summary's engine-image lines are grouped per unique
+// image with the clusters that run it -- a fleet on mixed engine versions
+// reads which cluster is on which image without scanning the table.
+describe('engineImageRows', () => {
+  it('groups cluster names under each unique image, blanks dropped, order kept', () => {
+    const list: Cluster[] = [
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'blank', sidecar_image: '' },
+    ];
+    expect(engineImageRows(list)).toEqual([
+      { image: 'registry.pve.heri.life/honryu/honryu-sidecar:phase16', clusters: ['honryu'] },
+      { image: 'registry.example.org/other:1', clusters: ['byoc-1', 'dup'] },
+    ]);
+  });
+
+  it('is empty when no cluster carries an engine image', () => {
+    expect(engineImageRows([{ ...registered, sidecar_image: '' }])).toEqual([]);
+  });
+});
+
 describe('Clusters fleet summary (phase 55, mounted)', () => {
   it('renders a labelled region listing the distinct engine images', async () => {
     await mountClusters([
@@ -105,6 +127,39 @@ describe('Clusters fleet summary (phase 55, mounted)', () => {
     expect(region).not.toBeNull();
     expect(region!.querySelectorAll('code')).toHaveLength(0);
     expect(region!.textContent).toContain('No registered clusters');
+  });
+
+  // Phase 61: the engine-image row is one line per unique image, attributed
+  // across the fleet; it vanishes entirely when no engine config exists.
+  it('renders one line per unique image with the clusters that run it (phase 61)', async () => {
+    await mountClusters([
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+    ]);
+
+    const row = container!.querySelector('[data-testid="fleet-engine-images"]');
+    expect(row).not.toBeNull();
+    // Two unique images across a three-cluster fleet: two lines.
+    const lines = Array.from(row!.querySelectorAll('p'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.textContent).toContain('registry.pve.heri.life/honryu/honryu-sidecar:phase16');
+    expect(lines[0]!.textContent).toContain('1 cluster: honryu');
+    expect(lines[1]!.querySelector('code')!.textContent).toBe('registry.example.org/other:1');
+    expect(lines[1]!.textContent).toContain('2 clusters: byoc-1, dup');
+  });
+
+  it('renders no engine-image row when no cluster carries an engine config (phase 61)', async () => {
+    await mountClusters([
+      { ...registered, sidecar_image: '' },
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: '' },
+    ]);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    expect(container!.querySelector('[data-testid="fleet-engine-images"]')).toBeNull();
+    expect(region!.querySelectorAll('code')).toHaveLength(0);
+    expect(region!.textContent).toContain('No registered cluster carries an engine image');
   });
 });
 

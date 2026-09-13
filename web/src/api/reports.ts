@@ -107,6 +107,18 @@ export async function getRunReport(runId: number): Promise<Report> {
   return normalizeVerdicts(await apiClient.get<Report>(`/runs/${runId}/report`));
 }
 
+/** GET /api/runs/compare — N runs' reports in one payload, request order
+ * preserved (the first id is the baseline). Each element is exactly the
+ * getRunReport shape; the verdict arrays are normalized the same way. The
+ * ids go on the wire as repeated run_ids[] params — the backend's other
+ * accepted spellings (comma-separated run_ids=, the run_a/run_b pair) are
+ * for hand-built URLs, not for this client. */
+export async function compareRuns(runIds: number[]): Promise<Report[]> {
+  const query = runIds.map((id) => `run_ids[]=${id}`).join('&');
+  const got = await apiClient.get<Report[] | null>(`/runs/compare?${query}`);
+  return (got ?? []).map(normalizeVerdicts);
+}
+
 /** The Phase 29 verdict arrays arrive null/absent when the backend had
  * none to send (Go's nil slice encodes as JSON null); normalized to [] so
  * every consumer can treat them as arrays. Shared by the session'd and
