@@ -101,10 +101,13 @@ interface MountOptions {
   reports?: Report[];
   series?: Record<number, () => Response>;
   reportsStatus?: number;
+  /** GET /api/runs/compare's reply; absent = the endpoint is down (500),
+   * which is the fallback path the older tests ride by default. */
+  compare?: () => Response;
 }
 
 async function renderCompare(opts: MountOptions = {}) {
-  const { url = '/executions/5/compare', reports = [runNewer, runOlder], series = {}, reportsStatus = 200 } = opts;
+  const { url = '/executions/5/compare', reports = [runNewer, runOlder], series = {}, reportsStatus = 200, compare } = opts;
   container = document.createElement('div');
   document.body.appendChild(container);
   vi.stubGlobal(
@@ -113,6 +116,9 @@ async function renderCompare(opts: MountOptions = {}) {
       const url_ = String(input);
       if (url_.endsWith('/api/executions/5/reports')) {
         return reportsStatus === 200 ? json(reports) : json({ message: 'reports backend down' }, reportsStatus);
+      }
+      if (url_.includes('/api/runs/compare')) {
+        return compare ? compare() : json({ message: 'compare backend down' }, 500);
       }
       for (const [runId, respond] of Object.entries(series)) {
         if (url_.endsWith(`/api/runs/${runId}/series`)) {
@@ -299,6 +305,142 @@ describe('RunCompare (mounted)', () => {
 
     await renderCompare({ reports: [] });
     expect(container!.querySelector('[role="region"]')!.getAttribute('aria-label')).toBe('Run comparison panel');
+  });
+});
+
+// Phase 61: three (or more) runs against one baseline. The selection rides
+// the same ?runs= spelling it always has, now with N ids; the summaries come
+// off GET /api/runs/compare; the verdict chips (phase 59) sit per candidate
+// column, exactly where the numbers they summarize sit.
+describe('RunCompare multi-run (phase 61)', () => {
+  // Run 8 is strictly better than baseline 9 on every metric (no chip);
+  // run 10 is worse across the board (chips).
+  const runBetter: Report = {
+    ...runOlder,
+    run_id: 8,
+    started_at: '2026-09-03T10:00:00Z',
+    error_rate: 0.015,
+    latency: { '50': 0.035, '95': 0.15, '99': 0.3 },
+    achieved: { concurrency: 10, throughput: 120, samples: 7200, failed: 36 },
+  };
+  const runWorse: Report = {
+    ...runNewer,
+    run_id: 10,
+    started_at: '2026-09-05T10:00:00Z',
+    error_rate: 0.03,
+    latency: { '50': 0.06, '95': 0.25, '99': 0.4 },
+    achieved: { concurrency: 10, throughput: 90, samples: 5400, failed: 162 },
+  };
+
+  it('renders three run columns from ?runs=a,b,c off the compare endpoint', async () => {
+    await renderCompare({
+      url: '/executions/5/compare?runs=9,8,10',
+      reports: [runNewer, runBetter, runWorse],
+      compare: () => json([runNewer, runBetter, runWorse]),
+    });
+
+    // Three slots, in query order.
+    expect(selectValue('select-run-a')).toBe('9');
+    expect(selectValue('select-run-b')).toBe('8');
+    expect(selectValue('select-run-c')).toBe('10');
+
+    // The table carries all three run columns -- a baseline plus one
+    // value/delta pair per candidate.
+    const head = container!.querySelector('[data-testid="delta-table"] thead')!;
+    for (const runId of [9, 8, 10]) {
+      expect(head.textContent).toContain(`Run #${runId}`);
+    }
+    const ths = Array.from(head.querySelectorAll('th'));
+    // The regressed chip is part of run 10's header text ("Run #10" plus
+    // the chip's own word) -- that is the per-column design, not noise.
+    expect(ths.map((th) => th.textContent!.trim())).toEqual([
+      'Metric', 'Run #9', 'Run #8', 'Δ vs #9', 'Run #10regressed', 'Δ vs #9',
+    ]);
+    // Six data cells per row: the label, the baseline value, then a
+    // value/delta pair per candidate.
+    const p50cells = Array.from(container!.querySelectorAll('tr[data-metric="p50"] td'));
+    expect(p50cells).toHaveLength(6);
+    // Values read candidate-against-baseline off the compare payload's
+    // request order: 8 is better (green, 0.035 vs 0.04 = -12.5%), 10 worse
+    // (red, 0.06 vs 0.04 = +50%).
+    expect(p50cells[2].textContent).toBe('35.0 ms');
+    expect(p50cells[3].textContent).toBe('-12.5%');
+    expect(p50cells[3].className).toContain('text-emerald-600');
+    expect(p50cells[4].textContent).toBe('60.0 ms');
+    expect(p50cells[5].textContent).toBe('+50.0%');
+    expect(p50cells[5].className).toContain('text-red-600');
+  });
+
+  it('chips only the candidate columns that regressed against the baseline', async () => {
+    await renderCompare({
+      url: '/executions/5/compare?runs=9,8,10',
+      reports: [runNewer, runBetter, runWorse],
+      compare: () => json([runNewer, runBetter, runWorse]),
+    });
+
+    // Exactly one chip, on run 10's column, naming its baseline.
+    const chips = Array.from(container!.querySelectorAll('[data-testid="compare-regression-chip"]'));
+    expect(chips).toHaveLength(1);
+    expect(chips[0].getAttribute('data-run-id')).toBe('10');
+    expect(chips[0].textContent).toBe('regressed');
+    expect(chips[0].getAttribute('title')).toContain('vs run #9');
+    // The healthy candidate's column header carries no chip.
+    expect(container!.querySelector('th[data-run-id="8"] [data-testid="compare-regression-chip"]')).toBeNull();
+  });
+
+  it('falls back to the reports list when the compare endpoint is down', async () => {
+    await renderCompare({ url: '/executions/5/compare?runs=9,8,10', reports: [runNewer, runBetter, runWorse] });
+
+    // The batch endpoint's failure costs the page nothing: same three
+    // columns, same deltas, computed from the already-loaded list.
+    const p50cells = Array.from(container!.querySelectorAll('tr[data-metric="p50"] td'));
+    expect(p50cells).toHaveLength(6);
+    expect(p50cells[5].textContent).toBe('+50.0%');
+    expect(container!.querySelector('[data-testid="compare-regression-chip"]')).not.toBeNull();
+  });
+
+  it('extends the selection via Add run, newest unselected run first', async () => {
+    // Most-recent-first, matching the wire: 10 (09-05), 9 (09-04), 8 (09-03).
+    await renderCompare({ reports: [runWorse, runNewer, runBetter] });
+
+    // Default selection: oldest baseline, newest candidate.
+    expect(selectValue('select-run-a')).toBe('8');
+    expect(selectValue('select-run-b')).toBe('10');
+    expect(container!.querySelector('[data-testid="select-run-c"]')).toBeNull();
+
+    const add = container!.querySelector('[data-testid="add-run"]') as HTMLButtonElement;
+    expect(add).not.toBeNull();
+    await act(async () => {
+      add.click();
+    });
+    // Run 9 is the only unselected run; the third slot appears carrying it.
+    expect(selectValue('select-run-c')).toBe('9');
+    expect(container!.querySelector('[data-testid="remove-run-2"]')).not.toBeNull();
+
+    const remove = container!.querySelector('[data-testid="remove-run-2"]') as HTMLButtonElement;
+    await act(async () => {
+      remove.click();
+    });
+    expect(container!.querySelector('[data-testid="select-run-c"]')).toBeNull();
+  });
+
+  // The two-run spelling the page has taken since it existed keeps working
+  // against the batch endpoint: ?runs=a,b still preselects exactly two
+  // slots, baseline first.
+  it('keeps the two-run ?runs=a,b URL working against the compare endpoint', async () => {
+    await renderCompare({
+      url: '/executions/5/compare?runs=9,8',
+      compare: () => json([runNewer, runOlder]),
+    });
+
+    expect(selectValue('select-run-a')).toBe('9');
+    expect(selectValue('select-run-b')).toBe('8');
+    expect(container!.querySelector('[data-testid="select-run-c"]')).toBeNull();
+    const head = container!.querySelector('[data-testid="delta-table"] thead')!;
+    expect(head.textContent).toContain('Run #9');
+    expect(head.textContent).toContain('Run #8');
+    // One value/delta pair -- the long-standing four-column table.
+    expect(container!.querySelectorAll('tr[data-metric="p50"] td')).toHaveLength(4);
   });
 });
 

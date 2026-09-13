@@ -270,6 +270,7 @@ var routes = []Route{
 	{"GET", "/api/executions/{execution_id}/reports", "reports", hf(func(h *handlers) http.HandlerFunc { return h.executionReports })},
 	{"GET", "/api/executions/{execution_id}/trend", "reports", hf(func(h *handlers) http.HandlerFunc { return h.executionTrend })},
 	{"GET", "/api/executions/{execution_id}/error-signatures", "reports", hf(func(h *handlers) http.HandlerFunc { return h.executionErrorSignatureHistory })},
+	{"GET", "/api/runs/compare", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runsCompare })},
 	{"GET", "/api/runs/{run_id}/report", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runReport })},
 	{"GET", "/api/runs/{run_id}/series", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runSeries })},
 	{"GET", "/api/runs/{run_id}/export", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runExport })},

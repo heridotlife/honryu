@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
@@ -79,6 +80,80 @@ type runReportResponse struct {
 	// while traceparent's parent-span id is not and is deliberately absent.
 	// Empty when the run predates correlation ids.
 	Baggage string `json:"baggage,omitempty"`
+}
+
+// compareMaxRuns caps how many runs one compare request may fetch: each id
+// is a sequential GetReport plus an ownership read, so an unbounded id list
+// would let one request spin the store. Twenty columns is past what any
+// delta table renders readably anyway.
+const compareMaxRuns = 20
+
+// parseCompareRunIDs extracts the run ids a compare request asks for, in
+// request order. Three spellings are honored, mixable: repeated run_ids[]
+// params, comma-separated run_ids values, and the two-run pair form
+// run_a/run_b. Duplicates pass through untouched -- the first id is the
+// caller's baseline and the client owns the same-run guard; this side stays
+// a faithful N-of-what-you-asked-for read.
+func parseCompareRunIDs(r *http.Request) ([]int64, error) {
+	q := r.URL.Query()
+	parts := append(q["run_ids[]"], q["run_ids"]...)
+	if len(parts) == 0 {
+		a, b := q.Get("run_a"), q.Get("run_b")
+		if a == "" && b == "" {
+			return nil, errors.New("no runs to compare: pass run_ids[] (repeated or comma-separated), or run_a and run_b")
+		}
+		parts = []string{a, b}
+	}
+	var ids []int64
+	for _, part := range parts {
+		for _, piece := range strings.Split(part, ",") {
+			piece = strings.TrimSpace(piece)
+			if piece == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(piece, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("invalid run id %q", piece)
+			}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, errors.New("no runs to compare: pass run_ids[] (repeated or comma-separated), or run_a and run_b")
+	}
+	if len(ids) > compareMaxRuns {
+		return nil, fmt.Errorf("too many runs to compare (%d): max %d", len(ids), compareMaxRuns)
+	}
+	return ids, nil
+}
+
+// runsCompare serves GET /api/runs/compare: N runs' stored reports in one
+// response, request order preserved (the first id is the caller's baseline),
+// each element exactly the shape GET /api/runs/{run_id}/report serves --
+// criteria verdict and APM layers included. Each run is authorized through
+// its own execution, exactly as the single-run route authorizes it, and the
+// first failure (unknown run, unauthorized execution) fails the whole
+// request: a compare of N-1 runs answers a question nobody asked.
+func (h *handlers) runsCompare(w http.ResponseWriter, r *http.Request) {
+	ids, err := parseCompareRunIDs(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := make([]runReportResponse, 0, len(ids))
+	for _, id := range ids {
+		rep, err := h.deps.Reports.GetReport(r.Context(), id)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		if err := h.authorizeReport(r, rep.ExecutionID); err != nil {
+			respondError(w, err)
+			return
+		}
+		out = append(out, h.withCriteriaVerdict(r, rep))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // runReport returns a run's stored report -- the durable record of what it
