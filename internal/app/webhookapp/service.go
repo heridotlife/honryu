@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,10 @@ type Service struct {
 	// queue drops rather than blocks, because the run being finalised must
 	// never wait on a receiver.
 	queue chan delivery
+	// sink, when non-nil, is the deploy-wide digest sink (WithDigestSink,
+	// phase 60): one https endpoint every fired report.digest is also
+	// POSTed to, alongside the firing project's own webhooks.
+	sink *webhook.Webhook
 	// startOnce starts the workers lazily on the first delivery, so a
 	// deployment with no webhooks registered runs zero background
 	// goroutines.
@@ -129,6 +134,20 @@ func (s *Service) WithTimeout(d time.Duration) *Service {
 	return s
 }
 
+// WithClient overrides the delivery HTTP client. The default is a bare
+// &http.Client{} whose transport is dedicated to deliveries so no caller's
+// request path can couple its timeouts into them; an override exists for
+// tests (a receiver whose TLS chain the process does not trust) and for
+// deployments pinning their own trust roots -- an override must stay
+// dedicated to deliveries for the same reason. Returns the receiver for
+// chaining.
+func (s *Service) WithClient(c *http.Client) *Service {
+	if c != nil {
+		s.client = c
+	}
+	return s
+}
+
 // WithBackoff overrides the wait between delivery attempts. Returns the
 // receiver for chaining.
 func (s *Service) WithBackoff(d time.Duration) *Service {
@@ -144,6 +163,27 @@ func (s *Service) WithQueueCapacity(n int) *Service {
 	if n > 0 {
 		s.queue = make(chan delivery, n)
 	}
+	return s
+}
+
+// WithDigestSink points the digest lane (DeliverDigest) at the
+// deployment's one digest sink, on top of whatever webhooks the firing
+// project has registered. An empty url unsets nothing and configures
+// nothing -- the unconfigured default. The https-only rule mirrors
+// webhook.Validate's (a sink is a webhook without a project row): a
+// cleartext or malformed sink is refused here, logged, and never stored,
+// with config.Load's gate as the deployment-level enforcement that fails
+// startup outright.
+func (s *Service) WithDigestSink(raw, secret string) *Service {
+	if raw == "" {
+		return s
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.Scheme != "https" {
+		s.log.Error("webhook: digest sink rejected (must be an absolute https URL); digest sink disabled", "url", redact(raw))
+		return s
+	}
+	s.sink = &webhook.Webhook{URL: strings.TrimSpace(raw), Secret: secret}
 	return s
 }
 
@@ -271,37 +311,59 @@ func (s *Service) Deliver(ctx context.Context, rep report.Report, hooks []webhoo
 	return firstErr
 }
 
-// DeliverEvent synchronously POSTs an already-serialised event payload to
-// each of the project's enabled webhooks. Deliver's generic sibling: the
-// same signing, bounds, and HTTP client as a run.completed delivery, for
-// events another use-case mints whole (phase 42: report.digest, whose
-// payload is the digest use-case's to build and store verbatim). The
-// caller's bytes are posted as-is -- the signature covers exactly what was
-// stored, so a receiver can cross-check a digest row against its delivery.
+// DeliverDigest synchronously POSTs an already-serialised report.digest
+// payload to every enabled webhook of the project and, when one is
+// configured (WithDigestSink), to the deploy-wide digest sink. The digest
+// lane's own entry point (phase 42 minted the payload, phase 60 added the
+// sink): the same signing, bounds, and HTTP client as a run.completed
+// delivery, and the caller's bytes are posted as-is -- the signature covers
+// exactly what was stored, so a receiver can cross-check a digest row
+// against its delivery. Synchronous on purpose: the caller is a background
+// loop (the digest scheduler's finalize), not a request path, so wanting
+// the outcome is free.
 //
-// Every enabled webhook is attempted however earlier ones answer; the
-// first failure is returned, the rest logged, mirroring Deliver's
-// error aggregation. Synchronous on purpose: the callers are background
-// loops (the digest scheduler), not request paths, so wanting the outcome
-// is free.
-func (s *Service) DeliverEvent(ctx context.Context, projectID int64, event string, body []byte) error {
+// The answer is a tri-state the digest record's delivery status is built
+// on: (true, nil) when at least one target confirmed -- the digest got out;
+// (false, err) when targets were attempted and none confirmed, or the
+// registry read failed; (false, nil) when there was nothing to notify at
+// all, which is "nothing to do", not a failure. Per-target failures are
+// logged and never stop the remaining targets; a single healthy receiver is
+// enough for delivered.
+func (s *Service) DeliverDigest(ctx context.Context, projectID int64, body []byte) (bool, error) {
 	hooks, err := s.repo.ListWebhooksByProject(ctx, projectID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	var firstErr error
+	targets := make([]webhook.Webhook, 0, len(hooks)+1)
 	for _, w := range hooks {
-		if !w.Enabled {
-			continue
+		if w.Enabled {
+			targets = append(targets, w)
 		}
+	}
+	if s.sink != nil {
+		targets = append(targets, *s.sink)
+	}
+	if len(targets) == 0 {
+		return false, nil
+	}
+	var (
+		delivered bool
+		firstErr  error
+	)
+	for _, w := range targets {
 		if err := s.deliverOne(ctx, w, body); err != nil {
-			s.log.Warn("webhook: event delivery failed", "event", event, "webhook_id", w.ID, "url", redact(w.URL), "error", err)
+			s.log.Warn("webhook: digest delivery failed", "webhook_id", w.ID, "url", redact(w.URL), "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
+			continue
 		}
+		delivered = true
 	}
-	return firstErr
+	if delivered {
+		return true, nil
+	}
+	return false, firstErr
 }
 
 // deliverOne POSTs body to the webhook with bounded retries: up to

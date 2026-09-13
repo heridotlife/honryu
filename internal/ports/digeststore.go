@@ -19,14 +19,19 @@ import (
 // ReportDigestStore persists the periodic report digests fired per project.
 //
 // A digest row is a projection of a past aggregation, written once and never
-// mutated: the serialised payload is stored verbatim so the in-app feed and
-// every webhook receiver see the same numbers for the same window forever.
-// Scoping is by project everywhere, and the latest row's window_end per
-// (project, period) doubles as the bookmark the next digest of that period
-// continues from -- which is why it is read here rather than recomputed.
+// mutated -- with the one exception MarkDigestDelivery exists for: the
+// delivery outcome, stamped at the finalize point (phase 60). The serialised
+// payload is stored verbatim so the in-app feed and every webhook receiver
+// see the same numbers for the same window forever. Scoping is by project
+// everywhere, and the latest row's window_end per (project, period) doubles
+// as the bookmark the next digest of that period continues from -- which is
+// why it is read here rather than recomputed.
 type ReportDigestStore interface {
 	// SaveDigest stores d and returns its storage-assigned id. The caller
 	// has already built the payload; created_time is the store's to stamp.
+	// Every row is born pending (DeliveryPending): delivery status is
+	// MarkDigestDelivery's to move, so a store must not persist whatever
+	// d carries there.
 	SaveDigest(ctx context.Context, d digest.Digest) (int64, error)
 	// ListDigestsByProject returns the project's digests, newest first,
 	// so the operator's feed reads like a history. A limit of zero or less
@@ -38,6 +43,13 @@ type ReportDigestStore interface {
 	// digests of the same period count: switching daily to weekly starts
 	// the weekly history fresh rather than tiling off a daily edge.
 	LastDigestWindowEnd(ctx context.Context, projectID int64, period digest.Period) (t time.Time, found bool, err error)
+	// MarkDigestDelivery records the finalize point's delivery outcome on
+	// one stored digest: status moves pending to delivered or failed, and
+	// deliveredAt (meaningful only for delivered) is when a receiver
+	// confirmed. A digest that was never delivered to stays pending --
+	// there is no mark for "not attempted". An unknown id is
+	// ports.ErrNotFound.
+	MarkDigestDelivery(ctx context.Context, id int64, status digest.DeliveryStatus, deliveredAt time.Time) error
 }
 
 // DigestScheduleStore persists the per-project digest firing schedules.

@@ -4,6 +4,7 @@ package digeststoretest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,6 +140,84 @@ func Run(t *testing.T, newStore NewStore) {
 		}
 		if !got.Equal(laterEnd) {
 			t.Errorf("window_end after second save = %v, want the newest %v", got, laterEnd)
+		}
+	})
+
+	// Rows are born pending whatever the caller's Digest said, and only
+	// MarkDigestDelivery moves them off pending -- the store, not the
+	// caller, owns the status lifecycle.
+	t.Run("SaveDigestAlwaysBornPending", func(t *testing.T) {
+		s := newStore(t)
+		start := time.Unix(1700_000_000, 0).UTC()
+		pre := mk(7, digest.PeriodDaily, start, start.Add(24*time.Hour))
+		pre.DeliveryStatus = digest.DeliveryDelivered // a caller's claim: ignored
+		id, err := s.SaveDigest(ctx, pre)
+		if err != nil {
+			t.Fatalf("SaveDigest: %v", err)
+		}
+		rows, err := s.ListDigestsByProject(ctx, 7, 0)
+		if err != nil {
+			t.Fatalf("ListDigestsByProject: %v", err)
+		}
+		if rows[0].DeliveryStatus != digest.DeliveryPending {
+			t.Errorf("saved status = %q, want pending regardless of the caller's value", rows[0].DeliveryStatus)
+		}
+		if rows[0].DeliveredAt != nil {
+			t.Errorf("saved delivered_at = %v, want nil", rows[0].DeliveredAt)
+		}
+		_ = id
+	})
+
+	t.Run("MarkDigestDeliveryPendingToDelivered", func(t *testing.T) {
+		s := newStore(t)
+		start := time.Unix(1700_000_000, 0).UTC()
+		id, err := s.SaveDigest(ctx, mk(7, digest.PeriodDaily, start, start.Add(24*time.Hour)))
+		if err != nil {
+			t.Fatalf("SaveDigest: %v", err)
+		}
+		at := start.Add(25 * time.Hour)
+		if err := s.MarkDigestDelivery(ctx, id, digest.DeliveryDelivered, at); err != nil {
+			t.Fatalf("MarkDigestDelivery(delivered): %v", err)
+		}
+		rows, err := s.ListDigestsByProject(ctx, 7, 0)
+		if err != nil {
+			t.Fatalf("ListDigestsByProject: %v", err)
+		}
+		if rows[0].DeliveryStatus != digest.DeliveryDelivered {
+			t.Errorf("status = %q, want delivered", rows[0].DeliveryStatus)
+		}
+		if rows[0].DeliveredAt == nil || !rows[0].DeliveredAt.Equal(at) {
+			t.Errorf("delivered_at = %v, want %v", rows[0].DeliveredAt, at)
+		}
+	})
+
+	t.Run("MarkDigestDeliveryPendingToFailed", func(t *testing.T) {
+		s := newStore(t)
+		start := time.Unix(1700_000_000, 0).UTC()
+		id, err := s.SaveDigest(ctx, mk(7, digest.PeriodDaily, start, start.Add(24*time.Hour)))
+		if err != nil {
+			t.Fatalf("SaveDigest: %v", err)
+		}
+		at := start.Add(25 * time.Hour)
+		if err := s.MarkDigestDelivery(ctx, id, digest.DeliveryFailed, at); err != nil {
+			t.Fatalf("MarkDigestDelivery(failed): %v", err)
+		}
+		rows, err := s.ListDigestsByProject(ctx, 7, 0)
+		if err != nil {
+			t.Fatalf("ListDigestsByProject: %v", err)
+		}
+		if rows[0].DeliveryStatus != digest.DeliveryFailed {
+			t.Errorf("status = %q, want failed", rows[0].DeliveryStatus)
+		}
+		if rows[0].DeliveredAt != nil {
+			t.Errorf("delivered_at = %v, want nil (nothing confirmed)", rows[0].DeliveredAt)
+		}
+	})
+
+	t.Run("MarkDigestDeliveryUnknownIDNotFound", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.MarkDigestDelivery(ctx, 4242, digest.DeliveryDelivered, time.Now()); !errors.Is(err, ports.ErrNotFound) {
+			t.Fatalf("MarkDigestDelivery(unknown) = %v, want ports.ErrNotFound", err)
 		}
 	})
 

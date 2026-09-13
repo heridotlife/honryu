@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,13 +13,16 @@ import (
 
 	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/campaignapp"
+	"github.com/heridotlife/honryu/internal/app/digestapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
+	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/config"
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/campaign"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
+	"github.com/heridotlife/honryu/internal/domain/digest"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
@@ -27,6 +32,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/schedule"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
+	"github.com/heridotlife/honryu/internal/domain/webhook"
 	"github.com/heridotlife/honryu/internal/ports"
 	"github.com/heridotlife/honryu/internal/ports/fake"
 )
@@ -993,5 +999,88 @@ func TestReapIdleOnce_ReapsIdleEngines(t *testing.T) {
 	}
 	if _, err := store.GetExecution(ctx, executionID); err != nil {
 		t.Fatalf("GetExecution after reap: %v (records must survive)", err)
+	}
+}
+
+// TestFireDigestOnce_ClaimsFiresAndDelivers pins the digest loop's trigger
+// (phase 60): fireDigestOnce is the production path -- the tick claims a
+// due schedule, Fire finalizes and stores the digest, and the real webhook
+// machinery delivers it, recording the outcome on the row. A never-fired
+// schedule is immediately due, so no clock travel is needed.
+func TestFireDigestOnce_ClaimsFiresAndDelivers(t *testing.T) {
+	ctx := context.Background()
+	store := fake.NewStore()
+	p, _ := project.New("web", "honryu", "")
+	projectID, err := store.CreateProject(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	e, _ := execution.New("peak", projectID)
+	executionID, err := store.CreateExecution(ctx, e)
+	if err != nil {
+		t.Fatalf("CreateExecution: %v", err)
+	}
+	reportedAt := time.Now().Add(-2 * time.Hour) // inside the first daily window
+	if err := store.SaveReport(ctx, report.Report{
+		ExecutionID: executionID,
+		RunID:       1,
+		Engine:      taurus.ExecutorJMeter,
+		StartedAt:   reportedAt,
+		EndedAt:     reportedAt.Add(time.Minute),
+		Outcome:     taurus.OutcomePassed,
+		Achieved:    report.Load{Samples: 100},
+	}); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if err := store.UpsertDigestSchedule(ctx, projectID, digest.PeriodDaily, true); err != nil {
+		t.Fatalf("UpsertDigestSchedule: %v", err)
+	}
+
+	var postCount int
+	var gotSignature string
+	rcv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		postCount++
+		gotSignature = r.Header.Get("X-Honryu-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer rcv.Close()
+	if _, err := store.CreateWebhook(ctx, webhook.Webhook{
+		ProjectID: projectID, URL: rcv.URL + "/hook", Secret: "tick-secret", Enabled: true,
+	}); err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+
+	hooks := webhookapp.NewService(store).WithBackoff(time.Millisecond)
+	digests := digestapp.NewService(store).WithDeliverer(hooks)
+
+	fireDigestOnce(ctx, digests)
+
+	if postCount != 1 {
+		t.Fatalf("receiver saw %d POSTs, want 1 -- the tick must deliver the fired digest", postCount)
+	}
+	if gotSignature == "" {
+		t.Error("signature header missing; the delivery carries a secret")
+	}
+	rows, err := digests.ListForProject(ctx, projectID, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("stored digests = %d (%v), want 1", len(rows), err)
+	}
+	if rows[0].DeliveryStatus != digest.DeliveryDelivered {
+		t.Errorf("row status = %q, want delivered", rows[0].DeliveryStatus)
+	}
+}
+
+// TestFireDigestOnce_NothingDueIsANoOp mirrors fireOnce's no-due contract:
+// a tick with no claimable schedule contacts no receiver and stores nothing.
+func TestFireDigestOnce_NothingDueIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	store := fake.NewStore()
+	digests := digestapp.NewService(store).WithDeliverer(webhookapp.NewService(store))
+
+	fireDigestOnce(ctx, digests)
+
+	rows, err := digests.ListForProject(ctx, 1, 0)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("stored digests = %d (%v), want none", len(rows), err)
 	}
 }

@@ -15,12 +15,14 @@ var _ ports.ReportDigestStore = (*Repository)(nil)
 
 // digestColumns is the report_digest projection, shared by every read so a
 // column added to one query cannot be forgotten in another.
-const digestColumns = `id, project_id, period, window_start, window_end, payload, created_time`
+const digestColumns = `id, project_id, period, window_start, window_end, payload, created_time, delivery_status, delivered_at`
 
 // SaveDigest stores a fired digest and returns its AUTO_INCREMENT id.
 // created_time is the database's to assign (DEFAULT CURRENT_TIMESTAMP);
 // payload is stored verbatim -- the row exists so the delivered bytes can be
-// re-served exactly, not so they can be normalised.
+// re-served exactly, not so they can be normalised. The row is born
+// pending: delivery_status is not in the insert (the column's DEFAULT
+// 'pending' owns it), MarkDigestDelivery is the only path that moves it.
 func (r *Repository) SaveDigest(ctx context.Context, d digest.Digest) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO report_digest (project_id, period, window_start, window_end, payload) VALUES (?,?,?,?,?)`,
@@ -66,6 +68,23 @@ func (r *Repository) ListDigestsByProject(ctx context.Context, projectID int64, 
 	return out, rows.Err()
 }
 
+// MarkDigestDelivery records the finalize point's delivery outcome on one
+// stored digest. delivered_at is set only for delivered (NullTime: a failed
+// delivery confirmed nothing, so its column stays NULL).
+func (r *Repository) MarkDigestDelivery(ctx context.Context, id int64, status digest.DeliveryStatus, deliveredAt time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE report_digest SET delivery_status = ?, delivered_at = ? WHERE id = ?`,
+		string(status), sql.NullTime{Time: deliveredAt, Valid: status == digest.DeliveryDelivered}, id,
+	)
+	if err != nil {
+		return fmt.Errorf("mysql: mark digest delivery: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("mysql: mark digest delivery %d: %w", id, ports.ErrNotFound)
+	}
+	return nil
+}
+
 // LastDigestWindowEnd returns the project's most recent digest window_end
 // under period, or found=false when that pairing has never fired. The
 // newest row wins by id, not window_end: ids are assigned in fire order, so
@@ -88,13 +107,16 @@ func (r *Repository) LastDigestWindowEnd(ctx context.Context, projectID int64, p
 
 // scanDigest reads one report_digest row. period is validated on the way
 // out so a hand-edited row outside the grammar surfaces as an error, not as
-// a Period the rest of the code silently mis-times.
+// a Period the rest of the code silently mis-times; delivery_status is
+// normalized so a pre-0060 row (column defaulting in as its empty
+// neighbour) reads as the pending it is.
 func scanDigest(s rowScanner) (digest.Digest, error) {
 	var (
-		got    digest.Digest
-		period string
+		got         digest.Digest
+		period      string
+		deliveredAt sql.NullTime
 	)
-	if err := s.Scan(&got.ID, &got.ProjectID, &period, &got.WindowStart, &got.WindowEnd, &got.Payload, &got.CreatedTime); err != nil {
+	if err := s.Scan(&got.ID, &got.ProjectID, &period, &got.WindowStart, &got.WindowEnd, &got.Payload, &got.CreatedTime, &got.DeliveryStatus, &deliveredAt); err != nil {
 		return digest.Digest{}, err
 	}
 	parsed, err := digest.ParsePeriod(period)
@@ -102,5 +124,11 @@ func scanDigest(s rowScanner) (digest.Digest, error) {
 		return digest.Digest{}, fmt.Errorf("mysql: digest %d: %w", got.ID, err)
 	}
 	got.Period = parsed
+	if got.DeliveryStatus == "" {
+		got.DeliveryStatus = digest.DeliveryPending
+	}
+	if deliveredAt.Valid {
+		got.DeliveredAt = &deliveredAt.Time
+	}
 	return got, nil
 }

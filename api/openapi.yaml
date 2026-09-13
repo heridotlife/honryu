@@ -323,6 +323,19 @@ components:
             failed: { type: integer }
             aborted: { type: integer }
         threshold_failures: { type: integer }
+        delivery_status:
+          type: string
+          enum: [pending, delivered, failed]
+          description: >-
+            What became of the outbound delivery, stamped at the fire:
+            pending (no confirmed delivery recorded -- nothing configured,
+            no deliverer, or a pre-0060 row), delivered (at least one
+            receiver confirmed), failed (attempted, none confirmed).
+        delivered_at:
+          type: string
+          format: date-time
+          description: When a receiver confirmed the delivery; absent unless
+            delivery_status is delivered.
         executions:
           type: array
           items:

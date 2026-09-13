@@ -133,8 +133,10 @@ func run(parent context.Context, getenv func(string) string) error {
 	// The digest loop's delivery sink: webhookapp's generic event path,
 	// same signing and bounds as a run.completed delivery. This binary
 	// never wires RunCompleted's queue (no metrics service here), so the
-	// service stays delivery-only.
-	webhooks := webhookapp.NewService(repo)
+	// service stays delivery-only. WithDigestSink adds the deploy-wide
+	// digest sink when one is configured (phase 60); with no
+	// HONRYU_DIGEST_WEBHOOK_URL it is the unconfigured no-op.
+	webhooks := webhookapp.NewService(repo).WithDigestSink(cfg.Digest.WebhookURL, cfg.Digest.WebhookSecret)
 	digests := digestapp.NewService(repo).WithDeliverer(webhooks)
 
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)

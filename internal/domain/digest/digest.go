@@ -14,6 +14,26 @@ import (
 // compare with errors.Is.
 var ErrPeriodInvalid = errors.New("digest: period must be daily or weekly")
 
+// DeliveryStatus is what became of a digest's outbound delivery, recorded
+// on the stored row at the finalize point. Three words, the whole story:
+type DeliveryStatus string
+
+const (
+	// DeliveryPending means no confirmed delivery has been recorded: the
+	// row was fired with no deliverer wired, nothing was configured to
+	// notify, or it predates delivery tracking. It is the zero state a
+	// row is born in, not an error.
+	DeliveryPending DeliveryStatus = "pending"
+	// DeliveryDelivered means at least one configured receiver confirmed
+	// the digest (2xx) at DeliveredAt. A sibling receiver's failure does
+	// not demote this: the digest got out.
+	DeliveryDelivered DeliveryStatus = "delivered"
+	// DeliveryFailed means delivery was attempted and no receiver
+	// confirmed -- the window is otherwise lost to receivers, since
+	// digests tile the timeline and are never re-fired.
+	DeliveryFailed DeliveryStatus = "failed"
+)
+
 // Period is how often a project's digest fires. The stored value is the
 // word, not its duration, so a schedule row stays legible in the database
 // and the grammar can only grow by adding a word here.
@@ -69,6 +89,13 @@ type Digest struct {
 	WindowEnd   time.Time
 	// Payload is the delivered report.digest event body, verbatim.
 	Payload []byte
+	// DeliveryStatus records what became of the outbound delivery at the
+	// finalize point: pending (no confirmed delivery yet), delivered, or
+	// failed. Rows are born pending; only MarkDigestDelivery moves them.
+	DeliveryStatus DeliveryStatus
+	// DeliveredAt is when a receiver confirmed the delivery; nil unless
+	// DeliveryStatus is delivered.
+	DeliveredAt *time.Time
 	// CreatedTime is when the digest was fired and stored.
 	CreatedTime time.Time
 }
