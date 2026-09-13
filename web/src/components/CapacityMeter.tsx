@@ -1,10 +1,9 @@
 // Plain-SVG horizontal capacity bar (Sparkline house style: no charting
 // library, currentColor so Tailwind's text classes drive it) plus the
-// honest state for absent numbers. Phase 22 scope check: GET /api/clusters'
-// clusterResponse carries registration fields only -- no engine counts, no
-// ceiling -- so every cluster row today renders "no capacity reported".
-// The bar exists so the page lights up the day the backend grows real
-// fields (phase 23 backend candidate; see the phase's PROGRESS.md).
+// honest state for absent numbers. Since phase 25 the numbers are real:
+// quota-wired deployments put engines_used/engines_ceiling on every
+// /api/clusters row (unwired ones omit the fields entirely), so a row
+// lights the bar up or renders the honest one-liner, per row.
 
 /** Bar geometry: width is also the fill's cap, so overflow never spills. */
 const BAR_WIDTH = 120;

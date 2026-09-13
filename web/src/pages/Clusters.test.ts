@@ -1,8 +1,21 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Clusters, { clusterCapacity, formatClusterTime, originDescription } from './Clusters';
+import Clusters, { clusterCapacity, engineImages, formatClusterTime, originDescription } from './Clusters';
 import type { Cluster } from '../api/clusters';
+
+/** A registered cluster row exactly as GET /api/clusters serves it. */
+const registered: Cluster = {
+  name: 'honryu',
+  api_url: 'https://kubernetes.default.svc:443',
+  ingest_url: 'https://honryu.pve.heri.life/api/ingest',
+  sidecar_image: 'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
+  namespace: 'honryu',
+  secret_ref: 'cluster-honryu-explicit-creds',
+  origin: 'operator',
+  created_by: 'alice',
+  created_time: '2026-09-05T10:29:02.848672Z',
+};
 
 describe('originDescription', () => {
   // Both wire values need a credential-ownership explanation -- the page
@@ -14,18 +27,6 @@ describe('originDescription', () => {
 });
 
 describe('clusterCapacity', () => {
-  const registered: Cluster = {
-    name: 'honryu',
-    api_url: 'https://kubernetes.default.svc:443',
-    ingest_url: 'https://honryu.pve.heri.life/api/ingest',
-    sidecar_image: 'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
-    namespace: 'honryu',
-    secret_ref: 'cluster-honryu-explicit-creds',
-    origin: 'operator',
-    created_by: 'alice',
-    created_time: '2026-09-05T10:29:02.848672Z',
-  };
-
   // Phase 25 flipped the phase-22 honesty pin: capacity numbers now ride
   // the wire (engines_used/engines_ceiling, both required), and their
   // absence -- no quota ledger wired, or a half-wired read -- still maps to
@@ -56,6 +57,56 @@ describe('formatClusterTime', () => {
   });
 });
 
+// Phase 55: the fleet summary card renders exactly what cluster rows
+// carry -- distinct sidecar images as plain code text (the engine images
+// config has no API surface), and no capacity-profiles row (no list
+// endpoint exists; only per-scenario reads).
+describe('engineImages', () => {
+  it('collects distinct sidecar images in first-seen order, dropping blanks', () => {
+    const list: Cluster[] = [
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'blank', sidecar_image: '' },
+    ];
+    expect(engineImages(list)).toEqual([
+      'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
+      'registry.example.org/other:1',
+    ]);
+  });
+
+  it('is empty for an empty registry', () => {
+    expect(engineImages([])).toEqual([]);
+  });
+});
+
+describe('Clusters fleet summary (phase 55, mounted)', () => {
+  it('renders a labelled region listing the distinct engine images', async () => {
+    await mountClusters([
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+    ]);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    const codes = Array.from(region!.querySelectorAll('code')).map((el) => el.textContent);
+    expect(codes).toEqual([
+      'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
+      'registry.example.org/other:1',
+    ]);
+  });
+
+  it('renders an honest line when no clusters are registered', async () => {
+    await mountClusters([]);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    expect(region!.querySelectorAll('code')).toHaveLength(0);
+    expect(region!.textContent).toContain('No registered clusters');
+  });
+});
+
 // Phase 51 landmark gate (mounted; createElement so this stays a .ts file):
 // the page's outermost element is a labelled region a screen reader can jump to.
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,20 +129,54 @@ afterEach(() => {
 
 describe('Clusters landmarks (phase 51)', () => {
   it('renders the page as a labelled region', async () => {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    );
-    root = createRoot(container);
-    await act(async () => {
-      root!.render(createElement(Clusters));
-    });
-    await act(async () => {}); // flush the listClusters fetch
+    await mountClusters([]);
 
     const region = container!.querySelector('[role="region"]');
     expect(region).not.toBeNull();
     expect(region!.getAttribute('aria-label')).toBe('Clusters panel');
+  });
+});
+
+/** Mount the page over a stubbed /api/clusters reply (the landmark test's
+ * createElement + act pattern; module-level container/root so afterEach
+ * cleans up). Phase 55 additions pin what a browser actually sees. */
+async function mountClusters(payload: Cluster[]) {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    )
+  );
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(createElement(Clusters));
+  });
+  await act(async () => {}); // flush the listClusters fetch
+}
+
+// Phase 55: clusterCapacity's unit pins cover the mapping; these mounted
+// tests pin the page-level light-up the stale phase-22 comments claimed
+// could never happen -- a row carrying both wire fields renders a real
+// meter, a row without them renders the honest line.
+describe('Clusters capacity meters (phase 55, mounted)', () => {
+  it('lights the meter up when a row carries both wire fields', async () => {
+    await mountClusters([{ ...registered, engines_used: 2, engines_ceiling: 12 }]);
+
+    const meter = container!.querySelector('[role="img"]');
+    expect(meter).not.toBeNull();
+    expect(meter!.getAttribute('aria-label')).toBe('2 of 12 engines in use');
+    expect(container!.textContent).toContain('2 / 12 engines');
+    expect(container!.querySelectorAll('rect')).toHaveLength(2); // track + fill
+  });
+
+  it('renders the honest no-capacity line when the fields are absent', async () => {
+    await mountClusters([registered]);
+
+    expect(container!.querySelector('[role="img"]')).toBeNull();
+    expect(container!.querySelectorAll('rect')).toHaveLength(0);
+    expect(container!.textContent).toContain('no capacity reported');
   });
 });

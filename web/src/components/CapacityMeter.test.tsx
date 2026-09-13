@@ -1,9 +1,9 @@
 // CapacityMeter's mounted tests (StageEditor.test.tsx's createRoot + act
-// pattern; no testing-library in the house deps). Phase 22's honest scope:
-// GET /api/clusters exposes no capacity numbers, so the states that matter
-// are (a) the honest "no capacity reported" line when numbers are absent
-// and (b) the bar geometry when they exist -- so the page lights up the
-// day the backend grows real fields.
+// pattern; no testing-library in the house deps). Since phase 25 the
+// numbers are real on quota-wired deployments, so the states that matter
+// are (a) the honest "no capacity reported" line when the wire fields are
+// absent and (b) the bar geometry when they exist -- which is exactly what
+// /api/clusters rows carry today.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
