@@ -1250,6 +1250,131 @@ func TestAdvanceOne_NeitherTerminatesAtTheSafetyCeiling(t *testing.T) {
 	}
 }
 
+// The phase 58 guard: a search in which not one step classified clean is
+// not a capacity measurement at all. A healthy pod always produces at least
+// the seed-rate step clean; every step engine-saturated from the very first
+// is the signature of an environment that broke mid-run (exec 21: the
+// node's flannel and ingress-nginx restarted, every step read saturated,
+// and the bisect collapsed 10 → 0.625 into per_pod_qps = 0) -- and that
+// confidently-wrong profile must not overwrite the honest row a previous
+// calibration wrote. The job ends failed with an environment_impaired
+// reason instead, and the stored profile survives untouched.
+func TestAdvanceOne_AllSaturatedSearchFailsWithoutWritingProfile(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, MaxQPS: 1000, MaxSteps: 20, HoldSeconds: 1}
+	_, jobID, scenarioID := seedTriggeredCalibration(t, store, spec)
+
+	// The honest row a previous, healthy calibration wrote -- what this
+	// search must not be allowed to overwrite.
+	key := capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"}
+	honest := capacityprofile.CapacityProfile{
+		Key: key, PerPodQPS: 500, SaturatedBy: calibration.SaturatedByEngine,
+		ScenarioFingerprint: "honest-fp", JobID: 7,
+	}
+	if err := store.UpsertCapacityProfile(ctx, honest); err != nil {
+		t.Fatalf("UpsertCapacityProfile (honest row): %v", err)
+	}
+
+	// Every step saturated, from the very first: the bisect collapses
+	// 10 → 5 → 2.5 → 1.25 → 0.625 and terminates on tolerance with no clean
+	// step to floor the bracket -- the written profile would read
+	// per_pod_qps = 0. Each saturated step burns a confirming retry, so two
+	// scripted responses per step.
+	var responses []stubRunnerResponse
+	for _, pair := range [][2]float64{{10, 4}, {5, 2}, {2.5, 1}, {1.25, 0.5}, {0.625, 0.3}} {
+		short := engineSaturatedReport(pair[0], pair[1])
+		responses = append(responses, stubRunnerResponse{report: short}, stubRunnerResponse{report: short})
+	}
+	runner := &stubRunner{responses: responses}
+	svc := calibrationapp.NewService(store).WithRunner(runner).WithFingerprint(&stubFingerprinter{value: "fp"})
+
+	for tick := 1; tick <= 4; tick++ {
+		if found, err := svc.AdvanceOne(ctx, time.Now()); err != nil || !found {
+			t.Fatalf("tick %d: found=%v, err=%v", tick, found, err)
+		}
+	}
+	if found, err := svc.AdvanceOne(ctx, time.Now()); !found || !errors.Is(err, calibrationapp.ErrEnvironmentImpaired) {
+		t.Fatalf("terminal tick: found=%v, err=%v, want ErrEnvironmentImpaired", found, err)
+	}
+	if len(runner.calls) != 10 {
+		t.Fatalf("runner calls = %d, want 10 (5 saturated steps, each with its confirming retry)", len(runner.calls))
+	}
+
+	job, err := svc.Get(ctx, jobID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if job.Phase != calibration.PhaseFailed {
+		t.Fatalf("job.Phase = %q, want failed -- an environment-impaired search is not a finding", job.Phase)
+	}
+	if job.FailureReason != calibrationapp.ErrEnvironmentImpaired.Error() {
+		t.Fatalf("FailureReason = %q, want %q", job.FailureReason, calibrationapp.ErrEnvironmentImpaired.Error())
+	}
+
+	got, err := store.GetCapacityProfile(ctx, key)
+	if err != nil {
+		t.Fatalf("GetCapacityProfile: %v", err)
+	}
+	if got.PerPodQPS != honest.PerPodQPS || got.ScenarioFingerprint != honest.ScenarioFingerprint || got.JobID != honest.JobID {
+		t.Fatalf("profile = %+v, want the pre-seeded honest row untouched", got)
+	}
+
+	// A failed job is never claimed again -- the guard ends the search for
+	// good.
+	if found, err := svc.AdvanceOne(ctx, time.Now()); found || err != nil {
+		t.Fatalf("post-failure AdvanceOne: found=%v, err=%v, want no job due", found, err)
+	}
+}
+
+// The guard fires only on the zero-clean case: a search that did produce
+// clean steps is a real measurement even when it also recorded saturated
+// ones, and the normal terminal write stands.
+func TestAdvanceOne_MixedSearchStillWritesProfile(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, MaxQPS: 1000, MaxSteps: 3, HoldSeconds: 1}
+	_, jobID, scenarioID := seedTriggeredCalibration(t, store, spec)
+
+	runner := &stubRunner{responses: []stubRunnerResponse{
+		{report: cleanReport(10, 10)},          // tick 1: clean, doubles to 20
+		{report: engineSaturatedReport(20, 4)}, // tick 2 attempt: saturated
+		{report: engineSaturatedReport(20, 4)}, // tick 2 retry: confirmed
+		{report: cleanReport(15, 15)},          // tick 3: clean; budget spent, done
+	}}
+	svc := calibrationapp.NewService(store).WithRunner(runner).WithFingerprint(&stubFingerprinter{value: "fp"})
+
+	for tick := 1; tick <= 2; tick++ {
+		if found, err := svc.AdvanceOne(ctx, time.Now()); err != nil || !found {
+			t.Fatalf("tick %d: found=%v, err=%v", tick, found, err)
+		}
+	}
+	if found, err := svc.AdvanceOne(ctx, time.Now()); !found || err != nil {
+		t.Fatalf("terminal tick: found=%v, err=%v", found, err)
+	}
+
+	job, err := svc.Get(ctx, jobID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if job.Phase != calibration.PhaseDone || job.Result == nil || job.Result.SaturatedBy != calibration.SaturatedByEngine {
+		t.Fatalf("job = %+v, want Done/engine", job.CalibrationJob)
+	}
+	if job.FailureReason != "" {
+		t.Fatalf("FailureReason = %q, want empty -- a mixed search is a valid measurement", job.FailureReason)
+	}
+
+	profile, err := store.GetCapacityProfile(ctx, capacityprofile.Key{ScenarioID: scenarioID, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi"})
+	if err != nil {
+		t.Fatalf("GetCapacityProfile: %v", err)
+	}
+	if profile.PerPodQPS != 15 || profile.SaturatedBy != calibration.SaturatedByEngine || profile.JobID != jobID {
+		t.Fatalf("profile = %+v, want the mixed search's own honest write (15, this job)", profile)
+	}
+}
+
 func TestAdvanceOne_SpecForFailureMarksJobFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
