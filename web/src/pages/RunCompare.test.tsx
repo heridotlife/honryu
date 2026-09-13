@@ -210,6 +210,33 @@ describe('RunCompare (mounted)', () => {
     expect(deltaCell('p99').className).not.toContain('text-emerald-600');
   });
 
+  // Phase 59: the delta card carries a summary verdict chip only when at
+  // least one metric regressed -- the absence is the "stable" signal, and
+  // the row cells already color the individual movements.
+  it('chips the delta card when a metric regressed, and only then (phase 59)', async () => {
+    await renderCompare();
+    // Default fixture's only regression is error rate (1% -> 2%, +100%);
+    // the title names it against the baseline run, no recompute beyond the
+    // deltas the table itself already renders.
+    const chip = container!.querySelector('[data-testid="compare-regression-chip"]') as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe('regressed');
+    expect(chip.title).toBe('Error rate +100.0% vs run #8');
+
+    // B strictly better-or-equal on every metric against A: no chip, table stays.
+    const betterRun: Report = {
+      ...runNewer,
+      run_id: 10,
+      started_at: '2026-09-05T10:00:00Z',
+      error_rate: 0.005,
+      latency: { '50': 0.035, '95': 0.15, '99': 0.3 },
+      achieved: { concurrency: 10, throughput: 120, samples: 7200, failed: 36 },
+    };
+    await renderCompare({ reports: [betterRun, runNewer] });
+    expect(container!.querySelector('[data-testid="compare-regression-chip"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
+  });
+
   it('swaps runs when a selector changes (selector wiring)', async () => {
     await renderCompare(); // A=8, B=9 by default.
 
