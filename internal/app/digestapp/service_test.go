@@ -21,20 +21,30 @@ import (
 // delivery records what the fake Deliverer was asked to send.
 type delivery struct {
 	projectID int64
-	event     string
 	body      []byte
 }
 
-// fakeDeliverer records deliveries; failErr, when set, fails every call so
-// tests can prove a delivery failure never fails the fire.
+// fakeDeliverer records deliveries; failErr, when set, fails every call (a
+// delivery attempted and lost) so tests can prove a delivery failure never
+// fails the fire; noTargets makes every call answer the tri-state's third
+// arm, (false, nil) -- nothing configured to notify. Otherwise it confirms
+// delivery, as a healthy receiver would.
 type fakeDeliverer struct {
 	calls   []delivery
 	failErr error
+	noTar   bool
 }
 
-func (f *fakeDeliverer) DeliverEvent(_ context.Context, projectID int64, event string, body []byte) error {
-	f.calls = append(f.calls, delivery{projectID: projectID, event: event, body: body})
-	return f.failErr
+func (f *fakeDeliverer) DeliverDigest(_ context.Context, projectID int64, body []byte) (bool, error) {
+	f.calls = append(f.calls, delivery{projectID: projectID, body: body})
+	switch {
+	case f.failErr != nil:
+		return false, f.failErr
+	case f.noTar:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // fixture is a store seeded with two executions under one project (plus an
@@ -264,8 +274,8 @@ func TestFireDeliversStoredBytes(t *testing.T) {
 		t.Fatalf("deliveries = %d, want 1", len(f.deliv.calls))
 	}
 	got := f.deliv.calls[0]
-	if got.projectID != f.projA || got.event != digestapp.EventDigest {
-		t.Errorf("delivery = project %d event %q, want project %d event %q", got.projectID, got.event, f.projA, digestapp.EventDigest)
+	if got.projectID != f.projA {
+		t.Errorf("delivery = project %d, want project %d", got.projectID, f.projA)
 	}
 	if string(got.body) != string(d.Payload) {
 		t.Errorf("delivered body = %s, want the stored payload verbatim", got.body)
@@ -290,7 +300,8 @@ func TestFireDeliveryFailureDoesNotFailFire(t *testing.T) {
 }
 
 // TestFireWithoutDelivererStoresOnly: no deliverer wired (the NewService
-// default) is a valid deployment -- the in-app feed alone.
+// default) is a valid deployment -- the in-app feed alone, and the row
+// stays pending: nothing was ever attempted on its behalf.
 func TestFireWithoutDelivererStoresOnly(t *testing.T) {
 	store := fake.NewStore()
 	proj := mkProject(t, store, "solo")
@@ -306,6 +317,85 @@ func TestFireWithoutDelivererStoresOnly(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Period != digest.PeriodWeekly {
 		t.Fatalf("list = %+v, want the one weekly digest", rows)
+	}
+	if rows[0].DeliveryStatus != digest.DeliveryPending {
+		t.Errorf("delivery status = %q, want pending (nothing was attempted)", rows[0].DeliveryStatus)
+	}
+	if rows[0].DeliveredAt != nil {
+		t.Errorf("delivered_at = %v, want nil for a pending digest", rows[0].DeliveredAt)
+	}
+}
+
+// TestFireMarksDelivered: a confirming delivery moves the row pending to
+// delivered, stamped with the fire's time -- the operator can see the
+// digest got out and when.
+func TestFireMarksDelivered(t *testing.T) {
+	f := newFixture(t)
+	now, _ := window()
+	saveRun(t, f.store, f.execA1, 1, now.Add(time.Hour), taurus.OutcomePassed)
+
+	d, err := f.svc.Fire(context.Background(), f.projA, digest.PeriodDaily, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	rows, err := f.svc.ListForProject(context.Background(), f.projA, 0)
+	if err != nil {
+		t.Fatalf("ListForProject: %v", err)
+	}
+	got := rows[0]
+	if got.DeliveryStatus != digest.DeliveryDelivered {
+		t.Errorf("stored delivery status = %q, want delivered", got.DeliveryStatus)
+	}
+	if got.DeliveredAt == nil || !got.DeliveredAt.Equal(now.Add(24*time.Hour)) {
+		t.Errorf("stored delivered_at = %v, want the fire time %v", got.DeliveredAt, now.Add(24*time.Hour))
+	}
+	if d.DeliveryStatus != digest.DeliveryDelivered || d.DeliveredAt == nil {
+		t.Errorf("returned digest carries status %q delivered_at %v, want delivered + the stamp", d.DeliveryStatus, d.DeliveredAt)
+	}
+}
+
+// TestFireMarksFailed: delivery attempted and entirely lost moves the row
+// pending to failed -- receivers get no other chance at this window, so
+// "failed" must be visible, not just logged.
+func TestFireMarksFailed(t *testing.T) {
+	f := newFixture(t)
+	f.deliv.failErr = errors.New("receiver down")
+	now, _ := window()
+	saveRun(t, f.store, f.execA1, 1, now.Add(time.Hour), taurus.OutcomePassed)
+
+	if _, err := f.svc.Fire(context.Background(), f.projA, digest.PeriodDaily, now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("Fire = %v, want success despite delivery failure", err)
+	}
+	rows, err := f.svc.ListForProject(context.Background(), f.projA, 0)
+	if err != nil {
+		t.Fatalf("ListForProject: %v", err)
+	}
+	if rows[0].DeliveryStatus != digest.DeliveryFailed {
+		t.Errorf("stored delivery status = %q, want failed", rows[0].DeliveryStatus)
+	}
+	if rows[0].DeliveredAt != nil {
+		t.Errorf("delivered_at = %v, want nil for a failed digest", rows[0].DeliveredAt)
+	}
+}
+
+// TestFireWithNothingToDeliverStaysPending: a fire whose deliverer has
+// nothing configured (no hooks, no sink) attempted nothing -- that is
+// "nothing to do", not a failure, so the row stays pending.
+func TestFireWithNothingToDeliverStaysPending(t *testing.T) {
+	f := newFixture(t)
+	f.deliv.noTar = true
+	now, _ := window()
+	saveRun(t, f.store, f.execA1, 1, now.Add(time.Hour), taurus.OutcomePassed)
+
+	if _, err := f.svc.Fire(context.Background(), f.projA, digest.PeriodDaily, now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	rows, err := f.svc.ListForProject(context.Background(), f.projA, 0)
+	if err != nil {
+		t.Fatalf("ListForProject: %v", err)
+	}
+	if rows[0].DeliveryStatus != digest.DeliveryPending {
+		t.Errorf("stored delivery status = %q, want pending (nothing was attempted)", rows[0].DeliveryStatus)
 	}
 }
 

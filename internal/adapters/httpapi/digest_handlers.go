@@ -21,9 +21,11 @@ type digestConfigResponse struct {
 	LastFired *time.Time `json:"last_fired,omitempty"`
 }
 
-// digestRowResponse is one stored digest in the feed: the window, and the
+// digestRowResponse is one stored digest in the feed: the window, the
 // payload's verdict fields decoded -- the feed serves the same numbers the
-// webhook delivery carried, without re-aggregating.
+// webhook delivery carried, without re-aggregating -- and the delivery
+// outcome (phase 60): whether the digest left the building, and when it was
+// confirmed.
 type digestRowResponse struct {
 	ID                int64                        `json:"id"`
 	Period            string                       `json:"period"`
@@ -33,6 +35,8 @@ type digestRowResponse struct {
 	ByOutcome         digestapp.ByOutcome          `json:"by_outcome"`
 	ThresholdFailures int                          `json:"threshold_failures"`
 	Executions        []digestapp.ExecutionSummary `json:"executions"`
+	DeliveryStatus    string                       `json:"delivery_status"`
+	DeliveredAt       *time.Time                   `json:"delivered_at,omitempty"`
 }
 
 // defaultDigestLimit caps the feed's default page and the maximum a caller
@@ -202,6 +206,14 @@ func (h *handlers) listDigests(w http.ResponseWriter, r *http.Request) {
 		resp := digestRowResponse{
 			ID: d.ID, Period: string(d.Period),
 			WindowStart: d.WindowStart, WindowEnd: d.WindowEnd,
+			DeliveryStatus: string(d.DeliveryStatus),
+			DeliveredAt:    d.DeliveredAt,
+		}
+		// A row the store handed back without a status (the pre-0060 zero
+		// value) is the pending it was born as -- never an empty string on
+		// the wire.
+		if resp.DeliveryStatus == "" {
+			resp.DeliveryStatus = string(digest.DeliveryPending)
 		}
 		// The stored bytes are the contract; a row that fails to decode
 		// (impossible from this service's own writes) still lists, with

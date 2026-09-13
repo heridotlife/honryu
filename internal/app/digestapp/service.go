@@ -92,11 +92,13 @@ type Repo interface {
 }
 
 // Deliverer is the delivery sink a digest rides on -- webhookapp satisfies
-// it, delivering with the same signing and bounds as a run.completed event.
-// An interface, not an import, so the use-case stays testable against a
-// recorder and the delivery mechanism stays webhookapp's to own.
+// it, delivering with the same signing and bounds as a run.completed event,
+// plus the deploy-wide sink when one is configured. An interface, not an
+// import, so the use-case stays testable against a recorder and the
+// delivery mechanism stays webhookapp's to own. The answer is the tri-state
+// DeliverDigest documents: delivered / failed / nothing-to-do.
 type Deliverer interface {
-	DeliverEvent(ctx context.Context, projectID int64, event string, body []byte) error
+	DeliverDigest(ctx context.Context, projectID int64, body []byte) (delivered bool, err error)
 }
 
 // Service implements the digest use-cases: building, firing, and listing.
@@ -189,12 +191,16 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 }
 
 // Fire builds and stores the project's digest for period, then delivers the
-// stored bytes to the project's webhooks. The window continues from the
-// last same-period digest's window_end, or reaches back one full period
-// when none has fired yet -- so consecutive digests tile the timeline
-// without gaps or overlaps. Delivery failure is logged, never returned: the
-// stored row is the source of truth and the in-app feed still has it, the
-// same best-effort law run.completed delivery follows.
+// stored bytes through the deliverer (the project's webhooks plus the
+// deploy-wide sink when one is configured), recording the outcome on the
+// row: delivered stamps DeliveredAt, attempted-but-lost marks failed,
+// nothing-attempted stays pending. The window continues from the last
+// same-period digest's window_end, or reaches back one full period when
+// none has fired yet -- so consecutive digests tile the timeline without
+// gaps or overlaps. Delivery failure is logged and surfaced as a failed
+// status, never returned: the stored row is the source of truth and the
+// in-app feed still has it, the same best-effort law run.completed delivery
+// follows.
 func (s *Service) Fire(ctx context.Context, projectID int64, period digest.Period, now time.Time) (digest.Digest, error) {
 	windowStart, found, err := s.repo.LastDigestWindowEnd(ctx, projectID, period)
 	if err != nil {
@@ -212,9 +218,31 @@ func (s *Service) Fire(ctx context.Context, projectID int64, period digest.Perio
 		return digest.Digest{}, err
 	}
 	d.ID = id
+	d.DeliveryStatus = digest.DeliveryPending
 	if s.deliverer != nil {
-		if err := s.deliverer.DeliverEvent(ctx, projectID, EventDigest, d.Payload); err != nil {
+		delivered, err := s.deliverer.DeliverDigest(ctx, projectID, d.Payload)
+		var deliveredAt time.Time
+		switch {
+		case delivered:
+			d.DeliveryStatus = digest.DeliveryDelivered
+			deliveredAt = now
+			at := now
+			d.DeliveredAt = &at
+		case err != nil:
+			// Attempted and entirely lost: the window is never re-fired, so
+			// the failure must be visible on the record, not just in a log.
+			d.DeliveryStatus = digest.DeliveryFailed
+		default:
+			// (false, nil): nothing was configured to notify. "Nothing to
+			// do" is not a failure -- the row stays pending.
+		}
+		if err != nil {
 			s.log.Error("digest: deliver", "project_id", projectID, "period", period, "digest_id", d.ID, "error", err)
+		}
+		if d.DeliveryStatus != digest.DeliveryPending {
+			if err := s.repo.MarkDigestDelivery(ctx, d.ID, d.DeliveryStatus, deliveredAt); err != nil {
+				s.log.Error("digest: mark delivery", "digest_id", d.ID, "status", d.DeliveryStatus, "error", err)
+			}
 		}
 	}
 	return d, nil

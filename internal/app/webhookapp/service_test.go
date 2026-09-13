@@ -44,8 +44,20 @@ type receiver struct {
 }
 
 func newReceiver(statuses ...int) *receiver {
+	return makeReceiver(false, statuses...)
+}
+
+// tlsReceiver is an https receiver: the digest sink's https-only rule
+// (WithDigestSink) refuses the plain-http servers newReceiver stands up, so
+// sink tests deliver against a TLS endpoint -- srv.Client() is the client
+// that trusts its certificate, no skipped verification.
+func tlsReceiver(statuses ...int) *receiver {
+	return makeReceiver(true, statuses...)
+}
+
+func makeReceiver(withTLS bool, statuses ...int) *receiver {
 	rc := &receiver{statuses: statuses}
-	rc.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		rc.mu.Lock()
 		n := len(rc.got)
@@ -66,7 +78,12 @@ func newReceiver(statuses ...int) *receiver {
 			status = statuses[n]
 		}
 		w.WriteHeader(status)
-	}))
+	})
+	if withTLS {
+		rc.srv = httptest.NewTLSServer(handler)
+	} else {
+		rc.srv = httptest.NewServer(handler)
+	}
 	return rc
 }
 
@@ -88,6 +105,14 @@ func (rc *receiver) close() { rc.srv.Close() }
 func fast(t *testing.T, repo *fake.Store) *webhookapp.Service {
 	t.Helper()
 	return webhookapp.NewService(repo).WithBackoff(time.Millisecond).WithTimeout(2 * time.Second)
+}
+
+// fastTLS builds a service with test-friendly delivery bounds and a client
+// that trusts srv's test certificate. Lives beside fast because the digest
+// sink's https-only rule makes its tests need a TLS receiver.
+func fastTLS(t *testing.T, repo *fake.Store, srv *httptest.Server) *webhookapp.Service {
+	t.Helper()
+	return fast(t, repo).WithClient(srv.Client())
 }
 
 // finishedRun is a representative stored report: failed outcome, real
