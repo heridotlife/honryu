@@ -36,6 +36,10 @@ spec:
       labels:
         {{- include "honryu.selectorLabels" (merge (dict "component" "prometheus") .) | nindent 8 }}
     spec:
+      # Own SA + Role from prometheus-rbac.yaml: pod discovery lists/watches
+      # pods in this namespace and nothing else. Defaulting to the "default"
+      # SA would make every scrape target discovery fail on RBAC (403).
+      serviceAccountName: {{ include "honryu.fullname" . }}-prometheus
       # Shares the control-plane node with the PVC it mounts, for the same
       # Karpenter-eviction reasoning as mysql and the object store.
       nodeSelector:
