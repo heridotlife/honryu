@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sortSignatureGroups, TrendSection } from './ReportsTrend';
+import { regressionDetail, sortSignatureGroups, TrendSection } from './ReportsTrend';
 import type { SignatureBreakdown } from '../api/trends';
 import type { TrendPoint } from '../api/trends';
 
@@ -147,5 +147,61 @@ describe('TrendSection requested-throughput column (mounted, phase 49)', () => {
     expect(rows[0].querySelector('[data-testid="trend-regression-chip"]')).not.toBeNull();
     expect(rows[0].textContent).toContain('regressed');
     expect(rows[1].querySelector('[data-testid="trend-regression-chip"]')).toBeNull();
+  });
+
+  // The chip's title says WHAT regressed, from fields the trend endpoint
+  // already carries: this run's own achieved/requested figures against the
+  // 95% request tolerance, plus the baseline fact the verdict itself
+  // encodes. No new endpoint data -- see regressionDetail above.
+  it('titles the regression chip with the numbers behind the miss (phase 59)', async () => {
+    await renderTrend([
+      point({
+        run_id: 2,
+        achieved_throughput: 380,
+        requested_throughput: 500,
+        hit_target_qps: false,
+        has_comparable_predecessor: true,
+        regressed: true,
+      }),
+    ]);
+
+    const chip = container!.querySelector('[data-testid="trend-regression-chip"]') as HTMLElement;
+    expect(chip.title).toContain('achieved 380.0 of 500.0 req/s');
+    expect(chip.title).toContain('95%');
+    expect(chip.title).toContain('baseline run met its target');
+  });
+});
+
+describe('regressionDetail (pure, phase 59)', () => {
+  const base: TrendPoint = {
+    run_id: 7,
+    outcome: 'failed',
+    achieved_throughput: 95.4,
+    requested_throughput: 100,
+    error_rate: 0.02,
+    p50: 0.05,
+    p90: 0.1,
+    p95: 0.2,
+    p99: 0.4,
+    hit_target_qps: false,
+    has_comparable_predecessor: true,
+    regressed: true,
+  };
+
+  it('explains the miss with the run\'s own figures', () => {
+    expect(regressionDetail(base)).toBe(
+      'Fell short of target: achieved 95.4 of 100.0 req/s (needs ≥95%); nearest comparable baseline run met its target.'
+    );
+  });
+
+  it('falls back to the qualitative line when the numbers would not make sense', () => {
+    // Not regressed: no verdict to explain.
+    expect(regressionDetail({ ...base, regressed: false })).not.toContain('95.4');
+    // A regressed point with no requested throughput is unreachable on the
+    // current wire (unlimited runs cannot regress); the fallback must not
+    // print "of 0.0 req/s" if a future change breaks that invariant.
+    expect(regressionDetail({ ...base, requested_throughput: 0 })).toBe(
+      'This run fell short of its requested throughput while the nearest comparable baseline run met its own.'
+    );
   });
 });

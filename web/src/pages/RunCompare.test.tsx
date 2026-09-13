@@ -215,9 +215,13 @@ describe('RunCompare (mounted)', () => {
   // the row cells already color the individual movements.
   it('chips the delta card when a metric regressed, and only then (phase 59)', async () => {
     await renderCompare();
-    // Default fixture's only regression is error rate (1% -> 2%, +100%).
-    expect(container!.querySelector('[data-testid="compare-regression-chip"]')).not.toBeNull();
-    expect(container!.querySelector('[data-testid="compare-regression-chip"]')!.textContent).toBe('regressed');
+    // Default fixture's only regression is error rate (1% -> 2%, +100%);
+    // the title names it against the baseline run, no recompute beyond the
+    // deltas the table itself already renders.
+    const chip = container!.querySelector('[data-testid="compare-regression-chip"]') as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe('regressed');
+    expect(chip.title).toBe('Error rate +100.0% vs run #8');
 
     // B strictly better-or-equal on every metric against A: no chip, table stays.
     const betterRun: Report = {

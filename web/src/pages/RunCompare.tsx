@@ -176,6 +176,7 @@ function DeltaTable({ a, b }: { a: Report; b: Report }) {
         {regressions.length > 0 && (
           <span
             data-testid="compare-regression-chip"
+            title={`${regressions.map((r) => `${r.metric} ${formatDelta(r.delta)}`).join(' · ')} vs run #${a.run_id}`}
             className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
           >
             regressed

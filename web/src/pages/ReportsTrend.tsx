@@ -11,7 +11,7 @@ import Sparkline from '../components/Sparkline';
 import { ApiError } from '../api/client';
 import type { Outcome } from '../api/reports';
 import { getErrorSignatures, getExecutionTrend } from '../api/trends';
-import type { ErrorSignatureHistory, SignatureBreakdown, SignatureGroupBy, Trend } from '../api/trends';
+import type { ErrorSignatureHistory, SignatureBreakdown, SignatureGroupBy, Trend, TrendPoint } from '../api/trends';
 
 /**
  * Groups and rows biggest-first (total_count desc), ties broken by key so
@@ -21,6 +21,22 @@ export function sortSignatureGroups(groups: SignatureBreakdown[]): SignatureBrea
   return groups
     .map((g) => ({ ...g, rows: [...g.rows].sort((a, b) => b.total_count - a.total_count) }))
     .sort((a, b) => b.total_count - a.total_count || a.key.localeCompare(b.key));
+}
+
+/**
+ * One-line explanation of a regressed trend point, from fields the trend
+ * endpoint already carries -- no per-metric baseline deltas exist on the
+ * wire, and the domain deliberately flags only the target-QPS miss
+ * (percentiles are advisory, never auto-flagged). Regressed implies
+ * requested_throughput > 0: an unlimited run has no target to fall short
+ * of, so it can never read regressed -- the fallback is defense against a
+ * future wire change, not a reachable state.
+ */
+export function regressionDetail(p: TrendPoint): string {
+  if (p.regressed !== true || p.requested_throughput <= 0) {
+    return 'This run fell short of its requested throughput while the nearest comparable baseline run met its own.';
+  }
+  return `Fell short of target: achieved ${p.achieved_throughput.toFixed(1)} of ${p.requested_throughput.toFixed(1)} req/s (needs ≥95%); nearest comparable baseline run met its target.`;
 }
 
 export function TrendSection({ executionId }: { executionId: number }) {
@@ -106,6 +122,7 @@ export function TrendSection({ executionId }: { executionId: number }) {
                             {p.regressed && (
                               <span
                                 data-testid="trend-regression-chip"
+                                title={regressionDetail(p)}
                                 className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
                               >
                                 regressed
