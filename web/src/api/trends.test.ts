@@ -73,6 +73,37 @@ describe('trends api', () => {
         regressed: true,
       });
     });
+    it('passes points through unchanged when the regressed key is absent (omitempty drops false on stable rows, phase 59)', async () => {
+      const fetchMock = vi.fn(async () =>
+        jsonResponse(
+          JSON.stringify({
+            execution_id: 3,
+            points: [
+              {
+                run_id: 4,
+                outcome: 'passed',
+                achieved_throughput: 100,
+                requested_throughput: 100,
+                error_rate: 0,
+                p50: 0.05,
+                p90: 0.1,
+                p95: 0.2,
+                p99: 0.4,
+                hit_target_qps: true,
+                has_comparable_predecessor: true,
+              },
+            ],
+          })
+        )
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const got = await getExecutionTrend(3);
+
+      expect(got.points).toHaveLength(1);
+      // The client type keeps regressed optional: absent stays absent.
+      expect(got.points[0].regressed).toBeUndefined();
+    });
   });
 
   describe('getErrorSignatures', () => {
