@@ -9,6 +9,8 @@ import Card, { CardContent } from '../components/ui/Card';
 import { ApiError } from '../api/client';
 import { listClusters } from '../api/clusters';
 import type { Cluster, ClusterOrigin } from '../api/clusters';
+import { listCapacityProfiles } from '../api/calibration';
+import type { CapacityProfileSummary } from '../api/calibration';
 import CapacityMeter from '../components/CapacityMeter';
 
 const originClasses: Record<ClusterOrigin, string> = {
@@ -38,6 +40,13 @@ export function originDescription(origin: ClusterOrigin): string {
 export function formatClusterTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** A profile's calibration time as a short date (house rule: no raw ISO on
+ * screen), NaN-safe the same way formatClusterTime is. */
+export function formatCalibratedShortDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
 }
 
 /** Capacity numbers for one cluster row, when the backend offers any.
@@ -78,12 +87,20 @@ export function engineImages(clusters: Cluster[]): string[] {
 export default function Clusters() {
   const [clusters, setClusters] = useState<Cluster[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The fleet-wide capacity matrix (phase 56): loaded alongside the
+  // registry, but independently -- a profiles failure must not take the
+  // registry view down with it.
+  const [profiles, setProfiles] = useState<CapacityProfileSummary[] | null>(null);
+  const [profilesError, setProfilesError] = useState(false);
   const fleetImages = clusters === null ? null : engineImages(clusters);
 
   useEffect(() => {
     listClusters()
       .then(setClusters)
       .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'Failed to load clusters.'));
+    listCapacityProfiles()
+      .then(setProfiles)
+      .catch(() => setProfilesError(true));
   }, []);
 
   return (
@@ -171,16 +188,10 @@ export default function Clusters() {
 
       {clusters && (
         <Card role="region" aria-label="Fleet summary">
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-3">
             <h2 className="text-caption font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">
               Fleet summary
             </h2>
-            {/* Phase 55: no capacity-profiles row here -- there is no list
-                endpoint for them. The only capacity-profile routes are
-                per-scenario reads (/api/scenarios/{scenario_id}/capacity-profile
-                [/fanout]); inventing a fleet-wide client over those would be
-                wrong. If the API grows a profile listing, this card is the
-                slot for it. */}
             <p className="text-body-sm">
               <span className="text-caption mr-2 text-slate-500 dark:text-slate-400">Engine images</span>
               {fleetImages && fleetImages.length > 0 ? (
@@ -200,6 +211,55 @@ export default function Clusters() {
                 </span>
               )}
             </p>
+
+            {profilesError && (
+              <p className="text-body-sm text-slate-500 dark:text-slate-400">
+                Capacity profiles could not be loaded.
+              </p>
+            )}
+
+            {profiles !== null && !profilesError && (
+              <div>
+                <p className="text-caption text-slate-500 dark:text-slate-400">Capacity matrix</p>
+                {profiles.length > 0 ? (
+                  <div className="mt-1 overflow-x-auto">
+                    {/* Rows arrive in the backend's order: scenario ascending,
+                        then biggest pod first (cpu compared as milli-cores).
+                        Calibrated dates render as short dates -- no raw ISO. */}
+                    <table className="w-full text-left text-body-sm">
+                      <thead>
+                        <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                          <th scope="col" className="px-3 py-2 font-medium">Pod size</th>
+                          <th scope="col" className="px-3 py-2 font-medium">Per-pod QPS</th>
+                          <th scope="col" className="px-3 py-2 font-medium">Saturated by</th>
+                          <th scope="col" className="px-3 py-2 font-medium">Calibrated</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {profiles.map((p) => (
+                          <tr key={`${p.scenario_id}-${p.engine}-${p.cpu}-${p.memory}`}>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              <code className="text-caption">
+                                {p.cpu} / {p.memory}
+                              </code>
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap">{p.per_pod_qps}</td>
+                            <td className="px-3 py-2">{p.saturated_by}</td>
+                            <td className="px-3 py-2 whitespace-nowrap text-slate-700 dark:text-slate-300">
+                              {formatCalibratedShortDate(p.calibrated_at)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
+                    No calibrations yet — run one and its per-pod capacity appears here.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
@@ -504,6 +507,55 @@ func (s *Service) writeProfile(ctx context.Context, job ports.CalibrationJob, do
 // if none has ever been calibrated for it.
 func (s *Service) ProfileFor(ctx context.Context, key capacityprofile.Key) (capacityprofile.CapacityProfile, error) {
 	return s.repo.GetCapacityProfile(ctx, key)
+}
+
+// Profiles returns every stored CapacityProfile, ordered for a list
+// response: by scenario, then by pod size with the biggest cpu first -- cpu
+// compared as milli-cores so "2" outranks "500m", which lexicographic
+// order gets wrong. Engine and memory break remaining ties
+// deterministically; unparseable cpu values (the k8s quantity grammar the
+// scheduler itself enforces makes these unreachable in practice) fall back
+// to lexicographic order rather than failing the whole list.
+func (s *Service) Profiles(ctx context.Context) ([]capacityprofile.CapacityProfile, error) {
+	profiles, err := s.repo.ListCapacityProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sortProfiles(profiles)
+	return profiles, nil
+}
+
+// sortProfiles orders profiles in place for Profiles.
+func sortProfiles(profiles []capacityprofile.CapacityProfile) {
+	sort.Slice(profiles, func(i, j int) bool {
+		a, b := profiles[i], profiles[j]
+		if a.ScenarioID != b.ScenarioID {
+			return a.ScenarioID < b.ScenarioID
+		}
+		if av, bv, ok := cpuMilliPair(a.CPU, b.CPU); ok && av != bv {
+			return av > bv
+		}
+		if a.Engine != b.Engine {
+			return a.Engine < b.Engine
+		}
+		if a.Memory != b.Memory {
+			return a.Memory < b.Memory
+		}
+		return a.CPU < b.CPU
+	})
+}
+
+// cpuMilliPair parses two cpu strings into milli-cores -- "250m" is 250,
+// "1" is 1000 -- with the same quantity parser the k8s scheduler applies
+// to a pod spec, so list ordering agrees with what actually runs. ok is
+// false when either side does not parse.
+func cpuMilliPair(a, b string) (av, bv int64, ok bool) {
+	qa, errA := resource.ParseQuantity(a)
+	qb, errB := resource.ParseQuantity(b)
+	if errA != nil || errB != nil {
+		return 0, 0, false
+	}
+	return qa.MilliValue(), qb.MilliValue(), true
 }
 
 // FanOut answers "how many engines does key's scenario need for targetQPS",

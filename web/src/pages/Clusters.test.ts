@@ -1,8 +1,9 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Clusters, { clusterCapacity, engineImages, formatClusterTime, originDescription } from './Clusters';
+import Clusters, { clusterCapacity, engineImages, formatCalibratedShortDate, formatClusterTime, originDescription } from './Clusters';
 import type { Cluster } from '../api/clusters';
+import type { CapacityProfileSummary } from '../api/calibration';
 
 /** A registered cluster row exactly as GET /api/clusters serves it. */
 const registered: Cluster = {
@@ -107,6 +108,78 @@ describe('Clusters fleet summary (phase 55, mounted)', () => {
   });
 });
 
+describe('formatCalibratedShortDate', () => {
+  it('renders a calibrated timestamp as a short date, never raw ISO', () => {
+    const iso = '2026-09-12T08:30:00Z';
+    expect(formatCalibratedShortDate(iso)).toBe(new Date(iso).toLocaleDateString());
+  });
+
+  it('passes an unparseable value through unchanged rather than rendering "Invalid Date"', () => {
+    expect(formatCalibratedShortDate('not-a-date')).toBe('not-a-date');
+  });
+});
+
+// Phase 56: the fleet summary card gets its capacity matrix back now that
+// GET /api/capacity-profiles exists -- rows as served (backend-ordered),
+// short dates, saturated_by as plain text, and an honest empty state.
+describe('Clusters capacity matrix (phase 56, mounted)', () => {
+  const matrixRows: CapacityProfileSummary[] = [
+    {
+      scenario_id: 6,
+      engine: 'jmeter',
+      cpu: '2',
+      memory: '2Gi',
+      per_pod_qps: 4543.9,
+      saturated_by: 'engine',
+      calibrated_at: '2026-09-12T08:30:00Z',
+    },
+    {
+      scenario_id: 6,
+      engine: 'jmeter',
+      cpu: '250m',
+      memory: '256Mi',
+      per_pod_qps: 8.24,
+      saturated_by: 'target',
+      calibrated_at: '2026-08-01T10:00:00Z',
+    },
+  ];
+
+  it('renders the matrix rows in server order with visible headers and short dates', async () => {
+    await mountClusters([registered], matrixRows);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    const headers = Array.from(region!.querySelectorAll('th')).map((th) => th.textContent);
+    expect(headers).toEqual(['Pod size', 'Per-pod QPS', 'Saturated by', 'Calibrated']);
+    const rows = Array.from(region!.querySelectorAll('tbody tr')).map((tr) =>
+      Array.from(tr.querySelectorAll('td')).map((td) => td.textContent)
+    );
+    expect(rows).toEqual([
+      ['2 / 2Gi', '4543.9', 'engine', new Date('2026-09-12T08:30:00Z').toLocaleDateString()],
+      ['250m / 256Mi', '8.24', 'target', new Date('2026-08-01T10:00:00Z').toLocaleDateString()],
+    ]);
+    // House rule: the raw ISO timestamps never reach the screen.
+    expect(region!.textContent).not.toContain('2026-09-12T08:30:00Z');
+    expect(region!.textContent).not.toContain('2026-08-01T10:00:00Z');
+  });
+
+  it('renders saturated_by as plain text, not a code or badge', async () => {
+    await mountClusters([registered], matrixRows);
+
+    const cells = Array.from(container!.querySelectorAll('[aria-label="Fleet summary"] tbody td:nth-child(3)'));
+    expect(cells.map((td) => `${td.children.length}:${td.textContent}`)).toEqual(['0:engine', '0:target']);
+  });
+
+  it('renders an honest empty state when nothing has been calibrated', async () => {
+    await mountClusters([registered], []);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    expect(region!.querySelectorAll('table')).toHaveLength(0);
+    expect(region!.textContent).toContain('No calibrations yet');
+  });
+});
+
 // Phase 51 landmark gate (mounted; createElement so this stays a .ts file):
 // the page's outermost element is a labelled region a screen reader can jump to.
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -137,24 +210,25 @@ describe('Clusters landmarks (phase 51)', () => {
   });
 });
 
-/** Mount the page over a stubbed /api/clusters reply (the landmark test's
- * createElement + act pattern; module-level container/root so afterEach
- * cleans up). Phase 55 additions pin what a browser actually sees. */
-async function mountClusters(payload: Cluster[]) {
+/** Mount the page over stubbed /api/clusters and /api/capacity-profiles
+ * replies, routed by URL (the landmark test's createElement + act pattern;
+ * module-level container/root so afterEach cleans up). Phase 55 additions
+ * pin what a browser actually sees; phase 56 adds the capacity matrix. */
+async function mountClusters(payload: Cluster[], profiles: CapacityProfileSummary[] = []) {
   container = document.createElement('div');
   document.body.appendChild(container);
   vi.stubGlobal(
     'fetch',
-    vi.fn(
-      async () =>
-        new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    )
+    vi.fn(async (input: RequestInfo | URL) => {
+      const body = String(input).includes('/api/capacity-profiles') ? profiles : payload;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    })
   );
   root = createRoot(container);
   await act(async () => {
     root!.render(createElement(Clusters));
   });
-  await act(async () => {}); // flush the listClusters fetch
+  await act(async () => {}); // flush the listClusters + listCapacityProfiles fetches
 }
 
 // Phase 55: clusterCapacity's unit pins cover the mapping; these mounted

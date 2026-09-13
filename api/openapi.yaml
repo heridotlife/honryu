@@ -624,6 +624,17 @@ components:
           description: The scenario's content hash at calibration time -- the fan-out calculator treats any mismatch against the scenario's current fingerprint as staleness.
         calibrated_at: { type: string, format: date-time }
         job_id: { type: integer, format: int64 }
+    CapacityProfileSummary:
+      type: object
+      description: One row of the fleet-wide capacity matrix -- a CapacityProfile without its internal staleness detail.
+      properties:
+        scenario_id: { type: integer, format: int64 }
+        engine: { type: string }
+        cpu: { type: string }
+        memory: { type: string }
+        per_pod_qps: { type: number, format: double }
+        saturated_by: { type: string, enum: [engine, target, neither] }
+        calibrated_at: { type: string, format: date-time }
     FanOutResult:
       type: object
       description: The fan-out calculator's answer -- an engine count only ever accompanies status "ok", so a caller can never read one without its own caveat.
@@ -2126,6 +2137,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CapacityProfile' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/capacity-profiles:
+    get:
+      tags: [calibration]
+      summary: List every stored capacity profile the caller may see
+      description: >-
+        The fleet-wide capacity matrix: one row per (scenario, engine,
+        cpu, memory) key ever calibrated, ordered by scenario then biggest
+        pod first (cpu compared as milli-cores, so 2 > 500m > 250m). Rows
+        are scoped to projects the caller may see -- the same rule GET
+        /api/executions applies. The scenario fingerprint is internal
+        staleness detail and is not exposed here; the per-scenario GET
+        serves it to tooling that needs it.
+      responses:
+        '200':
+          description: CapacityProfiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CapacityProfileSummary' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
