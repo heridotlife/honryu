@@ -155,8 +155,10 @@ const (
 	PhaseDone Phase = "done"
 	// PhaseFailed is an operational failure (a step's run itself errored --
 	// Deploy/Trigger/report never settled) rather than a search outcome.
-	// Next never produces it; only the caller driving the runs does, when a
-	// step cannot even be classified.
+	// Next never produces it; only the caller driving the runs does -- when
+	// a step cannot even be classified, or when a finished search recorded
+	// no clean step at all and its profile is refused as invalid (an
+	// environment-impaired run).
 	PhaseFailed Phase = "failed"
 )
 

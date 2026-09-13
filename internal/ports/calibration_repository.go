@@ -30,7 +30,8 @@ type CalibrationJob struct {
 	// Result is set once Phase is PhaseDone.
 	Result *calibration.Result
 	// FailureReason is set once Phase is PhaseFailed -- an operational
-	// failure (a step's run itself errored), not a search outcome.
+	// failure (a step's run itself errored), or a finished search refused
+	// as environment-impaired because it recorded no clean step at all.
 	FailureReason string
 	CreatedTime   time.Time
 }
@@ -71,7 +72,8 @@ type CalibrationJobRepository interface {
 
 	// MarkFailed ends jobID with PhaseFailed and reason -- an operational
 	// failure (the step's own run errored, never even producing a
-	// classification), distinct from any search outcome Next can reach.
+	// classification, or a finished search judged environment-impaired),
+	// distinct from any search outcome Next can reach.
 	// Clears the claim; a failed job is never claimed again.
 	MarkFailed(ctx context.Context, jobID int64, reason string) error
 }
