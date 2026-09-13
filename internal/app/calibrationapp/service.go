@@ -45,6 +45,14 @@ var ErrEngineRequired = errors.New("calibrationapp: a calibration execution must
 // refusal that keeps that shell from ever existing.
 var ErrSourceScenarioNotBound = errors.New("calibrationapp: source execution does not run the scenario")
 
+// ErrEnvironmentImpaired means a terminal calibration search recorded not a
+// single clean step: every step classified saturated from the very first, so
+// the measurement says nothing about the pod and any capacity profile it
+// would write is confidently wrong. The message is the failure_reason the
+// job is failed with, hence no "calibrationapp:" prefix -- it is an
+// operator-facing verdict, not an error chain link.
+var ErrEnvironmentImpaired = errors.New("environment_impaired: no clean step in search; capacity profile not written")
+
 // ErrNotConfiguredForAdvance means AdvanceOne was called before a Runner and
 // a ScenarioFingerprinter were wired via WithRunner/WithFingerprint -- both
 // are required to drive a step and, on terminal, record what it found,
@@ -322,7 +330,11 @@ const leaseFor = 30 * time.Minute
 // AdvanceOne claims one due calibration job, runs its next step, classifies
 // the settled report, feeds the search's own decision function
 // (calibration.Next), persists the result, and -- once the search reaches a
-// terminal state -- writes the resulting CapacityProfile.
+// terminal state -- writes the resulting CapacityProfile. One terminal
+// outcome is refused instead: a search that recorded no clean step at all
+// never measured the pod (environmentImpaired), so its profile is not
+// written and the job fails rather than overwriting an honest row with a
+// confidently wrong one.
 //
 // found is false when no job is currently due -- an ordinary outcome of a
 // controller tick against an empty queue, not an error. now is the claim
@@ -374,7 +386,47 @@ func (s *Service) AdvanceOne(ctx context.Context, now time.Time) (found bool, er
 	if updatedJob.Phase != calibration.PhaseDone {
 		return true, nil
 	}
+	impaired, err := s.environmentImpaired(ctx, persisted.ID, updatedJob)
+	if err != nil {
+		return true, err
+	}
+	if impaired {
+		return true, s.fail(ctx, persisted.ID, ErrEnvironmentImpaired)
+	}
 	return true, s.writeProfile(ctx, persisted, updatedJob, now)
+}
+
+// environmentImpaired reports whether a terminal search's recorded history
+// contains no clean step at all while its verdict blames the engine -- the
+// signature of an environment that broke mid-run (exec 21, 2026-09-13: the
+// node's flannel and ingress-nginx restarted, every step read
+// engine-saturated, and the bisect collapsed 10 → 0.625 into a
+// per_pod_qps = 0 profile that overwrote an honest one). A healthy pod
+// always produces at least the seed-rate step clean; zero clean steps means
+// the measurement is invalid, not the pod.
+//
+// Only an engine-blamed verdict qualifies: a first-step target-saturated
+// search also has no clean step, but there the engine kept pace -- the
+// measurement machinery demonstrably worked and the target-limited finding
+// is an honest one (writeProfile records it deliberately). A neither-blamed
+// verdict is unreachable without a clean step (doubleOrFinish runs only
+// after one), so it needs no exemption here. Steps come off the just-flushed
+// step log -- RecordStep has already persisted this tick's step -- so the
+// count is the whole search, however many ticks it spanned.
+func (s *Service) environmentImpaired(ctx context.Context, jobID int64, done calibration.Job) (bool, error) {
+	if done.Result == nil || done.Result.SaturatedBy != calibration.SaturatedByEngine {
+		return false, nil
+	}
+	steps, err := s.repo.StepsFor(ctx, jobID)
+	if err != nil {
+		return false, err
+	}
+	for _, step := range steps {
+		if step.Classification == calibration.ClassificationClean {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // fail marks jobID PhaseFailed with runErr's message and returns runErr --
