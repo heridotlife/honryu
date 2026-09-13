@@ -24,6 +24,15 @@ spec:
         # new run would have deployed the old engine image while every pod
         # reported healthy.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Scraped by the in-chart Prometheus (prometheus-configmap.yaml):
+        # pod discovery keeps pods carrying prometheus.io/scrape, and the
+        # namespace/pod relabels it applies are exactly what the honryu_perf
+        # dashboard's variables filter on. Only the api is annotated -- the
+        # calibrator and scheduler serve no HTTP at all, so annotating them
+        # would only produce permanently-down scrape targets.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
       labels:
         {{- include "honryu.selectorLabels" (merge (dict "component" "api") .) | nindent 8 }}
     spec:

@@ -11,11 +11,50 @@ data:
     global:
       scrape_interval: {{ .Values.prometheus.scrapeInterval }}
     scrape_configs:
-      # /metrics is a real route (internal/adapters/httpapi/router.go:128,
-      # promhttp.Handler) -- scraped via the api Service's in-cluster DNS,
-      # never through the Ingress, which blocks this exact path
-      # (metrics-block-service.yaml).
+      # /metrics is a real route (internal/adapters/httpapi/router.go,
+      # promhttp.Handler) -- discovered per-pod via the prometheus.io/*
+      # annotations (api-deployment.yaml), never through the Ingress, which
+      # blocks this exact path (metrics-block-service.yaml).
+      #
+      # Pod discovery rather than a static Service target because the
+      # honryu_perf dashboard filters series on namespace and pod
+      # (grafana/dashboards/honryu_perf.json templating:
+      # label_values(process_resident_memory_bytes, pod)); a static target
+      # carries neither label. The relabels below promote the Kubernetes
+      # metadata onto every scraped series.
+      #
+      # Engine pods are deliberately NOT scraped: they are third-party
+      # jmeter/k6 images with no /metrics endpoint -- their run metrics
+      # reach Prometheus through the api's MetricsSink
+      # (internal/adapters/metrics/prometheus), pushed via the ingest API.
       - job_name: honryu-api
-        static_configs:
-          - targets: ["{{ include "honryu.fullname" . }}-api.{{ .Release.Namespace }}.svc.cluster.local:8080"]
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["{{ .Release.Namespace }}"]
+        relabel_configs:
+          # Only pods that opted in with prometheus.io/scrape: "true".
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # Default path is /metrics; the annotation overrides it. A pod
+          # without the path annotation simply keeps the default -- the
+          # regex does not match an absent label, so nothing is replaced.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Rebuild the address as <pod ip>:<annotated port>; the pod
+          # address arrives as ip:declared-port, and the first capture
+          # group strips whatever port it carried.
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Series labels the dashboards filter on.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
 {{- end -}}
