@@ -175,7 +175,7 @@ func (s *Service) emailAttempt(ctx context.Context, sink *emailSink, msg []byte)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if deadline, ok := attemptCtx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -183,7 +183,7 @@ func (s *Service) emailAttempt(ctx context.Context, sink *emailSink, msg []byte)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.Hello("honryu"); err != nil {
 		return err
 	}
