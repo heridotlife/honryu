@@ -170,6 +170,23 @@ describe('TrendSection requested-throughput column (mounted, phase 49)', () => {
     expect(chip.title).toContain('95%');
     expect(chip.title).toContain('baseline run met its target');
   });
+
+  // Landmark: a fully stable trend renders ZERO regression chips anywhere
+  // in the table. The row-level absence test above pins one row; this pins
+  // the whole table -- guards against a chip-everything regression (e.g. a
+  // future edit rendering a pill on every row). Points omit `regressed`
+  // entirely, matching the wire's omitempty shape for stable rows.
+  it('renders zero regression chips on a fully stable trend (phase 59)', async () => {
+    await renderTrend([
+      point({ run_id: 3, hit_target_qps: true, has_comparable_predecessor: true }),
+      point({ run_id: 2, hit_target_qps: true, has_comparable_predecessor: true }),
+      point({ run_id: 1, hit_target_qps: true, has_comparable_predecessor: false }),
+    ]);
+
+    expect(container!.querySelectorAll('[data-testid="trend-regression-chip"]')).toHaveLength(0);
+    // The table itself still renders all three rows.
+    expect(container!.querySelectorAll('tbody tr')).toHaveLength(3);
+  });
 });
 
 describe('regressionDetail (pure, phase 59)', () => {
