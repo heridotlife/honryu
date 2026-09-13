@@ -59,10 +59,26 @@ export function clusterCapacity(cluster: Cluster): { used?: number; ceiling?: nu
   return {};
 }
 
+/** Distinct sidecar images across the registry, first-seen order, blanks
+ * dropped -- the fleet summary's engine-images row renders exactly what
+ * cluster rows carry (phase 55: the engine images config has no API
+ * surface, so there is nothing else to show). */
+export function engineImages(clusters: Cluster[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of clusters) {
+    if (c.sidecar_image === '' || seen.has(c.sidecar_image)) continue;
+    seen.add(c.sidecar_image);
+    out.push(c.sidecar_image);
+  }
+  return out;
+}
+
 /** The cluster registry, read-only. */
 export default function Clusters() {
   const [clusters, setClusters] = useState<Cluster[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fleetImages = clusters === null ? null : engineImages(clusters);
 
   useEffect(() => {
     listClusters()
@@ -152,6 +168,41 @@ export default function Clusters() {
           )}
         </CardContent>
       </Card>
+
+      {clusters && (
+        <Card role="region" aria-label="Fleet summary">
+          <CardContent className="space-y-2">
+            <h2 className="text-caption font-medium tracking-wide text-slate-500 uppercase dark:text-slate-400">
+              Fleet summary
+            </h2>
+            {/* Phase 55: no capacity-profiles row here -- there is no list
+                endpoint for them. The only capacity-profile routes are
+                per-scenario reads (/api/scenarios/{scenario_id}/capacity-profile
+                [/fanout]); inventing a fleet-wide client over those would be
+                wrong. If the API grows a profile listing, this card is the
+                slot for it. */}
+            <p className="text-body-sm">
+              <span className="text-caption mr-2 text-slate-500 dark:text-slate-400">Engine images</span>
+              {fleetImages && fleetImages.length > 0 ? (
+                <span className="inline-flex flex-wrap gap-1.5">
+                  {fleetImages.map((image) => (
+                    <code
+                      key={image}
+                      className="text-caption rounded bg-slate-100 px-1.5 py-0.5 break-all dark:bg-slate-900"
+                    >
+                      {image}
+                    </code>
+                  ))}
+                </span>
+              ) : (
+                <span className="text-slate-500 dark:text-slate-400">
+                  No registered clusters — engine images appear here once clusters are registered.
+                </span>
+              )}
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

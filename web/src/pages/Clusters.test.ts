@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Clusters, { clusterCapacity, formatClusterTime, originDescription } from './Clusters';
+import Clusters, { clusterCapacity, engineImages, formatClusterTime, originDescription } from './Clusters';
 import type { Cluster } from '../api/clusters';
 
 /** A registered cluster row exactly as GET /api/clusters serves it. */
@@ -54,6 +54,56 @@ describe('formatClusterTime', () => {
 
   it('passes an unparseable value through unchanged rather than rendering "Invalid Date"', () => {
     expect(formatClusterTime('not-a-date')).toBe('not-a-date');
+  });
+});
+
+// Phase 55: the fleet summary card renders exactly what cluster rows
+// carry -- distinct sidecar images as plain code text (the engine images
+// config has no API surface), and no capacity-profiles row (no list
+// endpoint exists; only per-scenario reads).
+describe('engineImages', () => {
+  it('collects distinct sidecar images in first-seen order, dropping blanks', () => {
+    const list: Cluster[] = [
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'blank', sidecar_image: '' },
+    ];
+    expect(engineImages(list)).toEqual([
+      'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
+      'registry.example.org/other:1',
+    ]);
+  });
+
+  it('is empty for an empty registry', () => {
+    expect(engineImages([])).toEqual([]);
+  });
+});
+
+describe('Clusters fleet summary (phase 55, mounted)', () => {
+  it('renders a labelled region listing the distinct engine images', async () => {
+    await mountClusters([
+      registered,
+      { ...registered, name: 'byoc-1', origin: 'byoc', sidecar_image: 'registry.example.org/other:1' },
+      { ...registered, name: 'dup', sidecar_image: 'registry.example.org/other:1' },
+    ]);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    const codes = Array.from(region!.querySelectorAll('code')).map((el) => el.textContent);
+    expect(codes).toEqual([
+      'registry.pve.heri.life/honryu/honryu-sidecar:phase16',
+      'registry.example.org/other:1',
+    ]);
+  });
+
+  it('renders an honest line when no clusters are registered', async () => {
+    await mountClusters([]);
+
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]');
+    expect(region).not.toBeNull();
+    expect(region!.querySelectorAll('code')).toHaveLength(0);
+    expect(region!.textContent).toContain('No registered clusters');
   });
 });
 
