@@ -96,7 +96,8 @@ const compareMaxRuns = 20
 // a faithful N-of-what-you-asked-for read.
 func parseCompareRunIDs(r *http.Request) ([]int64, error) {
 	q := r.URL.Query()
-	parts := append(q["run_ids[]"], q["run_ids"]...)
+	parts := append([]string(nil), q["run_ids[]"]...)
+	parts = append(parts, q["run_ids"]...)
 	if len(parts) == 0 {
 		a, b := q.Get("run_a"), q.Get("run_b")
 		if a == "" && b == "" {
