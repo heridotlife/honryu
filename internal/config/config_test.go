@@ -276,6 +276,8 @@ func TestLoad_ValidationErrors(t *testing.T) {
 		"bad calibrator tick interval":  {"HONRYU_CALIBRATOR_TICK_INTERVAL": "never"},
 		"zero calibrator tick interval": {"HONRYU_CALIBRATOR_TICK_INTERVAL": "0s"},
 		"bad calibrator host flag":      {"HONRYU_CALIBRATOR_HOST_IN_SCHEDULER": "maybe"},
+		"digest webhook not https":      {"HONRYU_DIGEST_WEBHOOK_URL": "http://ops.example/digests"},
+		"digest webhook not a url":      {"HONRYU_DIGEST_WEBHOOK_URL": "::not a url"},
 		"apm links not json":            {"HONRYU_APM_LINK_TEMPLATES": "{not json"},
 		"apm links not an array":        {"HONRYU_APM_LINK_TEMPLATES": `{"name":"x"}`},
 		"apm template empty name":       {"HONRYU_APM_LINK_TEMPLATES": `[{"name":"","urlTemplate":"https://x/{{run_id}}"}]`},
@@ -293,6 +295,32 @@ func TestLoad_ValidationErrors(t *testing.T) {
 				t.Fatalf("Load(%v): expected error, got nil", env)
 			}
 		})
+	}
+}
+
+func TestLoad_DigestWebhook(t *testing.T) {
+	t.Parallel()
+
+	// Unconfigured is the default: a deployment with no digest sink delivers
+	// digests the way it always has (project webhooks only).
+	cfg, err := Load(envMap(nil))
+	if err != nil {
+		t.Fatalf("Load(nil): unexpected error: %v", err)
+	}
+	if cfg.Digest.WebhookURL != "" || cfg.Digest.WebhookSecret != "" {
+		t.Fatalf("Digest default = %+v, want unconfigured", cfg.Digest)
+	}
+
+	// An https target with its signing secret loads as-is.
+	cfg, err = Load(envMap(map[string]string{
+		"HONRYU_DIGEST_WEBHOOK_URL":    "https://ops.example/honryu/digests",
+		"HONRYU_DIGEST_WEBHOOK_SECRET": "s3cret",
+	}))
+	if err != nil {
+		t.Fatalf("Load(digest webhook): unexpected error: %v", err)
+	}
+	if cfg.Digest.WebhookURL != "https://ops.example/honryu/digests" || cfg.Digest.WebhookSecret != "s3cret" {
+		t.Fatalf("Digest = %+v, want the configured target and secret", cfg.Digest)
 	}
 }
 

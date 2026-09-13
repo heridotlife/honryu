@@ -92,11 +92,13 @@ type Repo interface {
 }
 
 // Deliverer is the delivery sink a digest rides on -- webhookapp satisfies
-// it, delivering with the same signing and bounds as a run.completed event.
-// An interface, not an import, so the use-case stays testable against a
-// recorder and the delivery mechanism stays webhookapp's to own.
+// it, delivering with the same signing and bounds as a run.completed event,
+// plus the deploy-wide sink when one is configured. An interface, not an
+// import, so the use-case stays testable against a recorder and the
+// delivery mechanism stays webhookapp's to own. The answer is the tri-state
+// DeliverDigest documents: delivered / failed / nothing-to-do.
 type Deliverer interface {
-	DeliverEvent(ctx context.Context, projectID int64, event string, body []byte) error
+	DeliverDigest(ctx context.Context, projectID int64, body []byte) (delivered bool, err error)
 }
 
 // Service implements the digest use-cases: building, firing, and listing.
@@ -213,7 +215,7 @@ func (s *Service) Fire(ctx context.Context, projectID int64, period digest.Perio
 	}
 	d.ID = id
 	if s.deliverer != nil {
-		if err := s.deliverer.DeliverEvent(ctx, projectID, EventDigest, d.Payload); err != nil {
+		if _, err := s.deliverer.DeliverDigest(ctx, projectID, d.Payload); err != nil {
 			s.log.Error("digest: deliver", "project_id", projectID, "period", period, "digest_id", d.ID, "error", err)
 		}
 	}

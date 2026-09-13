@@ -132,8 +132,10 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// Webhooks are wired before the metrics service so completed runs can
 	// be announced the moment their report is saved (phase 38): the
 	// webhook use-case is the metrics service's Notifier, which delivers
-	// on background workers and never delays the run.
-	webhooks := webhookapp.NewService(repo)
+	// on background workers and never delays the run. WithDigestSink adds
+	// the deploy-wide digest sink when one is configured (phase 60); with
+	// no HONRYU_DIGEST_WEBHOOK_URL it is the unconfigured no-op.
+	webhooks := webhookapp.NewService(repo).WithDigestSink(cfg.Digest.WebhookURL, cfg.Digest.WebhookSecret)
 	collector := metricsapp.NewService(repo, sink, bus, repo, repo).WithNotifier(webhooks)
 	// Digests deliver through the same webhook machinery a run completion
 	// rides on -- one signing path, one set of delivery bounds (phase 42).

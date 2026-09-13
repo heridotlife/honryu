@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"time"
@@ -30,6 +31,7 @@ type Config struct {
 	Scheduler  SchedulerConfig
 	Calibrator CalibratorConfig
 	APM        APMConfig
+	Digest     DigestConfig
 }
 
 // SchedulerConfig configures cmd/scheduler's fire-due-occurrences loop.
@@ -113,6 +115,22 @@ type DemoProfile struct {
 // default -- a deployment that configures none serves no link-outs at all.
 type APMConfig struct {
 	LinkTemplates []APMLinkTemplate
+}
+
+// DigestConfig configures the deploy-wide digest delivery sink
+// (HONRYU_DIGEST_WEBHOOK_URL / HONRYU_DIGEST_WEBHOOK_SECRET): one https
+// endpoint every fired report.digest is also POSTed to, alongside the
+// firing project's own webhooks. Empty by default -- a deployment that
+// configures no sink delivers digests to project webhooks only, exactly as
+// before. The https-only rule is enforced at load: a cleartext target would
+// carry the payload (and the signature's proof) in the clear, so it fails
+// startup rather than being silently accepted and quietly undeliverable.
+type DigestConfig struct {
+	// WebhookURL is the sink's https URL; empty means unconfigured.
+	WebhookURL string
+	// WebhookSecret, when set, signs the sink's deliveries with the same
+	// X-Honryu-Signature scheme the per-project webhooks use.
+	WebhookSecret string
 }
 
 // APMLinkTemplate is one entry in HONRYU_APM_LINK_TEMPLATES (JSON array).
@@ -395,6 +413,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.Digest.WebhookURL = strEnv(getenv, "DIGEST_WEBHOOK_URL", cfg.Digest.WebhookURL)
+	cfg.Digest.WebhookSecret = strEnv(getenv, "DIGEST_WEBHOOK_SECRET", cfg.Digest.WebhookSecret)
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -493,6 +514,15 @@ func (c Config) validate() error {
 	}
 	if c.Calibrator.TickInterval <= 0 {
 		return fmt.Errorf("config: %sCALIBRATOR_TICK_INTERVAL must be positive", envPrefix)
+	}
+	// The digest sink's https-only rule, enforced at the only gate a
+	// deployment-level value has: startup. A malformed or cleartext URL must
+	// fail the load, not surface later as a deliverer that can never deliver.
+	if c.Digest.WebhookURL != "" {
+		u, err := url.Parse(c.Digest.WebhookURL)
+		if err != nil || u.Host == "" || u.Scheme != "https" {
+			return fmt.Errorf("config: %sDIGEST_WEBHOOK_URL must be an absolute https URL, got %q", envPrefix, c.Digest.WebhookURL)
+		}
 	}
 	return nil
 }

@@ -21,20 +21,23 @@ import (
 // delivery records what the fake Deliverer was asked to send.
 type delivery struct {
 	projectID int64
-	event     string
 	body      []byte
 }
 
-// fakeDeliverer records deliveries; failErr, when set, fails every call so
-// tests can prove a delivery failure never fails the fire.
+// fakeDeliverer records deliveries; failErr, when set, fails every call (a
+// delivery attempted and lost) so tests can prove a delivery failure never
+// fails the fire. delivered=true otherwise, as a confirming receiver would.
 type fakeDeliverer struct {
 	calls   []delivery
 	failErr error
 }
 
-func (f *fakeDeliverer) DeliverEvent(_ context.Context, projectID int64, event string, body []byte) error {
-	f.calls = append(f.calls, delivery{projectID: projectID, event: event, body: body})
-	return f.failErr
+func (f *fakeDeliverer) DeliverDigest(_ context.Context, projectID int64, body []byte) (bool, error) {
+	f.calls = append(f.calls, delivery{projectID: projectID, body: body})
+	if f.failErr != nil {
+		return false, f.failErr
+	}
+	return true, nil
 }
 
 // fixture is a store seeded with two executions under one project (plus an
@@ -264,8 +267,8 @@ func TestFireDeliversStoredBytes(t *testing.T) {
 		t.Fatalf("deliveries = %d, want 1", len(f.deliv.calls))
 	}
 	got := f.deliv.calls[0]
-	if got.projectID != f.projA || got.event != digestapp.EventDigest {
-		t.Errorf("delivery = project %d event %q, want project %d event %q", got.projectID, got.event, f.projA, digestapp.EventDigest)
+	if got.projectID != f.projA {
+		t.Errorf("delivery = project %d, want project %d", got.projectID, f.projA)
 	}
 	if string(got.body) != string(d.Payload) {
 		t.Errorf("delivered body = %s, want the stored payload verbatim", got.body)
