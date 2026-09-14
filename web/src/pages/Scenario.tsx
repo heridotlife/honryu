@@ -302,13 +302,13 @@ export default function Scenario() {
                           {/* In flight / unknown are honest placeholders;
                               the badge itself is icon + text (never
                               color-only). */}
-                          {!known ? <span className="text-slate-400 dark:text-slate-500">…</span> : info === null ? <span className="text-slate-400 dark:text-slate-500">—</span> : <RunStatusBadge outcome={info.outcome} />}
+                          {!known ? <span className="text-slate-400 dark:text-slate-500">…</span> : info == null ? <span className="text-slate-400 dark:text-slate-500">—</span> : <RunStatusBadge outcome={info.outcome} />}
                         </td>
                         <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                          {info !== null ? formatRowTime(info.startedAt) : '—'}
+                          {info != null ? formatRowTime(info.startedAt) : '—'}
                         </td>
                         <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                          {info !== null ? formatDuration(info.durationSeconds) : '—'}
+                          {info != null ? formatDuration(info.durationSeconds) : '—'}
                         </td>
                       </tr>
                     );
