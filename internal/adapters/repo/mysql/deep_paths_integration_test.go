@@ -38,7 +38,7 @@ func TestMySQLCalibration_ErrorsWhenDBClosed(t *testing.T) {
 
 	now := time.Now()
 	ops := map[string]func() error{
-		"CreateCalibrationJob": func() error { _, e := repo.CreateCalibrationJob(ctx, 1); return e },
+		"CreateCalibrationJob": func() error { _, e := repo.CreateCalibrationJob(ctx, 1, 0); return e },
 		"GetCalibrationJob":    func() error { _, e := repo.GetCalibrationJob(ctx, 1); return e },
 		"ListCalibrationJobsByExecution": func() error {
 			_, e := repo.ListCalibrationJobsByExecution(ctx, 1)
@@ -297,7 +297,7 @@ func TestMySQLCalibration_DeepErrorPaths(t *testing.T) {
 	ctx := context.Background()
 	eid := newExecution(t, repo, ctx)
 
-	jobID, err := repo.CreateCalibrationJob(ctx, eid)
+	jobID, err := repo.CreateCalibrationJob(ctx, eid, 0)
 	if err != nil {
 		t.Fatalf("create calibration job: %v", err)
 	}

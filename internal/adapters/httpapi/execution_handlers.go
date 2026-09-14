@@ -84,17 +84,25 @@ func (h *handlers) listExecutions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]executionSummary, 0, len(executions))
 	for _, c := range executions {
-		out = append(out, executionSummary{
-			ID:          c.ID,
-			Name:        c.Name,
-			ProjectID:   c.ProjectID,
-			Engine:      c.Engine,
-			Kind:        c.Kind,
-			Cluster:     c.Cluster,
-			CreatedTime: c.CreatedTime,
-		})
+		out = append(out, toExecutionSummary(c))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// toExecutionSummary is the one execution-list serialization: every list
+// endpoint that serves execution rows (GET /api/executions, and phase 67a's
+// GET /api/scenarios/{scenario_id}/executions) must produce the same shape,
+// so a caller's parsing never depends on which list a row came from.
+func toExecutionSummary(c execution.Execution) executionSummary {
+	return executionSummary{
+		ID:          c.ID,
+		Name:        c.Name,
+		ProjectID:   c.ProjectID,
+		Engine:      c.Engine,
+		Kind:        c.Kind,
+		Cluster:     c.Cluster,
+		CreatedTime: c.CreatedTime,
+	}
 }
 
 func (h *handlers) getExecution(w http.ResponseWriter, r *http.Request) {

@@ -6,20 +6,27 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
+	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 )
 
 type planResponse struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	ProjectID   int64     `json:"project_id"`
-	CreatedTime time.Time `json:"created_time"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	ProjectID int64  `json:"project_id"`
+	// Phase 67a: how the workload is expressed (portable = Taurus requests,
+	// native = an engine-specific artefact). It decides which engines a
+	// scenario may run on, so a scenario picker needs it without a second
+	// fetch; every scenario response carries it, the one wire shape.
+	Kind        scenario.Kind `json:"kind"`
+	CreatedTime time.Time     `json:"created_time"`
 	// Phase 65: templates ride the same wire shape (the catalog list and
 	// every scenario response carry the flag), so the SPA can badge a
 	// template without a second endpoint.
@@ -357,9 +364,83 @@ func toScenarioResponse(p scenario.Scenario) planResponse {
 		ID:           p.ID,
 		Name:         p.Name,
 		ProjectID:    p.ProjectID,
+		Kind:         p.Kind,
 		CreatedTime:  p.CreatedTime,
 		IsTemplate:   p.IsTemplate,
 		TemplateName: p.TemplateName,
 		Data:         []scenarioapp.FileRef{},
 	}
+}
+
+// listScenarios serves GET /api/scenarios: every runnable scenario (never a
+// template -- the service's ListByProject excludes them for every consumer)
+// in every project the caller may see, id order, the full honest list the
+// other list endpoints serve. The scenario-first operator view: "what can I
+// run", not "what lives in this project" (that remains the per-project
+// paths). An optional ?project_id= narrows the list to one project -- when
+// the caller may see it; a project outside the caller's scope contributes
+// nothing, the same rule GET /api/executions' scoping follows, so a filtered
+// list can never widen it.
+func (h *handlers) listScenarios(w http.ResponseWriter, r *http.Request) {
+	projects, err := h.visibleProjects(r)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if raw := r.URL.Query().Get("project_id"); raw != "" {
+		projectID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid project_id")
+			return
+		}
+		named := make([]project.Project, 0, 1)
+		for _, p := range projects {
+			if p.ID == projectID {
+				named = append(named, p)
+			}
+		}
+		projects = named
+	}
+	out := make([]planResponse, 0)
+	for _, p := range projects {
+		scenarios, err := h.deps.Scenarios.ListByProject(r.Context(), p.ID)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		for _, sc := range scenarios {
+			out = append(out, toScenarioResponse(sc))
+		}
+	}
+	// Per-project lists are id-ordered; the concatenation is re-sorted so the
+	// flat list is too, whatever project order visibleProjects returned.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	writeJSON(w, http.StatusOK, out)
+}
+
+// listScenarioExecutions serves GET /api/scenarios/{scenario_id}/executions:
+// every execution whose load profile binds the scenario, newest first -- the
+// scenario's run history across every rig that ever carried it. Serialized
+// exactly like GET /api/executions' list items (executionSummary): identity
+// and metadata only, the single-execution fetch owns the rest.
+func (h *handlers) listScenarioExecutions(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt(r, "scenario_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid scenario id")
+		return
+	}
+	if err := h.authorizeScenario(r, id, rbac.ActionRead); err != nil {
+		respondError(w, err)
+		return
+	}
+	executions, err := h.deps.Executions.ListByScenario(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	out := make([]executionSummary, 0, len(executions))
+	for _, c := range executions {
+		out = append(out, toExecutionSummary(c))
+	}
+	writeJSON(w, http.StatusOK, out)
 }

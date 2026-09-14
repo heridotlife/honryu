@@ -9,14 +9,15 @@ import (
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
-// CreateCalibrationJob persists a fresh job (PhasePending) for executionID
-// and returns its assigned ID.
-func (s *Store) CreateCalibrationJob(_ context.Context, executionID int64) (int64, error) {
+// CreateCalibrationJob persists a fresh job (PhasePending) for executionID,
+// recording scenarioID as the scenario the search calibrates (0 stores NULL
+// -- unknown), and returns its assigned ID.
+func (s *Store) CreateCalibrationJob(_ context.Context, executionID, scenarioID int64) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calibrationJobSeq++
 	job := ports.CalibrationJob{
-		ID: s.calibrationJobSeq, ExecutionID: executionID,
+		ID: s.calibrationJobSeq, ExecutionID: executionID, ScenarioID: scenarioID,
 		Phase: calibration.PhasePending, CreatedTime: s.now(),
 	}
 	s.calibrationJobs[job.ID] = job

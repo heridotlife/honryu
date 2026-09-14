@@ -342,6 +342,13 @@ components:
         id: { type: integer, format: int64 }
         name: { type: string }
         project_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          enum: [portable, native]
+          description: >-
+            How the workload is expressed: portable (Taurus requests, runs on
+            any executor that accepts the form) or native (an engine-specific
+            artefact, pinned to its engine).
         created_time: { type: string, format: date-time }
         is_template:
           type: boolean
@@ -1493,6 +1500,32 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/scenarios:
+    get:
+      tags: [scenarios]
+      summary: List the caller's scenarios
+      description: >-
+        Every scenario belonging to a project the caller may see, in id
+        order -- the scenario-first "what can I run" view. Templates are
+        never in it (they are the catalog's, GET /api/templates). The full
+        honest list, like every list endpoint. An optional project_id
+        narrows the list to one project; a project outside the caller's
+        scope contributes nothing, so a filter can never widen the list.
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          description: Only that project's scenarios.
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Scenarios, id order, templates excluded
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Scenario' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [scenarios]
       summary: Create a scenario
@@ -1608,6 +1641,28 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/scenarios/{scenario_id}/executions:
+    get:
+      tags: [scenarios]
+      summary: List a scenario's executions
+      description: >-
+        Every execution whose load profile binds the scenario, newest first
+        -- the scenario's run history across every rig that ever carried it,
+        whatever kind of execution (load test or calibration) it is. Items
+        carry identity fields only, exactly like GET /api/executions' list;
+        fetch a single execution for its load profile and files.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      responses:
+        '200':
+          description: Executions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ExecutionSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/scenarios/{scenario_id}:
     get:
@@ -2416,7 +2471,38 @@ paths:
         Creates a Pending job over an already-configured CalibrateEngine
         execution -- a controller (cmd/calibrator, or cmd/scheduler hosting
         the same loop) picks it up and advances it one step per tick.
+
+        Deprecated since the scenario-first route
+        POST /api/scenarios/{scenario_id}/calibration/trigger: kept working
+        as an alias, same service, same job records, identical responses --
+        migrate when convenient, nothing breaks meanwhile.
       parameters: [{ $ref: '#/components/parameters/ExecutionID' }]
+      responses:
+        '201':
+          description: CalibrationJob
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalibrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/scenarios/{scenario_id}/calibration/trigger:
+    post:
+      tags: [calibration]
+      summary: Start a fresh calibration search for a scenario
+      description: >-
+        The scenario-first shape of the trigger: names the scenario, and the
+        service picks its newest CalibrateEngine execution (newest first, so
+        a re-created calibration supersedes its predecessor). The job records
+        both the execution and the scenario it calibrates; the response is
+        exactly the execution-scoped route's, and that route remains working
+        as a deprecated alias -- same service call either way.
+
+        A scenario nothing calibrates is a 400: there is no search to start,
+        and silently picking some other execution would lie about what is
+        being measured.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
       responses:
         '201':
           description: CalibrationJob
