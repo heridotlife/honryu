@@ -216,6 +216,7 @@ var routes = []Route{
 	{"GET", "/api/projects", "projects", hf(func(h *handlers) http.HandlerFunc { return h.listProjects })},
 	{"POST", "/api/projects", "projects", hf(func(h *handlers) http.HandlerFunc { return h.createProject })},
 	{"GET", "/api/projects/{project_id}", "projects", hf(func(h *handlers) http.HandlerFunc { return h.getProject })},
+	{"GET", "/api/projects/{project_id}/summary", "projects", hf(func(h *handlers) http.HandlerFunc { return h.projectSummary })},
 	{"DELETE", "/api/projects/{project_id}", "projects", hf(func(h *handlers) http.HandlerFunc { return h.deleteProject })},
 
 	// Phase 40: the run-completion webhook registry, project-scoped like

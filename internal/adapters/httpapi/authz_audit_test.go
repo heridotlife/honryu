@@ -106,6 +106,7 @@ var authzAuditTable = []authzEntry{
 	{method: "POST", pattern: "/api/projects", decision: "project:create",
 		form: url.Values{"name": {"x"}, "owner": {"team-x"}}},
 	{method: "GET", pattern: "/api/projects/{project_id}", decision: "project:read"},
+	{method: "GET", pattern: "/api/projects/{project_id}/summary", decision: "project:read"},
 	{method: "DELETE", pattern: "/api/projects/{project_id}", decision: "project:delete"},
 
 	// Phase 40: webhook administration is project-scoped, gated by the
