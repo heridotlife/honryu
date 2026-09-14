@@ -8,6 +8,8 @@
 import { ApiError } from './client';
 import {
   getScenariosByScenarioIdRequests,
+  getTemplates,
+  postScenariosByScenarioIdInstantiate,
   postScenariosByScenarioIdRequestsValidate,
   putScenariosByScenarioIdRequests,
 } from './generated';
@@ -63,4 +65,45 @@ export async function validateScenarioRequests(
     }
     throw err;
   }
+}
+
+/** One template in the catalog: a global starting point (project 0, no
+ * tenant) the instantiate endpoint clones into an ordinary scenario. The
+ * page contract deliberately narrows the generated Scenario row to what the
+ * picker renders. */
+export interface Template {
+  id: number;
+  name: string;
+  /** The template's slug (e.g. httpbin-baseline). */
+  templateName: string;
+}
+
+/** GET /api/templates -- the template catalog, in id order. Server-driven:
+ * the picker renders exactly this list; nothing is cloned client-side. */
+export async function listTemplates(): Promise<Template[]> {
+  const got = await getTemplates();
+  return (got ?? []).map((t) => ({ id: t.id as number, name: t.name as string, templateName: t.template_name as string }));
+}
+
+/** Instantiate input: the clone's name and owning project, plus the one
+ * documented override (the fragment's default-address). Everything else the
+ * template carries is cloned server-side, verbatim. */
+export interface InstantiateInput {
+  name: string;
+  projectId: number;
+  targetUrl?: string;
+}
+
+/**
+ * POST /api/scenarios/{id}/instantiate -- clone a template into a fresh,
+ * ordinary scenario and return its id. The override is sent only when set,
+ * so the wire carries exactly what the caller chose.
+ */
+export async function instantiateScenario(templateId: number, input: InstantiateInput): Promise<number> {
+  const sc = await postScenariosByScenarioIdInstantiate(templateId, {
+    name: input.name,
+    project_id: input.projectId,
+    overrides: input.targetUrl ? { target_url: input.targetUrl } : undefined,
+  });
+  return sc.id as number;
 }

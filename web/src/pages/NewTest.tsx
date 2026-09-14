@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import StageEditor, { type StageEditorState } from '../components/StageEditor';
 import { apiClient, ApiError, errorDetails } from '../api/client';
-import { setScenarioRequests } from '../api/scenarios';
+import { instantiateScenario, listTemplates, setScenarioRequests, type Template } from '../api/scenarios';
 import { useSession } from '../hooks/useSession';
 import {
   buildFragment,
@@ -80,6 +80,91 @@ export default function NewTest() {
   // numbers when the server's envelope carried them.
   const [errorDetail, setErrorDetail] = useState<Record<string, unknown> | null>(null);
   const [step, setStep] = useState<string | null>(null);
+
+  // --- From template (phase 65) -------------------------------------------
+  // The catalog is server-driven: the picker renders GET /api/templates
+  // verbatim and instantiate clones server-side; nothing is copied in the
+  // client. A catalog failure must never touch the from-scratch flow, so it
+  // degrades to a note inside this card only.
+  const canCreateScenario = can('scenario', 'create');
+  const [templates, setTemplates] = useState<Template[] | null>(null);
+  const [templatesUnavailable, setTemplatesUnavailable] = useState(false);
+  const [templateId, setTemplateId] = useState('');
+  const [templateName, setTemplateName] = useState('');
+  const [templateTarget, setTemplateTarget] = useState('');
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateStep, setTemplateStep] = useState<string | null>(null);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateErrorDetail, setTemplateErrorDetail] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    listTemplates()
+      .then((t) => {
+        if (alive) setTemplates(t);
+      })
+      .catch(() => {
+        if (alive) setTemplatesUnavailable(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const createFromTemplate = () => {
+    if (!templateId || !templateName.trim()) {
+      setTemplateError('Pick a template and name the new test.');
+      return;
+    }
+    setTemplateBusy(true);
+    setTemplateError(null);
+    setTemplateErrorDetail(null);
+
+    const run = async () => {
+      // Same project-if-absent convention as the from-scratch flow: the
+      // operator names a test; the project is derived from it. The step
+      // labels are the flow's own (resolve project / create scenario) --
+      // the template path is the same two steps with a shorter second one.
+      setTemplateStep(flowSteps[0]);
+      let project: ProjectRef;
+      const projects = await apiClient.get<ProjectRef[] | null>('/projects').catch((e: unknown) => {
+        throw stepError(flowSteps[0], e);
+      });
+      const wanted = `tests-${templateName.trim().toLowerCase().replace(/\s+/g, '-')}`;
+      const existing = (projects ?? []).find((p) => p.name === wanted);
+      if (existing) {
+        project = existing;
+      } else {
+        project = await apiClient
+          .post<ProjectRef>('/projects', new URLSearchParams({ name: wanted, owner: 'honryu' }))
+          .catch((e: unknown) => {
+            throw stepError(flowSteps[0], e);
+          });
+      }
+
+      // One server call does the cloning: the new scenario is ordinary
+      // (is_template false), carries the template's requests fragment with
+      // at most the target URL replaced, and the template itself is
+      // untouched. Overrides left empty cross the wire absent.
+      setTemplateStep(flowSteps[1]);
+      const scenarioId = await instantiateScenario(Number(templateId), {
+        name: templateName.trim(),
+        projectId: project.id,
+        targetUrl: templateTarget.trim() || undefined,
+      }).catch((e: unknown) => {
+        throw stepError(flowSteps[1], e);
+      });
+
+      navigate(`/scenarios/${scenarioId}`);
+    };
+
+    run()
+      .catch((e: unknown) => {
+        setTemplateError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Something failed.');
+        setTemplateErrorDetail(errorDetails(e));
+      })
+      .finally(() => setTemplateBusy(false));
+  };
 
   // R9's clamp guard, per stage row. Raw JSON mode skips it: there the
   // operator owns the config verbatim and the backend's own Validate is
@@ -267,6 +352,82 @@ export default function NewTest() {
             configName={`${form.name}-load`}
             onValidityChange={setStagesValid}
           />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>From template</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {templatesUnavailable ? (
+            <p className="text-caption text-slate-400">Template catalog unavailable.</p>
+          ) : templates === null ? (
+            <p className="text-caption text-slate-400">Loading templates…</p>
+          ) : templates.length === 0 ? (
+            <p className="text-caption text-slate-400">No templates yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="text-caption text-slate-600 dark:text-slate-300">
+                Template
+                <select
+                  className={`${inputCls} mt-1 w-full`}
+                  value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)}
+                  aria-label="template picker"
+                  data-testid="template-picker"
+                >
+                  <option value="">Choose a template…</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-caption text-slate-600 dark:text-slate-300">
+                New test name
+                <input
+                  className={`${inputCls} mt-1 w-full`}
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  placeholder="checkout-baseline"
+                  aria-label="template test name"
+                />
+              </label>
+              <label className="text-caption text-slate-600 dark:text-slate-300 sm:col-span-2">
+                Target URL override (optional)
+                <input
+                  className={`${inputCls} mt-1 w-full`}
+                  value={templateTarget}
+                  onChange={(e) => setTemplateTarget(e.target.value)}
+                  placeholder="https://httpbin.org (optional)"
+                  aria-label="template target URL override"
+                />
+              </label>
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            {canCreateScenario ? (
+              <Button onClick={createFromTemplate} disabled={templateBusy || !templateId} data-testid="create-from-template">
+                {templateBusy ? `Working — ${templateStep ?? '…'}` : 'Create from template'}
+              </Button>
+            ) : (
+              <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="no-template-permission">
+                Your role cannot create scenarios.
+              </p>
+            )}
+            {templateBusy && templateStep && (
+              <span className="text-caption text-slate-500 dark:text-slate-400">step: {templateStep}</span>
+            )}
+          </div>
+          {templateError && (
+            <div>
+              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                {templateError}
+              </p>
+              <ActionErrorDetails details={templateErrorDetail} />
+            </div>
+          )}
         </CardContent>
       </Card>
       <div className="flex items-center gap-3">
