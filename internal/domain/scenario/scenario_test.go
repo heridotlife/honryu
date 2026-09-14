@@ -51,3 +51,63 @@ func TestNew_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestNewTemplate_Valid(t *testing.T) {
+	t.Parallel()
+
+	tpl, err := scenario.NewTemplate("  HTTPbin baseline  ", "  httpbin-baseline  ")
+	if err != nil {
+		t.Fatalf("NewTemplate: unexpected error: %v", err)
+	}
+	if tpl.Name != "HTTPbin baseline" || tpl.TemplateName != "httpbin-baseline" {
+		t.Errorf("names = %q/%q, want trimmed display/slug", tpl.Name, tpl.TemplateName)
+	}
+	if !tpl.IsTemplate || tpl.Kind != scenario.KindPortable || tpl.Engine != "" {
+		t.Errorf("template = %+v, want IsTemplate portable with no engine", tpl)
+	}
+	if tpl.ProjectID != 0 {
+		t.Errorf("ProjectID = %d, want 0 (a template is global)", tpl.ProjectID)
+	}
+	if err := tpl.Validate(); err != nil {
+		t.Errorf("template does not validate: %v", err)
+	}
+}
+
+func TestNewTemplate_Errors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		displayName  string
+		templateName string
+		wantErr      error
+	}{
+		{"missing slug", "baseline", "", scenario.ErrTemplateNameRequired},
+		{"blank slug", "baseline", "   ", scenario.ErrTemplateNameRequired},
+		{"slug too long", "baseline", strings.Repeat("a", 129), scenario.ErrTemplateNameTooLong},
+		{"missing display name", "", "httpbin-baseline", scenario.ErrNameRequired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := scenario.NewTemplate(tc.displayName, tc.templateName); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("NewTemplate = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The template slug is only valid on a template: a plain scenario carrying
+// one is as wrong as a template missing one, and must refuse to validate.
+func TestValidate_TemplateNameOnlyOnTemplates(t *testing.T) {
+	t.Parallel()
+
+	s, err := scenario.New("smoke", 7)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.TemplateName = "httpbin-baseline"
+	if err := s.Validate(); !errors.Is(err, scenario.ErrTemplateNameRequired) {
+		t.Fatalf("non-template with slug = %v, want ErrTemplateNameRequired", err)
+	}
+}

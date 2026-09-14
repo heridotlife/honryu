@@ -48,4 +48,9 @@ type ScenarioRepository interface {
 	// ScenarioInUse reports whether the scenario is referenced by any execution's
 	// execution configuration.
 	ScenarioInUse(ctx context.Context, scenarioID int64) (bool, error)
+
+	// ListTemplates returns every scenario flagged as a template, in id order.
+	// Templates are global (no project, no tenant), so the catalog takes no
+	// scoping arguments.
+	ListTemplates(ctx context.Context) ([]scenario.Scenario, error)
 }

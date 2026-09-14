@@ -244,6 +244,12 @@ var routes = []Route{
 	{"POST", "/api/scenarios/{scenario_id}/requests/validate", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.validateScenarioRequests })},
 	{"PUT", "/api/scenarios/{scenario_id}/requests", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.setScenarioRequests })},
 
+	// Phase 65: templates are scenarios with a flag. The catalog is its own
+	// read surface (templates are global, so no project scopes it), and
+	// instantiate clones one into an ordinary scenario.
+	{"GET", "/api/templates", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listTemplates })},
+	{"POST", "/api/scenarios/{scenario_id}/instantiate", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.instantiateTemplate })},
+
 	{"POST", "/api/executions", "executions", hf(func(h *handlers) http.HandlerFunc { return h.createExecution })},
 	{"GET", "/api/executions", "executions", hf(func(h *handlers) http.HandlerFunc { return h.listExecutions })},
 	{"GET", "/api/executions/{execution_id}", "executions", hf(func(h *handlers) http.HandlerFunc { return h.getExecution })},

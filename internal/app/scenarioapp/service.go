@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/heridotlife/honryu/internal/domain/jmx"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -28,6 +30,10 @@ var (
 	ErrInvalidFilename     = errors.New("scenarioapp: invalid filename")
 	ErrRequestsInvalid     = errors.New("scenarioapp: requests fragment is invalid")
 	ErrScenarioNotPortable = errors.New("scenarioapp: scenario is not portable")
+	// ErrScenarioNotTemplate refuses instantiate on an ordinary scenario: the
+	// instantiate route addresses templates, and silently cloning a runnable
+	// scenario through it would hide a wrong-id mistake behind a success.
+	ErrScenarioNotTemplate = errors.New("scenarioapp: scenario is not a template")
 )
 
 // Repo is the repository surface the scenario service needs.
@@ -49,6 +55,11 @@ type Repo interface {
 	// GetProject resolves the owning project's tenant so Create can stamp it
 	// onto the scenario (Phase 20 tenant propagation).
 	GetProject(ctx context.Context, id int64) (project.Project, error)
+
+	// ListTemplates returns the template catalog (every scenario flagged as a
+	// template), in id order. Templates are global, so there is nothing to
+	// scope by.
+	ListTemplates(ctx context.Context) ([]scenario.Scenario, error)
 }
 
 // Service provides scenario use-cases.
@@ -98,9 +109,128 @@ func (s *Service) Get(ctx context.Context, id int64) (scenario.Scenario, error) 
 	return s.repo.GetScenario(ctx, id)
 }
 
-// ListByProject returns the scenarios belonging to a project.
+// ListByProject returns the scenarios belonging to a project, minus templates:
+// templates are global starting points, not project tests, so every caller that
+// lists a project's scenarios gets only runnable ones. (The adapter-level list
+// is a dumb lens and would include them; the exclusion is enforced here, once,
+// for every consumer of the service.)
 func (s *Service) ListByProject(ctx context.Context, projectID int64) ([]scenario.Scenario, error) {
-	return s.repo.ListScenariosByProject(ctx, projectID)
+	all, err := s.repo.ListScenariosByProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]scenario.Scenario, 0, len(all))
+	for _, p := range all {
+		if !p.IsTemplate {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// Templates lists the template catalog, in id order. Templates are global --
+// no project, no tenant -- so there is nothing to scope by.
+func (s *Service) Templates(ctx context.Context) ([]scenario.Scenario, error) {
+	return s.repo.ListTemplates(ctx)
+}
+
+// InstantiateOverrides is the tiny, documented surface a caller may change
+// when instantiating: everything else about the template is cloned verbatim.
+type InstantiateOverrides struct {
+	// TargetURL replaces the fragment's default-address (the base URL every
+	// relative request URL resolves against). Empty means keep the
+	// template's. Normalized the way the NewTest flow normalizes its own
+	// target: surrounding space trimmed, one trailing slash dropped.
+	TargetURL string
+}
+
+// InstantiateInput is an Instantiate request: which template, the new
+// scenario's name and owning project, and the overrides.
+type InstantiateInput struct {
+	// Name for the new scenario (validated exactly like Service.Create's).
+	Name string
+	// ProjectID the clone belongs to (a template itself belongs to none).
+	ProjectID int64
+	// Overrides, all optional.
+	Overrides InstantiateOverrides
+}
+
+// Instantiate clones a template into a fresh, ordinary scenario in projectID
+// and returns it (ID assigned). The clone is portable and carries the
+// template's requests fragment; overrides are applied to the fragment before
+// it is stored.
+//
+// The fragment is stored through SetRequests -- the one validate-and-store
+// path -- so a template can never produce a clone SetRequests would have
+// rejected, and no validation logic is duplicated here. A failure after the
+// scenario row was created rolls the row back, so a failed instantiate leaves
+// nothing behind (the same stance ImportJMX takes). Files are deliberately
+// not cloned: the seeded templates carry none, and a template with files
+// would need an override surface this phase does not have.
+func (s *Service) Instantiate(ctx context.Context, templateID int64, in InstantiateInput) (scenario.Scenario, error) {
+	tpl, err := s.repo.GetScenario(ctx, templateID)
+	if err != nil {
+		return scenario.Scenario{}, err
+	}
+	if !tpl.IsTemplate {
+		return scenario.Scenario{}, fmt.Errorf("%w: scenario %d is not a template", ErrScenarioNotTemplate, templateID)
+	}
+	if tpl.Kind != scenario.KindPortable {
+		return scenario.Scenario{}, fmt.Errorf("%w: template %d is %s", ErrScenarioNotPortable, templateID, tpl.Kind)
+	}
+	raw, err := s.repo.GetScenarioRequests(ctx, templateID)
+	if err != nil {
+		return scenario.Scenario{}, err
+	}
+
+	if in.Overrides.TargetURL != "" {
+		raw, err = withDefaultAddress(raw, in.Overrides.TargetURL)
+		if err != nil {
+			return scenario.Scenario{}, err
+		}
+	}
+
+	sc, err := scenario.New(in.Name, in.ProjectID)
+	if err != nil {
+		return scenario.Scenario{}, err
+	}
+	tenantID, tenantErr := s.resolveTenant(ctx, in.ProjectID)
+	if tenantErr != nil {
+		return scenario.Scenario{}, tenantErr
+	}
+	sc.TenantID = tenantID
+	id, err := s.repo.CreateScenario(ctx, sc)
+	if err != nil {
+		return scenario.Scenario{}, err
+	}
+	sc.ID = id
+
+	if err := s.SetRequests(ctx, id, raw); err != nil {
+		// Roll back, so a failed instantiate leaves no scenario behind.
+		_ = s.repo.DeleteScenario(ctx, id)
+		return scenario.Scenario{}, err
+	}
+	return sc, nil
+}
+
+// withDefaultAddress rewrites a fragment's default-address. The fragment is
+// parsed as the same taurus.Scenario SetRequests validates into; a fragment
+// this function cannot parse is a stored-template inconsistency (it was
+// validated when stored), reported as the InvalidRequestsError the editor
+// paths already speak. The URL is normalized the way the NewTest flow
+// normalizes its own target field, so an override and a hand-typed test
+// produce the same fragment.
+func withDefaultAddress(raw []byte, targetURL string) ([]byte, error) {
+	var frag taurus.Scenario
+	if err := yaml.Unmarshal(raw, &frag); err != nil {
+		return nil, &InvalidRequestsError{Diagnostics: diagnosticsFromYAMLError(err), Err: ErrRequestsInvalid}
+	}
+	frag.DefaultAddress = strings.TrimRight(strings.TrimSpace(targetURL), "/")
+	out, err := yaml.Marshal(&frag)
+	if err != nil {
+		return nil, fmt.Errorf("scenarioapp: re-marshal fragment: %w", err)
+	}
+	return out, nil
 }
 
 // Delete removes a scenario (and its files) unless it is used by an execution.

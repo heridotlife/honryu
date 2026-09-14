@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getScenarioRequests, setScenarioRequests, validateScenarioRequests } from './scenarios';
+import {
+  getScenarioRequests,
+  instantiateScenario,
+  listTemplates,
+  setScenarioRequests,
+  validateScenarioRequests,
+} from './scenarios';
 import { apiClient } from './client';
 
 afterEach(() => {
@@ -75,5 +81,71 @@ describe('scenario fragment api', () => {
       valid: false,
       diagnostics: [{ severity: 'error', message: 'no url', line: 2 }],
     });
+  });
+});
+
+// Phase 65: the template catalog and instantiate. Pinned at the wire like
+// the fragment calls above -- the picker renders what GET returned and the
+// instantiate POST carries exactly the caller's choices (overrides omitted
+// when no target URL was given).
+describe('scenario template api', () => {
+  it('listTemplates maps the catalog rows to the picker contract', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify([
+            { id: 7, name: 'HTTPbin baseline', project_id: 0, is_template: true, template_name: 'httpbin-baseline' },
+            { id: 8, name: 'HTTPbin spike', project_id: 0, is_template: true, template_name: 'httpbin-spike' },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    );
+
+    await expect(listTemplates()).resolves.toEqual([
+      { id: 7, name: 'HTTPbin baseline', templateName: 'httpbin-baseline' },
+      { id: 8, name: 'HTTPbin spike', templateName: 'httpbin-spike' },
+    ]);
+  });
+
+  it('instantiateScenario POSTs JSON with the override and returns the clone id', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: String(input), init });
+        return new Response(JSON.stringify({ id: 42, name: 'checkout-baseline', is_template: false }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+
+    const got = await instantiateScenario(7, { name: 'checkout-baseline', projectId: 3, targetUrl: 'http://checkout.svc' });
+
+    expect(got).toBe(42);
+    expect(requests[0].url).toBe('/api/scenarios/7/instantiate');
+    expect(requests[0].init?.method).toBe('POST');
+    expect(new Headers(requests[0].init?.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(String(requests[0].init?.body))).toEqual({
+      name: 'checkout-baseline',
+      project_id: 3,
+      overrides: { target_url: 'http://checkout.svc' },
+    });
+  });
+
+  it('instantiateScenario omits overrides entirely when no target URL is given', async () => {
+    const requests: Array<{ init?: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ init });
+        return new Response(JSON.stringify({ id: 43 }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      })
+    );
+
+    await expect(instantiateScenario(7, { name: 'plain', projectId: 3 })).resolves.toBe(43);
+    expect(JSON.parse(String(requests[0].init?.body))).toEqual({ name: 'plain', project_id: 3 });
   });
 });

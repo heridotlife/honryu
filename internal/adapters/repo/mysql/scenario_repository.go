@@ -13,17 +13,18 @@ import (
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
-const scenarioColumns = "id, name, project_id, kind, engine, tenant_id, created_by, updated_by, created_time"
+const scenarioColumns = "id, name, project_id, kind, engine, tenant_id, created_by, updated_by, created_time, is_template, template_name"
 
 const mysqlDupEntry = 1062
 
 // CreateScenario inserts p and returns its auto-assigned ID.
 func (r *Repository) CreateScenario(ctx context.Context, p scenario.Scenario) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO scenario (name, project_id, kind, engine, tenant_id, created_by, updated_by)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO scenario (name, project_id, kind, engine, tenant_id, created_by, updated_by, is_template, template_name)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		p.Name, p.ProjectID, string(p.Kind), string(p.Engine),
 		nullPtr(p.TenantID), nullString(p.CreatedBy), nullString(p.UpdatedBy),
+		p.IsTemplate, nullString(p.TemplateName),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("mysql: create scenario: %w", err)
@@ -66,6 +67,29 @@ func (r *Repository) ListScenariosByProject(ctx context.Context, projectID int64
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("mysql: iterate scenarios: %w", err)
+	}
+	return out, nil
+}
+
+// ListTemplates returns every scenario flagged as a template, in id order.
+func (r *Repository) ListTemplates(ctx context.Context) ([]scenario.Scenario, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT "+scenarioColumns+" FROM scenario WHERE is_template = TRUE ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("mysql: list templates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []scenario.Scenario{}
+	for rows.Next() {
+		p, scanErr := scanScenario(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("mysql: scan template: %w", scanErr)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql: iterate templates: %w", err)
 	}
 	return out, nil
 }
@@ -206,21 +230,23 @@ func (r *Repository) ScenarioInUse(ctx context.Context, scenarioID int64) (bool,
 
 func scanScenario(s rowScanner) (scenario.Scenario, error) {
 	var (
-		p         scenario.Scenario
-		kind      string
-		engine    string
-		tenantID  sql.NullInt64
-		createdBy sql.NullString
-		updatedBy sql.NullString
+		p            scenario.Scenario
+		kind         string
+		engine       string
+		tenantID     sql.NullInt64
+		createdBy    sql.NullString
+		updatedBy    sql.NullString
+		templateName sql.NullString
 	)
 	if err := s.Scan(&p.ID, &p.Name, &p.ProjectID, &kind, &engine,
-		&tenantID, &createdBy, &updatedBy, &p.CreatedTime); err != nil {
+		&tenantID, &createdBy, &updatedBy, &p.CreatedTime, &p.IsTemplate, &templateName); err != nil {
 		return scenario.Scenario{}, err
 	}
 	p.Kind = scenario.Kind(kind)
 	p.Engine = taurus.Executor(engine)
 	p.CreatedBy = createdBy.String
 	p.UpdatedBy = updatedBy.String
+	p.TemplateName = templateName.String
 	if tenantID.Valid {
 		p.TenantID = &tenantID.Int64
 	}
