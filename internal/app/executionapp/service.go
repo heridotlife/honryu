@@ -34,6 +34,10 @@ type Repo interface {
 	ListExecutionsByProject(ctx context.Context, projectID int64) ([]execution.Execution, error)
 	// ListExecutionsByProjects backs the cross-project operator listing.
 	ListExecutionsByProjects(ctx context.Context, projectIDs []int64) ([]execution.Execution, error)
+	// ListExecutionsByScenario backs the scenario-first surfaces: a
+	// scenario's execution list, and the calibration trigger's choice of
+	// the execution to run.
+	ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error)
 	DeleteExecution(ctx context.Context, id int64) error
 	AddExecutionFile(ctx context.Context, executionID int64, filename string) error
 	ExecutionFilesFor(ctx context.Context, executionID int64) ([]string, error)
@@ -120,6 +124,13 @@ func (s *Service) ListForProjects(ctx context.Context, projectIDs []int64) ([]ex
 		return []execution.Execution{}, nil
 	}
 	return s.repo.ListExecutionsByProjects(ctx, projectIDs)
+}
+
+// ListByScenario returns every execution whose load profile binds the
+// scenario, newest first -- the scenario's run history, whatever kind of
+// execution carries it.
+func (s *Service) ListByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error) {
+	return s.repo.ListExecutionsByScenario(ctx, scenarioID)
 }
 
 // Delete removes an execution and its data files.

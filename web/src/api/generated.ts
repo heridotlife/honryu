@@ -91,6 +91,7 @@ export interface Scenario {
   id?: number;
   name?: string;
   project_id?: number;
+  kind?: "portable" | "native";
   created_time?: string;
   is_template?: boolean;
   template_name?: string;
@@ -516,9 +517,11 @@ export const paths = {
   deleteProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
   getProjectsByProjectIdDigests: (projectId: number | string) => `/projects/${projectId}/digests`,
   getTemplates: () => `/templates`,
+  getScenarios: () => `/scenarios`,
   postScenarios: () => `/scenarios`,
   postScenariosImport: () => `/scenarios/import`,
   postScenariosByScenarioIdInstantiate: (scenarioId: number | string) => `/scenarios/${scenarioId}/instantiate`,
+  getScenariosByScenarioIdExecutions: (scenarioId: number | string) => `/scenarios/${scenarioId}/executions`,
   getScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   deleteScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   getScenariosByScenarioIdFiles: (scenarioId: number | string) => `/scenarios/${scenarioId}/files`,
@@ -710,6 +713,11 @@ export function getTemplates(): Promise<Scenario[]> {
   return apiClient.get<Scenario[]>(paths.getTemplates());
 }
 
+/** List the caller's scenarios */
+export function getScenarios(opts?: { query?: { project_id?: number | string } }): Promise<Scenario[]> {
+  return apiClient.get<Scenario[]>(paths.getScenarios() + toQuery(opts?.query ?? {}));
+}
+
 /** Create a scenario */
 export function postScenarios(body: { name: string; project_id: number }): Promise<Scenario> {
   return apiClient.post<Scenario>(paths.postScenarios(), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
@@ -727,6 +735,11 @@ export function postScenariosByScenarioIdInstantiate(scenarioId: number | string
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/** List a scenario's executions */
+export function getScenariosByScenarioIdExecutions(scenarioId: number | string): Promise<ExecutionSummary[]> {
+  return apiClient.get<ExecutionSummary[]>(paths.getScenariosByScenarioIdExecutions(scenarioId));
 }
 
 /** Get a scenario and its files */

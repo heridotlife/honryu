@@ -141,6 +141,13 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/requests", decision: "scenario:read"},
 	{method: "POST", pattern: "/api/scenarios/{scenario_id}/requests/validate", decision: "scenario:update"},
 	{method: "PUT", pattern: "/api/scenarios/{scenario_id}/requests", decision: "scenario:update"},
+	// Phase 67a: the flat scenario list is a scoped list -- any authenticated
+	// caller may ask, but only scenarios of projects the caller may see come
+	// back (visibleProjects, the listExecutions rule); templates are never
+	// in it. A scenario's execution list reads the scenario (the same gate
+	// the capacity-profile GET uses), not every execution it names.
+	{method: "GET", pattern: "/api/scenarios", decision: decisionScopedList},
+	{method: "GET", pattern: "/api/scenarios/{scenario_id}/executions", decision: "scenario:read"},
 
 	// Phase 65: the template catalog is global (templates carry no tenant),
 	// so the list demands scenario:list at the global scope -- a nil-tenant

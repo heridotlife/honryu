@@ -342,6 +342,13 @@ components:
         id: { type: integer, format: int64 }
         name: { type: string }
         project_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          enum: [portable, native]
+          description: >-
+            How the workload is expressed: portable (Taurus requests, runs on
+            any executor that accepts the form) or native (an engine-specific
+            artefact, pinned to its engine).
         created_time: { type: string, format: date-time }
         is_template:
           type: boolean
@@ -1493,6 +1500,32 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/scenarios:
+    get:
+      tags: [scenarios]
+      summary: List the caller's scenarios
+      description: >-
+        Every scenario belonging to a project the caller may see, in id
+        order -- the scenario-first "what can I run" view. Templates are
+        never in it (they are the catalog's, GET /api/templates). The full
+        honest list, like every list endpoint. An optional project_id
+        narrows the list to one project; a project outside the caller's
+        scope contributes nothing, so a filter can never widen the list.
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          description: Only that project's scenarios.
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Scenarios, id order, templates excluded
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Scenario' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [scenarios]
       summary: Create a scenario
@@ -1608,6 +1641,28 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/scenarios/{scenario_id}/executions:
+    get:
+      tags: [scenarios]
+      summary: List a scenario's executions
+      description: >-
+        Every execution whose load profile binds the scenario, newest first
+        -- the scenario's run history across every rig that ever carried it,
+        whatever kind of execution (load test or calibration) it is. Items
+        carry identity fields only, exactly like GET /api/executions' list;
+        fetch a single execution for its load profile and files.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      responses:
+        '200':
+          description: Executions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ExecutionSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/scenarios/{scenario_id}:
     get:

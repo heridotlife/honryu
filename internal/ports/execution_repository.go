@@ -28,6 +28,15 @@ type ExecutionRepository interface {
 	// result and no error -- the same convention ListProjectsByOwners keeps.
 	ListExecutionsByProjects(ctx context.Context, projectIDs []int64) ([]execution.Execution, error)
 
+	// ListExecutionsByScenario returns every execution whose load profile
+	// binds scenarioID, newest first (created_time desc, id desc -- the
+	// ListExecutionsByProjects order, so a scenario's run history reads like
+	// GET /api/executions does). It backs the scenario-first surfaces: the
+	// scenario's execution list, and the scenario-scoped calibration trigger's
+	// choice of "the run it uses". An unknown scenario is not an error -- it
+	// simply has no executions.
+	ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error)
+
 	AddExecutionFile(ctx context.Context, executionID int64, filename string) error
 	ExecutionFilesFor(ctx context.Context, executionID int64) ([]string, error)
 	DeleteExecutionFile(ctx context.Context, executionID int64, filename string) error

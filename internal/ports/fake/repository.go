@@ -550,6 +550,31 @@ func (s *Store) ExecutionsWithActiveRunOnCluster(_ context.Context, cluster stri
 	return out, nil
 }
 
+// ListExecutionsByScenario returns every execution whose load profile binds
+// scenarioID, newest first (created time desc, id desc as the tiebreak so the
+// order is total and matches MySQL's ORDER BY, mirroring
+// ListExecutionsByProjects).
+func (s *Store) ListExecutionsByScenario(_ context.Context, scenarioID int64) ([]execution.Execution, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []execution.Execution{}
+	for id, c := range s.executions {
+		for _, entry := range s.exec[id] {
+			if entry.ScenarioID == scenarioID {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedTime.Equal(out[j].CreatedTime) {
+			return out[i].CreatedTime.After(out[j].CreatedTime)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
+}
+
 func (s *Store) DeleteExecution(_ context.Context, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
