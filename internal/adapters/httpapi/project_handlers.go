@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 )
@@ -122,6 +123,93 @@ func parseOptionalInt(s string) (*int64, bool) {
 		return nil, false
 	}
 	return &v, true
+}
+
+// projectSummaryLastRun is the wire shape of the summary's last-run chip:
+// which run, how it ended, and when it started.
+type projectSummaryLastRun struct {
+	RunID     int64     `json:"run_id"`
+	Outcome   string    `json:"outcome"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// projectSummaryThroughputPoint is one point of the summary's throughput
+// series: the same fields the trend endpoint carries for the run, narrowed
+// to what a sparkline and its regressed marker render.
+type projectSummaryThroughputPoint struct {
+	RunID               int64     `json:"run_id"`
+	StartedAt           time.Time `json:"started_at"`
+	AchievedThroughput  float64   `json:"achieved_throughput"`
+	RequestedThroughput float64   `json:"requested_throughput"`
+	Regressed           bool      `json:"regressed,omitempty"`
+}
+
+// projectSummaryResponse is the wire shape of GET
+// /api/projects/{project_id}/summary: one call powering the project
+// dashboard (phase 66). last_run is null -- never omitted -- when the
+// project has no runs yet, and throughput_series is always an array, the
+// series endpoint's own rule: an empty project charts nothing, not noughts.
+type projectSummaryResponse struct {
+	ProjectID         int64                           `json:"project_id"`
+	TotalExecutions   int                             `json:"total_executions"`
+	LastExecutionTime *time.Time                      `json:"last_execution_time,omitempty"`
+	ScenarioCount     int                             `json:"scenario_count"`
+	TemplateCount     int                             `json:"template_count"`
+	RegressedCount    int                             `json:"regressed_count"`
+	LastRun           *projectSummaryLastRun          `json:"last_run"`
+	ThroughputSeries  []projectSummaryThroughputPoint `json:"throughput_series"`
+}
+
+func toProjectSummaryResponse(s projectapp.Summary) projectSummaryResponse {
+	out := projectSummaryResponse{
+		ProjectID:        s.ProjectID,
+		TotalExecutions:  s.TotalExecutions,
+		ScenarioCount:    s.ScenarioCount,
+		TemplateCount:    s.TemplateCount,
+		RegressedCount:   s.RegressedCount,
+		ThroughputSeries: make([]projectSummaryThroughputPoint, 0, len(s.ThroughputSeries)),
+	}
+	if !s.LastExecutionTime.IsZero() {
+		t := s.LastExecutionTime
+		out.LastExecutionTime = &t
+	}
+	if s.LastRun != nil {
+		out.LastRun = &projectSummaryLastRun{
+			RunID: s.LastRun.RunID, Outcome: string(s.LastRun.Outcome), StartedAt: s.LastRun.StartedAt,
+		}
+	}
+	for _, p := range s.ThroughputSeries {
+		out.ThroughputSeries = append(out.ThroughputSeries, projectSummaryThroughputPoint{
+			RunID: p.RunID, StartedAt: p.StartedAt,
+			AchievedThroughput: p.AchievedThroughput, RequestedThroughput: p.RequestedThroughput,
+			Regressed: p.Regressed,
+		})
+	}
+	return out
+}
+
+// projectSummary serves the project dashboard's one fetch (phase 66):
+// counts, last execution, last run, and the recent throughput series with
+// each point's regression verdict, composed by projectapp.Summary from the
+// same surfaces the trend and digest reads use. The gate is the project
+// read -- the same grant GET /api/projects/{project_id} demands -- exactly
+// as the sibling per-project feed (digests) gates.
+func (h *handlers) projectSummary(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathInt(r, "project_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	if err := h.authorizeProject(r.Context(), projectID, rbac.ActionRead); err != nil {
+		respondError(w, err)
+		return
+	}
+	s, err := h.deps.Projects.Summary(r.Context(), projectID, queryInt(r, "limit"))
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProjectSummaryResponse(s))
 }
 
 func (h *handlers) deleteProject(w http.ResponseWriter, r *http.Request) {

@@ -296,6 +296,46 @@ components:
         sid: { type: string }
         tenant_id: { type: [integer, 'null'], format: int64 }
         created_time: { type: string, format: date-time }
+    ProjectSummary:
+      type: object
+      description: One project's dashboard summary (phase 66), served by GET /api/projects/{project_id}/summary.
+      required: [project_id, total_executions, scenario_count, template_count, regressed_count, last_run, throughput_series]
+      properties:
+        project_id: { type: integer, format: int64 }
+        total_executions: { type: integer, description: Every execution in the project, whatever its runs. }
+        last_execution_time:
+          type: string
+          format: date-time
+          description: The newest execution's creation time. Absent when the project has none.
+        scenario_count: { type: integer, description: The project's runnable (non-template) scenarios. }
+        template_count:
+          type: integer
+          description: The template catalog's size (every is_template scenario). Templates are projectless by design, so this counts what the operator can instantiate, not a per-project subset.
+        regressed_count:
+          type: integer
+          description: The project's runs whose trend point carries the regressed verdict (missed target QPS while a comparable predecessor hit it). The dashboard danger-tints this when > 0.
+        last_run:
+          type: [object, 'null']
+          description: The most recent run across the project's executions, or null when none has a report yet.
+          properties:
+            run_id: { type: integer, format: int64 }
+            outcome: { type: string, enum: [passed, failed, aborted, error] }
+            started_at: { type: string, format: date-time }
+        throughput_series:
+          type: array
+          description: The project's most recent runs' throughput, OLDEST FIRST (chart order), at most the requested ?limit=. Always an array, even when empty.
+          items: { $ref: '#/components/schemas/SummaryThroughputPoint' }
+    SummaryThroughputPoint:
+      type: object
+      description: One run's share of the summary's throughput series -- the trend point's fields a sparkline renders.
+      properties:
+        run_id: { type: integer, format: int64 }
+        started_at: { type: string, format: date-time }
+        achieved_throughput: { type: number }
+        requested_throughput: { type: number }
+        regressed:
+          type: boolean
+          description: The same verdict the trend endpoint flags for this run; absent when false.
     Scenario:
       type: object
       properties:
@@ -1242,6 +1282,37 @@ paths:
         '204': { $ref: '#/components/responses/NoContent' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/projects/{project_id}/summary:
+    get:
+      tags: [projects]
+      summary: One project's dashboard summary
+      description: |
+        Every number the project dashboard renders, in one read: the
+        execution and scenario counts, the template catalog's size, the last
+        execution and last run, and the project's recent throughput as a
+        run-over-run series whose points carry the trend's regression
+        verdict. Composed from the existing surfaces -- the project's
+        executions via ListExecutionsByProject, each execution's reports via
+        ListReports, each run's verdict via the same trend build
+        /api/executions/{execution_id}/trend serves -- with no new SQL and no
+        cache: the answer is recomputed per request (v1, honest).
+        Templates are deliberately projectless (portable starting points),
+        so template_count is the catalog an operator can instantiate from.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectID' }
+        - name: limit
+          in: query
+          required: false
+          description: 'Maximum throughput-series points to return, oldest last. Omitted or non-positive means the default (20); capped at 100.'
+          schema: { type: integer }
+      responses:
+        '200':
+          description: ProjectSummary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectSummary' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/projects/{project_id}/webhooks:
     post:

@@ -19,17 +19,26 @@ var (
 	ErrProjectHasExecutions = errors.New("projectapp: cannot delete a project that has executions")
 )
 
-// Repo is the repository surface the project service needs: project CRUD plus
-// the child listings used to enforce delete rules.
+// Repo is the repository surface the project service needs: project CRUD,
+// the child listings used to enforce delete rules, and the template catalog
+// the dashboard summary counts (fake and mysql both already carry it).
 type Repo interface {
 	ports.ProjectRepository
 	ListScenariosByProject(ctx context.Context, projectID int64) ([]scenario.Scenario, error)
 	ListExecutionsByProject(ctx context.Context, projectID int64) ([]execution.Execution, error)
+	ListTemplates(ctx context.Context) ([]scenario.Scenario, error)
 }
 
 // Service provides project use-cases.
 type Service struct {
 	repo Repo
+	// reports optionally backs the dashboard summary (Summary): the same
+	// report surface the trend and digest services read. Nil keeps every
+	// other use-case working and makes Summary answer the count-only shape
+	// (no runs, no series) rather than fail -- a project service wired
+	// without reports is a deployment without report data, and the counts
+	// it can answer honestly it still answers.
+	reports ports.ReportStore
 }
 
 // NewService wires a Service to a project repository.
