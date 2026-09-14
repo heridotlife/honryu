@@ -155,7 +155,10 @@ export default function NewTest() {
         throw stepError(flowSteps[1], e);
       });
 
-      navigate(`/scenarios/${scenarioId}`);
+      // Phase 67b: the detail page's default tab is the run history;
+      // instantiation still lands where the flow always ended -- the
+      // editor for the fresh fragment.
+      navigate(`/scenarios/${scenarioId}?tab=editor`);
     };
 
     run()

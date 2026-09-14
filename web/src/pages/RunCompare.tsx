@@ -471,11 +471,12 @@ export default function RunCompare() {
 
   return (
     <div className="space-y-6" role="region" aria-label="Run comparison panel">
-      {/* Phase 52: the trail back up -- execution hub AND the executions
-          list, since compare is two levels deep. */}
+      {/* Phase 52: the trail back up -- execution hub AND the scenario
+          list, since compare is two levels deep. Phase 67b: the list root
+          is /scenarios (the flat /executions list redirects there). */}
       <Breadcrumbs
         items={[
-          { label: 'Executions', href: '/executions' },
+          { label: 'Scenarios', href: '/scenarios' },
           { label: `#${executionId}`, href: `/executions/${executionId}` },
           { label: 'Compare' },
         ]}
