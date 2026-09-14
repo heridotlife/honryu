@@ -68,6 +68,25 @@ export interface Project {
   created_time?: string;
 }
 
+export interface ProjectSummary {
+  project_id: number;
+  total_executions: number;
+  last_execution_time?: string;
+  scenario_count: number;
+  template_count: number;
+  regressed_count: number;
+  last_run: { run_id?: number; outcome?: "passed" | "failed" | "aborted" | "error"; started_at?: string } | null;
+  throughput_series: SummaryThroughputPoint[];
+}
+
+export interface SummaryThroughputPoint {
+  run_id?: number;
+  started_at?: string;
+  achieved_throughput?: number;
+  requested_throughput?: number;
+  regressed?: boolean;
+}
+
 export interface Scenario {
   id?: number;
   name?: string;
@@ -487,6 +506,7 @@ export const paths = {
   postProjects: () => `/projects`,
   getProjectsByProjectId: (projectId: number | string) => `/projects/${projectId}`,
   deleteProjectsByProjectId: (projectId: number | string) => `/projects/${projectId}`,
+  getProjectsByProjectIdSummary: (projectId: number | string) => `/projects/${projectId}/summary`,
   getProjectsByProjectIdWebhooks: (projectId: number | string) => `/projects/${projectId}/webhooks`,
   postProjectsByProjectIdWebhooks: (projectId: number | string) => `/projects/${projectId}/webhooks`,
   deleteProjectsByProjectIdWebhooksByWebhookId: (projectId: number | string, webhookId: number | string) => `/projects/${projectId}/webhooks/${webhookId}`,
@@ -638,6 +658,11 @@ export function getProjectsByProjectId(projectId: number | string): Promise<Proj
 /** Delete a project */
 export function deleteProjectsByProjectId(projectId: number | string): Promise<void> {
   return apiClient.request<void>(paths.deleteProjectsByProjectId(projectId), { method: 'DELETE' });
+}
+
+/** One project's dashboard summary */
+export function getProjectsByProjectIdSummary(projectId: number | string, opts?: { query?: { limit?: number | string } }): Promise<ProjectSummary> {
+  return apiClient.get<ProjectSummary>(paths.getProjectsByProjectIdSummary(projectId) + toQuery(opts?.query ?? {}));
 }
 
 /** List a project's webhooks */

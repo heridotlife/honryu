@@ -189,7 +189,7 @@ func (h *handlers) listDigests(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	limit := queryInt(r, "limit")
+	limit := queryInt(r)
 	if limit <= 0 {
 		limit = defaultDigestLimit
 	}

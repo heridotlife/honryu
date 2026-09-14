@@ -5,6 +5,7 @@ import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { useProjectSelection } from '../components/ProjectSwitcher';
+import ProjectDashboard from '../components/ProjectDashboard';
 import DigestCard from '../components/DigestCard';
 import WebhooksCard from '../components/WebhooksCard';
 import { useSession } from '../hooks/useSession';
@@ -148,8 +149,14 @@ export default function Executions() {
           </div>
         </div>
       )}
+      {/* Phase 66: the project dashboard, directly under the filter row --
+          the project-scoped view's headline (KPIs, throughput sparkline,
+          last-run chip) from the one-call summary endpoint. It needs only a
+          selected project, not the update grant the admin cards below
+          demand: a dashboard is a read. */}
+      {selectedId !== '' && <ProjectDashboard projectId={Number(selectedId)} />}
       {/* Phase 40: the project's run-completion webhook registry, directly
-          under the filter row -- project-scoped like the list above it, so it
+          under the dashboard -- project-scoped like the list above it, so it
           only exists once a project is selected and only for callers who may
           update the project (the same grant the backend's webhook routes
           demand). */}

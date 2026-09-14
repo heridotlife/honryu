@@ -411,7 +411,7 @@ func (h *handlers) executionReports(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	reps, err := h.deps.Reports.ListReports(r.Context(), executionID, queryInt(r, "limit"))
+	reps, err := h.deps.Reports.ListReports(r.Context(), executionID, queryInt(r))
 	if err != nil {
 		respondError(w, err)
 		return
@@ -468,7 +468,7 @@ func (h *handlers) executionTrend(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	reps, err := h.deps.Reports.ListReports(r.Context(), executionID, queryInt(r, "limit"))
+	reps, err := h.deps.Reports.ListReports(r.Context(), executionID, queryInt(r))
 	if err != nil {
 		respondError(w, err)
 		return
@@ -605,8 +605,8 @@ func (h *handlers) runShardObject(w http.ResponseWriter, r *http.Request, kind, 
 // (ListReports/ReportsSince read that as "no limit") when absent or unparsable
 // -- a malformed limit degrading to "everything" is safer than rejecting an
 // otherwise valid request over a hint.
-func queryInt(r *http.Request, name string) int {
-	v, err := strconv.Atoi(r.URL.Query().Get(name))
+func queryInt(r *http.Request) int {
+	v, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil {
 		return 0
 	}
