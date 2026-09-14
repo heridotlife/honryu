@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: 奔流 (Honryu) API
   version: 0.1.0
@@ -19,6 +19,13 @@ info:
 servers:
   - url: /
     description: The API server
+
+# Default: every operation requires the demo session cookie. Operations that
+# are themselves public carry their own `security: []` (or the engine token,
+# for ingest); grep `security:` in paths for the exact set -- it mirrors
+# router.go's publicAPIPath plus /healthz and /metrics.
+security:
+  - cookieAuth: []
 
 tags:
   - name: health
@@ -175,6 +182,14 @@ components:
       schema: { type: integer }
 
   securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: honryu_session
+      description: >-
+        The demo persona session cookie (HMAC-signed; HttpOnly; Secure;
+        SameSite=Strict; Max-Age=8h). Minted by POST /api/session in demo
+        mode; every authenticated endpoint consumes it.
     engineToken:
       type: http
       scheme: bearer
@@ -273,7 +288,7 @@ components:
         name: { type: string }
         owner: { type: string }
         sid: { type: string }
-        tenant_id: { type: integer, format: int64, nullable: true }
+        tenant_id: { type: [integer, 'null'], format: int64 }
         created_time: { type: string, format: date-time }
     Scenario:
       type: object
@@ -294,6 +309,76 @@ components:
         enabled: { type: boolean }
         created_by: { type: string }
         created_time: { type: string, format: date-time }
+    RunCompletedEvent:
+      type: object
+      description: >-
+        The run.completed payload POSTed to every enabled webhook when a run
+        finishes (pass or fail). report_url is a relative path hint
+        ("/reports/{run_id}"); the receiver knows its own origin.
+      required: [event, run_id, execution_id, project_id, outcome, achieved, error_rate, thresholds, started_time, ended_time, report_url]
+      properties:
+        event: { type: string, enum: [run.completed] }
+        run_id: { type: integer, format: int64 }
+        execution_id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        engine:
+          type: string
+          description: Absent when the run used the deployment default.
+        outcome: { type: string, enum: [passed, failed, aborted, error] }
+        achieved:
+          type: object
+          properties:
+            samples: { type: integer, format: int64 }
+            throughput: { type: number, format: double }
+        error_rate: { type: number, format: double }
+        thresholds:
+          type: object
+          properties:
+            criteria:
+              type: array
+              description: The execution's configured list, as-is.
+              items: { type: string }
+            failing:
+              type: array
+              description: The subset this run tripped (or could not be evaluated).
+              items: { type: string }
+        started_time: { type: string, format: date-time }
+        ended_time: { type: string, format: date-time }
+        report_url: { type: string }
+    DigestEvent:
+      type: object
+      description: >-
+        The report.digest payload: one window of a project's load-testing at
+        a glance, delivered to the project's webhooks alongside the feed
+        GET /api/projects/{project_id}/digests serves. Field names are the
+        wire contract -- the same bytes go to receivers and into the stored row.
+      required: [event, project_id, period, window_start, window_end, runs_total, by_outcome, threshold_failures]
+      properties:
+        event: { type: string, enum: [report.digest] }
+        project_id: { type: integer, format: int64 }
+        period: { type: string, enum: [daily, weekly] }
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        runs_total: { type: integer }
+        by_outcome:
+          type: object
+          properties:
+            passed: { type: integer }
+            failed: { type: integer }
+            aborted: { type: integer }
+        threshold_failures:
+          type: integer
+          description: The window's runs whose configured Taurus criteria tripped -- the number a reader scanning for regressions looks for first.
+        executions:
+          type: array
+          description: Per-execution rollups inside the window.
+          items:
+            type: object
+            properties:
+              execution_id: { type: integer, format: int64 }
+              name: { type: string }
+              runs: { type: integer }
+              worst_outcome: { type: string }
     DigestConfig:
       type: object
       description: >-
@@ -365,6 +450,9 @@ components:
         engine:
           type: string
           description: Engine the execution runs on; absent means the deployment default.
+        kind:
+          type: string
+          enum: [load, calibrate_engine]
         cluster: { type: string }
         created_time: { type: string, format: date-time }
     Execution:
@@ -376,10 +464,39 @@ components:
         engine:
           type: string
           description: Engine the execution runs on; absent means the deployment default.
+        kind:
+          type: string
+          enum: [load, calibrate_engine]
+        cluster:
+          type: string
+          description: Preferred load origin; empty means the deployment default cluster.
         csv_split: { type: boolean }
+        created_time: { type: string, format: date-time }
         load_profile:
           type: array
           items: { $ref: '#/components/schemas/LoadProfileEntry' }
+        data:
+          type: array
+          description: The execution's uploaded data files.
+          items:
+            type: object
+            properties:
+              filename: { type: string }
+              url: { type: string }
+        calibration:
+          type: object
+          description: >-
+            Present only on calibrate_engine executions whose search was
+            actually configured (and only when the deployment has the
+            calibration service at all).
+          properties:
+            criterion: { type: string }
+            seed_qps: { type: number, format: double }
+            max_qps: { type: number, format: double }
+            max_steps: { type: integer }
+            hold_seconds: { type: integer }
+            cpu: { type: string }
+            memory: { type: string }
     ScenarioReadiness:
       type: object
       properties:
@@ -873,6 +990,7 @@ paths:
     get:
       tags: [health]
       summary: Liveness probe
+      security: []
       responses:
         '200': { description: Healthy }
 
@@ -880,6 +998,7 @@ paths:
     get:
       tags: [health]
       summary: Prometheus metrics exposition
+      security: []
       responses:
         '200':
           description: Metrics in Prometheus text format
@@ -892,6 +1011,7 @@ paths:
       summary: List the demo personas the picker may offer
       description: >-
         404 when demo mode is off -- the picker is simply not there.
+      security: []
       responses:
         '200':
           description: Personas
@@ -937,6 +1057,7 @@ paths:
     post:
       tags: [session]
       summary: Authenticate as a demo persona
+      security: []
       description: >-
         Mints the HMAC-signed honryu_session cookie (HttpOnly; SameSite=Strict;
         Secure; Max-Age=8h). Selecting a persona IS the authentication -- the
@@ -957,6 +1078,7 @@ paths:
     delete:
       tags: [session]
       summary: Log out (expire the session cookie)
+      security: []
       responses:
         '204': { description: Session cookie expired }
 
@@ -2458,9 +2580,8 @@ paths:
                     type: string
                     description: The SPA path that resolves the token ('/share/{token}').
                   expires_at:
-                    type: string
+                    type: [string, 'null']
                     format: date-time
-                    nullable: true
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
     get:
@@ -2485,7 +2606,9 @@ paths:
                     token: { type: string }
                     created_by: { type: string, description: "Issuing account's name; empty in no-auth mode." }
                     created_time: { type: string, format: date-time }
-                    expires_at: { type: string, format: date-time, nullable: true }
+                    expires_at:
+                      type: [string, 'null']
+                      format: date-time
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/runs/{run_id}/share/{token}:
