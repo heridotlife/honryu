@@ -148,6 +148,10 @@ var authzAuditTable = []authzEntry{
 	// the capacity-profile GET uses), not every execution it names.
 	{method: "GET", pattern: "/api/scenarios", decision: decisionScopedList},
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/executions", decision: "scenario:read"},
+	// Phase 67a: triggering a calibration for a scenario is creating a job
+	// against it -- the same scenario:create the instantiate route demands,
+	// not the read the neighbouring capacity-profile GET uses.
+	{method: "POST", pattern: "/api/scenarios/{scenario_id}/calibration/trigger", decision: "scenario:create"},
 
 	// Phase 65: the template catalog is global (templates carry no tenant),
 	// so the list demands scenario:list at the global scope -- a nil-tenant

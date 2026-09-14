@@ -2471,7 +2471,38 @@ paths:
         Creates a Pending job over an already-configured CalibrateEngine
         execution -- a controller (cmd/calibrator, or cmd/scheduler hosting
         the same loop) picks it up and advances it one step per tick.
+
+        Deprecated since the scenario-first route
+        POST /api/scenarios/{scenario_id}/calibration/trigger: kept working
+        as an alias, same service, same job records, identical responses --
+        migrate when convenient, nothing breaks meanwhile.
       parameters: [{ $ref: '#/components/parameters/ExecutionID' }]
+      responses:
+        '201':
+          description: CalibrationJob
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalibrationJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/scenarios/{scenario_id}/calibration/trigger:
+    post:
+      tags: [calibration]
+      summary: Start a fresh calibration search for a scenario
+      description: >-
+        The scenario-first shape of the trigger: names the scenario, and the
+        service picks its newest CalibrateEngine execution (newest first, so
+        a re-created calibration supersedes its predecessor). The job records
+        both the execution and the scenario it calibrates; the response is
+        exactly the execution-scoped route's, and that route remains working
+        as a deprecated alias -- same service call either way.
+
+        A scenario nothing calibrates is a 400: there is no search to start,
+        and silently picking some other execution would lie about what is
+        being measured.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
       responses:
         '201':
           description: CalibrationJob

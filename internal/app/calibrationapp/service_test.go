@@ -354,6 +354,11 @@ func TestTrigger_CreatesAPendingJob(t *testing.T) {
 	if job.ExecutionID != executionID || job.Phase != calibration.PhasePending {
 		t.Fatalf("GetCalibrationJob = %+v, want execution=%d phase=pending", job, executionID)
 	}
+	// Phase 67a: the row records the scenario the search calibrates -- the
+	// execution's one bound entry -- so no reader re-derives it.
+	if job.ScenarioID != scenarioID {
+		t.Fatalf("ScenarioID = %d, want %d (the bound scenario)", job.ScenarioID, scenarioID)
+	}
 }
 
 // A calibration execution can be triggered more than once over its life,
@@ -388,6 +393,122 @@ func TestTrigger_MoreThanOnceCreatesSeparateJobs(t *testing.T) {
 	}
 	if len(jobs) != 2 || jobs[0].ID != second || jobs[1].ID != first {
 		t.Fatalf("ListByExecution = %+v, want [second, first] most-recent-first", jobs)
+	}
+}
+
+// TriggerForScenario is the scenario-first shape of Trigger: the service
+// picks the scenario's newest CalibrateEngine execution, and the resulting
+// job is exactly what triggering that execution directly would have made.
+func TestTriggerForScenario_PicksTheNewestCalibrationExecution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	_, err := svc.Create(ctx, "older", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create (older): %v", err)
+	}
+	// A re-created calibration supersedes its predecessor -- a later
+	// execution bound to the same scenario.
+	newer, err := svc.Create(ctx, "newer", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create (newer): %v", err)
+	}
+
+	jobID, err := svc.TriggerForScenario(ctx, scenarioID)
+	if err != nil {
+		t.Fatalf("TriggerForScenario: %v", err)
+	}
+	job, err := store.GetCalibrationJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetCalibrationJob: %v", err)
+	}
+	if job.ExecutionID != newer {
+		t.Fatalf("job execution = %d, want the newest calibration %d", job.ExecutionID, newer)
+	}
+	if job.ScenarioID != scenarioID {
+		t.Fatalf("ScenarioID = %d, want %d recorded on the newest execution's job", job.ScenarioID, scenarioID)
+	}
+	// Alias parity: triggering the picked execution directly records the
+	// same execution/scenario pair the scenario route did.
+	direct, err := svc.Trigger(ctx, newer)
+	if err != nil {
+		t.Fatalf("Trigger(alias): %v", err)
+	}
+	directJob, err := store.GetCalibrationJob(ctx, direct)
+	if err != nil {
+		t.Fatalf("GetCalibrationJob(alias): %v", err)
+	}
+	if directJob.ScenarioID != job.ScenarioID || directJob.ExecutionID != job.ExecutionID {
+		t.Fatalf("alias job = %+v, want the same execution/scenario the scenario route recorded", directJob)
+	}
+}
+
+// A scenario bound to ordinary executions and an older calibration still
+// triggers: the newest-first list is scanned for the first CalibrateEngine
+// execution, not for the newest execution outright.
+func TestTriggerForScenario_SkipsNonCalibrationExecutions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+	calibrationID, err := svc.Create(ctx, "cal", projectID, taurus.ExecutorJMeter, validSpec(), src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A plain load-test execution bound to the same scenario, created after
+	// the calibration -- newest in the list, but not a search to trigger.
+	plain, err := execution.New("plain", projectID)
+	if err != nil {
+		t.Fatalf("execution.New: %v", err)
+	}
+	plainID, err := store.CreateExecution(ctx, plain)
+	if err != nil {
+		t.Fatalf("CreateExecution: %v", err)
+	}
+	if err := store.StoreLoadProfile(ctx, plainID, false, []loadprofile.Entry{
+		{ScenarioID: scenarioID, Engines: 2, Concurrency: 10, Duration: 30},
+	}); err != nil {
+		t.Fatalf("StoreLoadProfile: %v", err)
+	}
+
+	jobID, err := svc.TriggerForScenario(ctx, scenarioID)
+	if err != nil {
+		t.Fatalf("TriggerForScenario: %v", err)
+	}
+	job, err := store.GetCalibrationJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetCalibrationJob: %v", err)
+	}
+	if job.ExecutionID != calibrationID {
+		t.Fatalf("job execution = %d, want the calibration execution %d, not the newer plain one %d",
+			job.ExecutionID, calibrationID, plainID)
+	}
+}
+
+// A scenario nothing calibrates is a loud refusal, never a silent pick of
+// some other execution.
+func TestTriggerForScenario_ScenarioWithNoCalibrationExecution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	pl, err := scenario.NewNative("lonely", projectID, taurus.ExecutorJMeter)
+	if err != nil {
+		t.Fatalf("scenario.NewNative: %v", err)
+	}
+	scenarioID, err := store.CreateScenario(ctx, pl)
+	if err != nil {
+		t.Fatalf("CreateScenario: %v", err)
+	}
+
+	if _, err := svc.TriggerForScenario(ctx, scenarioID); !errors.Is(err, calibrationapp.ErrNoCalibrationExecution) {
+		t.Fatalf("TriggerForScenario(uncalibrated) = %v, want ErrNoCalibrationExecution", err)
 	}
 }
 
@@ -556,11 +677,11 @@ func (r *erroringRepo) CalibrationBoundsFor(ctx context.Context, executionID int
 	return r.Store.CalibrationBoundsFor(ctx, executionID)
 }
 
-func (r *erroringRepo) CreateCalibrationJob(ctx context.Context, executionID int64) (int64, error) {
+func (r *erroringRepo) CreateCalibrationJob(ctx context.Context, executionID, scenarioID int64) (int64, error) {
 	if r.createCalibrationJobErr != nil {
 		return 0, r.createCalibrationJobErr
 	}
-	return r.Store.CreateCalibrationJob(ctx, executionID)
+	return r.Store.CreateCalibrationJob(ctx, executionID, scenarioID)
 }
 
 func (r *erroringRepo) StepsFor(ctx context.Context, jobID int64) ([]calibration.Step, error) {
@@ -1585,15 +1706,17 @@ func TestAdvanceOne_WriteProfileFailuresPropagateWithoutCorruptingJobState(t *te
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		// Deliberately strip the binding Create made: a calibration whose
-		// execution_scenario row went missing must still fail the profile
+		// Deliberately strip the binding Create made -- but only after the
+		// trigger: Trigger now records the job's scenario from that same
+		// binding (phase 67a), so a calibration whose execution_scenario row
+		// goes missing after the job exists must still fail the profile
 		// write loudly, not silently skip it.
-		if err := store.StoreLoadProfile(ctx, executionID, false, nil); err != nil {
-			t.Fatalf("StoreLoadProfile (clear binding): %v", err)
-		}
 		jobID, err := svc.Trigger(ctx, executionID)
 		if err != nil {
 			t.Fatalf("Trigger: %v", err)
+		}
+		if err := store.StoreLoadProfile(ctx, executionID, false, nil); err != nil {
+			t.Fatalf("StoreLoadProfile (clear binding): %v", err)
 		}
 
 		runner := &stubRunner{responses: []stubRunnerResponse{{report: targetSaturatedReport(10, 10)}}}

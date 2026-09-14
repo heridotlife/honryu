@@ -222,6 +222,13 @@ func (h *handlers) createCalibration(w http.ResponseWriter, r *http.Request) {
 // already-configured CalibrateEngine execution -- a Pending job a
 // controller (cmd/calibrator, or cmd/scheduler hosting the same loop) will
 // pick up and advance.
+//
+// Deprecated alias since phase 67a: the scenario-first route
+// POST /api/scenarios/{scenario_id}/calibration/trigger names the scenario
+// and lets the service pick the execution. Kept working, byte-identical
+// responses and identical job records (the shared service records
+// execution_id AND scenario_id either way) -- existing callers migrate
+// whenever, nothing breaks meanwhile.
 func (h *handlers) triggerCalibration(w http.ResponseWriter, r *http.Request) {
 	if !h.calibrationsConfigured(w) {
 		return
@@ -236,6 +243,40 @@ func (h *handlers) triggerCalibration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID, err := h.deps.Calibrations.Trigger(r.Context(), executionID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	job, err := h.deps.Calibrations.Get(r.Context(), jobID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toCalibrationJobResponse(job))
+}
+
+// triggerScenarioCalibration serves POST
+// /api/scenarios/{scenario_id}/calibration/trigger: the scenario-first
+// shape of triggerCalibration -- an operator names the scenario, the
+// service picks its newest CalibrateEngine execution. Shares the service's
+// Trigger path, so the job records execution_id AND scenario_id and the
+// response is exactly the execution-scoped route's (id, phase pending,
+// ...) -- a caller cannot tell which route served it, and never had to
+// care.
+func (h *handlers) triggerScenarioCalibration(w http.ResponseWriter, r *http.Request) {
+	if !h.calibrationsConfigured(w) {
+		return
+	}
+	scenarioID, ok := pathInt(r, "scenario_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid scenario id")
+		return
+	}
+	if err := h.authorizeScenario(r, scenarioID, rbac.ActionCreate); err != nil {
+		respondError(w, err)
+		return
+	}
+	jobID, err := h.deps.Calibrations.TriggerForScenario(r.Context(), scenarioID)
 	if err != nil {
 		respondError(w, err)
 		return

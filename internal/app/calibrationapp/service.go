@@ -45,6 +45,13 @@ var ErrEngineRequired = errors.New("calibrationapp: a calibration execution must
 // refusal that keeps that shell from ever existing.
 var ErrSourceScenarioNotBound = errors.New("calibrationapp: source execution does not run the scenario")
 
+// ErrNoCalibrationExecution means the scenario named by TriggerForScenario
+// has no CalibrateEngine execution to trigger -- nothing has ever been
+// calibrated against it (or its calibrations were deleted), so there is no
+// search to start. A 400 to the caller, the same family as
+// ErrSourceScenarioNotBound.
+var ErrNoCalibrationExecution = errors.New("calibrationapp: scenario has no CalibrateEngine execution")
+
 // ErrEnvironmentImpaired means a terminal calibration search recorded not a
 // single clean step: every step classified saturated from the very first, so
 // the measurement says nothing about the pod and any capacity profile it
@@ -89,6 +96,11 @@ type Repo interface {
 	SetCalibrationBounds(ctx context.Context, executionID int64, bounds ports.CalibrationBounds) error
 	CalibrationBoundsFor(ctx context.Context, executionID int64) (ports.CalibrationBounds, error)
 	LoadProfileFor(ctx context.Context, executionID int64) ([]loadprofile.Entry, error)
+	// ListExecutionsByScenario returns every execution bound to the
+	// scenario, newest first -- TriggerForScenario's choice of "the
+	// calibration to trigger". The same ExecutionRepository method phase
+	// 67a added; both use-cases read the same link.
+	ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error)
 }
 
 // Runner drives one calibration step's real run. *StepRunner satisfies this
@@ -275,6 +287,11 @@ func (s *Service) SpecFor(ctx context.Context, executionID int64) (calibration.S
 // starting a search with an undefined target-health criterion or pod size.
 // More than one job may be triggered over an execution's life, the same way
 // an execution may have more than one run.
+//
+// The job records the execution's scenario (the one bound load-profile
+// entry Create gave it) next to the execution: the row itself carries the
+// answer to "which scenario did this search measure", instead of every
+// reader re-deriving it through the load profile.
 func (s *Service) Trigger(ctx context.Context, executionID int64) (int64, error) {
 	exe, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
@@ -290,7 +307,35 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) (int64, error)
 	if err := spec.Validate(); err != nil {
 		return 0, err
 	}
-	return s.repo.CreateCalibrationJob(ctx, executionID)
+	entries, err := s.repo.LoadProfileFor(ctx, executionID)
+	if err != nil {
+		return 0, err
+	}
+	if len(entries) != 1 {
+		return 0, fmt.Errorf("%w: execution %d binds %d scenarios", ErrScenarioNotConfigured, executionID, len(entries))
+	}
+	return s.repo.CreateCalibrationJob(ctx, executionID, entries[0].ScenarioID)
+}
+
+// TriggerForScenario creates a fresh Pending job for the scenario's newest
+// CalibrateEngine execution -- the scenario-first shape of Trigger, so an
+// operator naming a scenario needs no execution id at all. The execution
+// scoped route remains as the deprecated alias; both produce the same job
+// (same service, same records -- execution_id AND scenario_id). A scenario
+// nothing calibrates is ErrNoCalibrationExecution, not a silent pick of
+// some other execution.
+func (s *Service) TriggerForScenario(ctx context.Context, scenarioID int64) (int64, error) {
+	executions, err := s.repo.ListExecutionsByScenario(ctx, scenarioID)
+	if err != nil {
+		return 0, err
+	}
+	for _, exe := range executions {
+		if exe.Kind != execution.KindCalibrateEngine {
+			continue
+		}
+		return s.Trigger(ctx, exe.ID)
+	}
+	return 0, fmt.Errorf("%w: scenario %d", ErrNoCalibrationExecution, scenarioID)
 }
 
 // Job is a calibration job's full state for a caller: the persisted

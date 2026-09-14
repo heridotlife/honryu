@@ -15,8 +15,14 @@ import (
 type CalibrationJob struct {
 	ID          int64
 	ExecutionID int64
-	Phase       calibration.Phase
-	StepCount   int
+	// ScenarioID is the scenario the search calibrates -- the execution's
+	// single bound load-profile entry, resolved at trigger time and carried
+	// on the row so the scenario-first API never re-derives it. 0 means
+	// unknown: the column is NULL for legacy rows the 0065 backfill could
+	// not resolve (an execution that lost its scenario binding).
+	ScenarioID int64
+	Phase      calibration.Phase
+	StepCount  int
 	// BracketLoRequested/BracketLoAchieved/BracketHiRequested mirror
 	// calibration.Job's own fields exactly.
 	BracketLoRequested float64
@@ -41,8 +47,9 @@ type CalibrationJob struct {
 // given job next.
 type CalibrationJobRepository interface {
 	// CreateCalibrationJob persists a fresh job (PhasePending) for
-	// executionID and returns its assigned ID.
-	CreateCalibrationJob(ctx context.Context, executionID int64) (int64, error)
+	// executionID, recording scenarioID as the scenario the search
+	// calibrates (0 stores NULL -- unknown), and returns its assigned ID.
+	CreateCalibrationJob(ctx context.Context, executionID, scenarioID int64) (int64, error)
 	// GetCalibrationJob returns the job with id, or ErrNotFound.
 	GetCalibrationJob(ctx context.Context, id int64) (CalibrationJob, error)
 	// ListCalibrationJobsByExecution returns every job ever run for

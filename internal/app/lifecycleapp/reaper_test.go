@@ -121,7 +121,7 @@ func TestReapIdle_ActiveCalibrationSkips(t *testing.T) {
 	ctx := context.Background()
 	runAndFinish(t, e)
 
-	jobID, err := e.store.CreateCalibrationJob(ctx, e.executionID)
+	jobID, err := e.store.CreateCalibrationJob(ctx, e.executionID, 0)
 	if err != nil {
 		t.Fatalf("CreateCalibrationJob: %v", err)
 	}

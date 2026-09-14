@@ -13,15 +13,21 @@ import (
 
 var _ ports.CalibrationJobRepository = (*Repository)(nil)
 
-const calibrationJobColumns = "id, execution_id, phase, step_count, bracket_lo_requested, bracket_lo_achieved," +
+const calibrationJobColumns = "id, execution_id, scenario_id, phase, step_count, bracket_lo_requested, bracket_lo_achieved," +
 	" bracket_hi_requested, next_requested_qps, saturated_by, per_pod_qps, failure_reason, created_time"
 
-// CreateCalibrationJob persists a fresh job (PhasePending) for executionID
-// and returns its assigned ID.
-func (r *Repository) CreateCalibrationJob(ctx context.Context, executionID int64) (int64, error) {
+// CreateCalibrationJob persists a fresh job (PhasePending) for executionID,
+// recording scenarioID as the scenario the search calibrates, and returns
+// its assigned ID. A 0 scenarioID stores NULL -- the column's unknown/legacy
+// marker (0064), never a real scenario id.
+func (r *Repository) CreateCalibrationJob(ctx context.Context, executionID, scenarioID int64) (int64, error) {
+	var storedScenarioID any
+	if scenarioID != 0 {
+		storedScenarioID = scenarioID
+	}
 	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO calibration_job (execution_id, phase) VALUES (?, ?)",
-		executionID, string(calibration.PhasePending))
+		"INSERT INTO calibration_job (execution_id, scenario_id, phase) VALUES (?, ?, ?)",
+		executionID, storedScenarioID, string(calibration.PhasePending))
 	if err != nil {
 		return 0, fmt.Errorf("mysql: create calibration job: %w", err)
 	}
@@ -203,13 +209,17 @@ func scanCalibrationJob(s rowScanner) (ports.CalibrationJob, error) {
 		saturatedBy   sql.NullString
 		perPodQPS     sql.NullFloat64
 		failureReason sql.NullString
+		scenarioID    sql.NullInt64
 	)
-	if err := s.Scan(&j.ID, &j.ExecutionID, &phase, &j.StepCount,
+	if err := s.Scan(&j.ID, &j.ExecutionID, &scenarioID, &phase, &j.StepCount,
 		&j.BracketLoRequested, &j.BracketLoAchieved, &j.BracketHiRequested, &j.NextRequestedQPS,
 		&saturatedBy, &perPodQPS, &failureReason, &j.CreatedTime); err != nil {
 		return ports.CalibrationJob{}, err
 	}
 	j.Phase = calibration.Phase(phase)
+	// NULL reads back as 0, CalibrationJob.ScenarioID's unknown/legacy
+	// marker.
+	j.ScenarioID = scenarioID.Int64
 	if saturatedBy.Valid {
 		j.Result = &calibration.Result{SaturatedBy: calibration.SaturatedBy(saturatedBy.String), PerPodQPS: perPodQPS.Float64}
 	}

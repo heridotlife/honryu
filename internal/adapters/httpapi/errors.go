@@ -78,7 +78,10 @@ var badRequestErrors = []error{
 	calibration.ErrCriterionRequired, calibration.ErrPodSizeRequired, calibration.ErrSeedQPSInvalid,
 	calibration.ErrMaxQPSInvalid, calibration.ErrMaxStepsInvalid, calibration.ErrHoldInvalid,
 	calibrationapp.ErrExecutionNotCalibration, calibrationapp.ErrEngineRequired,
-	calibrationapp.ErrSourceScenarioNotBound,
+	calibrationapp.ErrSourceScenarioNotBound, calibrationapp.ErrScenarioNotConfigured,
+	// Triggering a calibration for a scenario nothing calibrates is the
+	// caller's naming, not a server fault (phase 67a).
+	calibrationapp.ErrNoCalibrationExecution,
 	// A criterion outside Taurus's expression grammar is the caller's
 	// input (phase 42's hotfix): rejected with the stated reason, not a
 	// later run-time Config Error.

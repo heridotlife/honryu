@@ -334,6 +334,11 @@ var routes = []Route{
 
 	{"POST", "/api/calibrations", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.createCalibration })},
 	{"POST", "/api/executions/{execution_id}/calibration/trigger", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.triggerCalibration })},
+	// Phase 67a: the scenario-first trigger -- the operator names the
+	// scenario, the service picks its newest CalibrateEngine execution. The
+	// execution-scoped route above stays as the deprecated alias; both are
+	// the same service call, so both record execution_id AND scenario_id.
+	{"POST", "/api/scenarios/{scenario_id}/calibration/trigger", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.triggerScenarioCalibration })},
 	{"GET", "/api/calibrations/{job_id}", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCalibrationJob })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCapacityProfile })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile/fanout", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.fanOutCapacity })},

@@ -560,6 +560,7 @@ export const paths = {
   getCampaignsByCampaignIdComparison: (campaignId: number | string) => `/campaigns/${campaignId}/comparison`,
   postCalibrations: () => `/calibrations`,
   postExecutionsByExecutionIdCalibrationTrigger: (executionId: number | string) => `/executions/${executionId}/calibration/trigger`,
+  postScenariosByScenarioIdCalibrationTrigger: (scenarioId: number | string) => `/scenarios/${scenarioId}/calibration/trigger`,
   getCalibrationsByJobId: (jobId: number | string) => `/calibrations/${jobId}`,
   getScenariosByScenarioIdCapacityProfile: (scenarioId: number | string) => `/scenarios/${scenarioId}/capacity-profile`,
   getCapacityProfiles: () => `/capacity-profiles`,
@@ -942,6 +943,11 @@ export function postCalibrations(body: { project_id: number; name: string; engin
 /** Start a fresh calibration search */
 export function postExecutionsByExecutionIdCalibrationTrigger(executionId: number | string): Promise<CalibrationJob> {
   return apiClient.request<CalibrationJob>(paths.postExecutionsByExecutionIdCalibrationTrigger(executionId), { method: 'POST' });
+}
+
+/** Start a fresh calibration search for a scenario */
+export function postScenariosByScenarioIdCalibrationTrigger(scenarioId: number | string): Promise<CalibrationJob> {
+  return apiClient.request<CalibrationJob>(paths.postScenariosByScenarioIdCalibrationTrigger(scenarioId), { method: 'POST' });
 }
 
 /** Get a calibration job's status and progress */
