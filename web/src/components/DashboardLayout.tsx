@@ -22,8 +22,12 @@ const allNavItems: NavItem[] = [
   { href: '/home', label: 'Home', resource: 'report', action: 'read' },
   // report:read -- the Reports page's primary fetches are report reads.
   { href: '/reports', label: 'Reports', resource: 'report', action: 'read' },
-  // execution:list -- GET /api/executions is the caller-scoped list.
-  { href: '/executions', label: 'Executions', resource: 'execution', action: 'list' },
+  // scenario:list -- GET /api/scenarios is the caller-scoped list (phase
+  // 67b's scenario-first inversion: the flat /executions list is no longer
+  // primary nav; that URL now redirects here while /executions/:id keeps
+  // serving the run hub). Viewer/editor/admin all hold scenario:list -- the
+  // role table's read/write action bundles include list.
+  { href: '/scenarios', label: 'Scenarios', resource: 'scenario', action: 'list' },
   // schedule:list -- reservations ARE schedules (phase 20's resource fold).
   { href: '/reservations', label: 'Reservations', resource: 'schedule', action: 'list' },
   // campaign:list -- only campaign_manager and the admin hold any campaign grant.

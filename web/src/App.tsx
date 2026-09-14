@@ -12,6 +12,7 @@ import Reports from './pages/Reports';
 import Reservations from './pages/Reservations';
 import RunCompare from './pages/RunCompare';
 import Scenario from './pages/Scenario';
+import Scenarios from './pages/Scenarios';
 import SharedReport from './pages/SharedReport';
 import Tenants from './pages/Tenants';
 
@@ -32,6 +33,11 @@ export default function App() {
             <Route path="/executions/new" element={<NewTest />} />
             <Route path="/executions" element={<Executions />} />
             <Route path="/executions/:id" element={<Execution />} />
+            {/* Phase 67b: the scenario-first inversion -- /scenarios is the
+                primary run surface (list here, tabbed detail at :id). The
+                flat list route above redirects in commit 3; the hub at
+                /executions/:id stays put. */}
+            <Route path="/scenarios" element={<Scenarios />} />
             {/* Phase 65: where a template instantiation lands (there is no
                 scenario list -- the NewTest picker browses the catalog). */}
             <Route path="/scenarios/:id" element={<Scenario />} />
