@@ -303,6 +303,35 @@ components:
         name: { type: string }
         project_id: { type: integer, format: int64 }
         created_time: { type: string, format: date-time }
+        is_template:
+          type: boolean
+          description: >-
+            True for a template: a global starting point (project_id 0, no
+            tenant) that POST instantiate clones into an ordinary scenario.
+            Templates never appear in a project's scenario list.
+        template_name:
+          type: string
+          description: The template's slug (e.g. httpbin-baseline); present only when is_template is true.
+    InstantiateRequest:
+      type: object
+      description: >-
+        Clone a template into a fresh, ordinary scenario. The override surface
+        is deliberately tiny: name and project are required, and exactly one
+        override (target_url) exists -- everything else about the template is
+        cloned verbatim.
+      required: [name, project_id]
+      properties:
+        name: { type: string }
+        project_id: { type: integer, format: int64 }
+        overrides:
+          type: object
+          properties:
+            target_url:
+              type: string
+              description: >-
+                Replaces the cloned fragment's default-address (the base URL
+                relative request URLs resolve against). Empty keeps the
+                template's.
     Webhook:
       type: object
       description: >-
@@ -1374,6 +1403,24 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/templates:
+    get:
+      tags: [scenarios]
+      summary: List the template catalog
+      description: >-
+        Every scenario flagged as a template, in id order. Templates are
+        global -- no project, no tenant -- so the list is not scoped the way
+        project lists are; it is the NewTest "from template" picker's source.
+      responses:
+        '200':
+          description: The templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Scenario' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/scenarios:
     post:
       tags: [scenarios]
@@ -1461,6 +1508,35 @@ paths:
                             detail: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/scenarios/{scenario_id}/instantiate:
+    post:
+      tags: [scenarios]
+      summary: Instantiate a template into a new scenario
+      description: >-
+        Clones a template (a scenario with is_template true) into a fresh,
+        ordinary scenario in the given project: portable, carrying the
+        template's requests fragment verbatim, with at most the fragment's
+        default-address replaced by overrides.target_url. The template itself
+        is untouched. Instantiating an ordinary scenario is a 409 -- the
+        route addresses templates, and a silent clone would hide a wrong-id
+        mistake behind a success.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstantiateRequest' }
+      responses:
+        '201':
+          description: The created scenario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scenario' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /api/scenarios/{scenario_id}:
     get:

@@ -141,6 +141,16 @@ var authzAuditTable = []authzEntry{
 	{method: "POST", pattern: "/api/scenarios/{scenario_id}/requests/validate", decision: "scenario:update"},
 	{method: "PUT", pattern: "/api/scenarios/{scenario_id}/requests", decision: "scenario:update"},
 
+	// Phase 65: the template catalog is global (templates carry no tenant),
+	// so the list demands scenario:list at the global scope -- a nil-tenant
+	// request only global grants can answer. Instantiate's first gate is
+	// scenario:read on the template, enforced BEFORE the body parse (the
+	// probe below 403s there); scenario:create on the target project is the
+	// second gate, applied once the body names it. The audit vocabulary has
+	// no conjunction, so the entry names the gate the ungranted probe hits.
+	{method: "GET", pattern: "/api/templates", decision: "scenario:list"},
+	{method: "POST", pattern: "/api/scenarios/{scenario_id}/instantiate", decision: "scenario:read"},
+
 	{method: "POST", pattern: "/api/executions", decision: "execution:create",
 		form: url.Values{"name": {"e"}, "project_id": {"{project_id}"}}},
 	{method: "GET", pattern: "/api/executions", decision: decisionScopedList},
