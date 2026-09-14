@@ -18,9 +18,15 @@
  *   F. MOBILE NO OVERFLOW    at a 375px viewport the page must not scroll
  *                            sideways (phase 52's 5px-overflow audit fix).
  *
- * It is NOT wired into `bun run test` or CI: it needs a live environment
- * (a running API + SPA, demo auth enabled, reachable engines for D). Run it
- * by hand before operator-facing releases:
+ * It is NOT wired into `bun run test` (it needs jsdom-free real browser
+ * navigation), but since phase 64 CI runs it on every PR: the e2e lane in
+ * .github/workflows/ci.yml boots the API with demo auth and the in-memory
+ * repo (DB_DRIVER=fake -- no containers), serves the freshly built embedded
+ * SPA, and points this harness at it via HONRYU_E2E_BASE_URL. The purge
+ * scenario (D) has nothing purgeable there and records its designed SKIP,
+ * which the harness's exit rule already counts as pass.
+ *
+ * Run it by hand before operator-facing releases:
  *
  *   cd web && bun run e2e
  *   HONRYU_E2E_BASE_URL=https://other-host bun run e2e

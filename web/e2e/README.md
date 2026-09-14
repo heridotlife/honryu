@@ -32,9 +32,16 @@ HONRYU_E2E_BASE_URL=https://other-host bun run e2e # point elsewhere
 Chromium is discovered from the Playwright cache (same scheme as
 `scripts/layout-check.js`); override with `CHROMIUM_PATH`.
 
-## Why it is manual
+## Where it runs
 
-It needs a live environment — a running API serving the embedded SPA with
-demo auth enabled, and reachable engines for the purge scenario — so it is
-**not** wired into `bun run test` or CI. Run it by hand before
-operator-facing releases; any `FAIL` exits non-zero (`SKIP` still passes).
+Since phase 64 the CI workflow's `e2e` job runs this harness on every pull
+request: it builds the SPA, builds the API (which embeds the SPA), starts it
+with demo auth and the in-memory repo (`HONRYU_DB_DRIVER=fake` — the boot
+contract needs no database), and points the harness at localhost via
+`HONRYU_E2E_BASE_URL`. Scenario D has nothing purgeable there and records its
+designed SKIP, which still passes the run.
+
+Beyond the boot contract it remains a manual gate: the CI lane has no
+reachable engines, so scenario D only ever exercises its skip path there.
+Run it by hand against a live deployment before operator-facing releases;
+any `FAIL` exits non-zero (`SKIP` still passes).

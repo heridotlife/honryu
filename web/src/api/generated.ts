@@ -8,14 +8,16 @@ import { apiClient } from './client';
 
 export interface Cluster {
   name: string;
-  api_url?: string;
+  api_url: string;
   ingest_url: string;
   sidecar_image: string;
   namespace: string;
   secret_ref: string;
   origin: "operator" | "byoc";
   created_by?: string;
-  created_time?: string;
+  created_time: string;
+  engines_used?: number;
+  engines_ceiling?: number;
 }
 
 export interface MetricBatch {
@@ -576,7 +578,7 @@ export function getHealthz(): Promise<void> {
 
 /** Prometheus metrics exposition */
 export function getMetrics(): Promise<string> {
-  return apiClient.get<string>(paths.getMetrics());
+  return apiClient.text(paths.getMetrics());
 }
 
 /** List the demo personas the picker may offer */
@@ -704,18 +706,26 @@ export function deleteScenariosByScenarioIdFiles(scenarioId: number | string, op
 }
 
 /** Get a portable scenario's stored declarative workload */
-export function getScenariosByScenarioIdRequests(scenarioId: number | string): Promise<void> {
-  return apiClient.get<void>(paths.getScenariosByScenarioIdRequests(scenarioId));
+export function getScenariosByScenarioIdRequests(scenarioId: number | string): Promise<string> {
+  return apiClient.text(paths.getScenariosByScenarioIdRequests(scenarioId));
 }
 
 /** Upload a portable scenario's declarative workload */
-export function putScenariosByScenarioIdRequests(scenarioId: number | string): Promise<{ message?: string }> {
-  return apiClient.request<{ message?: string }>(paths.putScenariosByScenarioIdRequests(scenarioId), { method: 'PUT' });
+export function putScenariosByScenarioIdRequests(scenarioId: number | string, body: string): Promise<{ message?: string }> {
+  return apiClient.request<{ message?: string }>(paths.putScenariosByScenarioIdRequests(scenarioId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/yaml' },
+    body,
+  });
 }
 
 /** Validate a declarative workload fragment without storing it */
-export function postScenariosByScenarioIdRequestsValidate(scenarioId: number | string): Promise<{ valid?: boolean; diagnostics?: Diagnostic[] }> {
-  return apiClient.request<{ valid?: boolean; diagnostics?: Diagnostic[] }>(paths.postScenariosByScenarioIdRequestsValidate(scenarioId), { method: 'POST' });
+export function postScenariosByScenarioIdRequestsValidate(scenarioId: number | string, body: string): Promise<{ valid?: boolean; diagnostics?: Diagnostic[] }> {
+  return apiClient.request<{ valid?: boolean; diagnostics?: Diagnostic[] }>(paths.postScenariosByScenarioIdRequestsValidate(scenarioId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/yaml' },
+    body,
+  });
 }
 
 /** List the caller's executions */
@@ -799,12 +809,12 @@ export function getExecutionsByExecutionIdEngines(executionId: number | string):
 
 /** Fetch the logs of a scenario's first engine pod */
 export function getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId: number | string, scenarioId: number | string): Promise<string> {
-  return apiClient.get<string>(paths.getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId, scenarioId));
+  return apiClient.text(paths.getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId, scenarioId));
 }
 
 /** Stream live run metrics as server-sent events */
-export function getExecutionsByExecutionIdStream(executionId: number | string): Promise<void> {
-  return apiClient.get<void>(paths.getExecutionsByExecutionIdStream(executionId));
+export function getExecutionsByExecutionIdStream(executionId: number | string): Promise<string> {
+  return apiClient.text(paths.getExecutionsByExecutionIdStream(executionId));
 }
 
 /** List an execution's schedules and their occurrences' statuses */
@@ -929,12 +939,12 @@ export function getRunsByRunIdExport(runId: number | string, opts?: { query?: { 
 
 /** Fetch a shard's captured engine log */
 export function getRunsByRunIdScenariosByScenarioIdShardsByShardLog(runId: number | string, scenarioId: number | string, shard: number | string): Promise<string> {
-  return apiClient.get<string>(paths.getRunsByRunIdScenariosByScenarioIdShardsByShardLog(runId, scenarioId, shard));
+  return apiClient.text(paths.getRunsByRunIdScenariosByScenarioIdShardsByShardLog(runId, scenarioId, shard));
 }
 
 /** Fetch a shard's compiled Taurus config, exactly as the run used it */
 export function getRunsByRunIdScenariosByScenarioIdShardsByShardConfig(runId: number | string, scenarioId: number | string, shard: number | string): Promise<string> {
-  return apiClient.get<string>(paths.getRunsByRunIdScenariosByScenarioIdShardsByShardConfig(runId, scenarioId, shard));
+  return apiClient.text(paths.getRunsByRunIdScenariosByScenarioIdShardsByShardConfig(runId, scenarioId, shard));
 }
 
 /** List a run's share links */

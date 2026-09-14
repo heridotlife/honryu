@@ -122,8 +122,9 @@ function opModel(path, method, op, pathItemParams) {
     const res = op.responses?.[code];
     if (!res) continue;
     const content = res.content ?? {};
+    const textKey = Object.keys(content).find((k) => k.startsWith('text/'));
     if (content['application/json']) response = leafType(content['application/json'].schema);
-    else if (content['text/plain']) response = 'string';
+    else if (textKey) response = 'string';
     break;
   }
 
@@ -225,8 +226,21 @@ for (const op of ops) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })`;
+  } else if (op.contentType?.startsWith('text/')) {
+    // Raw text bodies cross the wire verbatim (e.g. the text/yaml scenario
+    // fragment), sent under the spec's own media type.
+    args.push('body: string');
+    call = `apiClient.request<${op.response}>(${pathCall}${querySuffix}, {
+    method: '${httpMethodOf(op.name).toUpperCase()}',
+    headers: { 'Content-Type': '${op.contentType}' },
+    body,
+  })`;
   } else if (httpMethodOf(op.name) === 'get') {
-    call = `apiClient.get<${op.response}>(${pathCall}${querySuffix})`;
+    // A text/* response (text/yaml fragment, text/plain shard config/log) is
+    // raw text: read it with apiClient.text, never parsed as JSON.
+    call = op.response === 'string'
+      ? `apiClient.text(${pathCall}${querySuffix})`
+      : `apiClient.get<${op.response}>(${pathCall}${querySuffix})`;
   } else {
     call = `apiClient.request<${op.response}>(${pathCall}${querySuffix}, { method: '${httpMethodOf(op.name).toUpperCase()}' })`;
   }

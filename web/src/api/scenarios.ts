@@ -1,25 +1,36 @@
-// Types and fetchers for scenario fragments (R4's editor data plane):
-// GET /api/scenarios/{id}/requests returns the fragment's YAML bytes
-// verbatim (text/yaml, G2); PUT takes them back the same way (G3, any
-// of the text/yaml media types). Round-tripping is byte-exact by
-// contract -- the editor must never reformat what it did not touch.
-import { apiClient, ApiError } from './client';
+// Fetchers for scenario fragments (R4's editor data plane), delegating to the
+// generated client (phase 64 migration; the hand-rolled originals called
+// apiClient directly). GET /api/scenarios/{id}/requests returns the
+// fragment's YAML bytes verbatim (text/yaml, G2); PUT takes them back the
+// same way (G3, any of the text/yaml media types). Round-tripping is
+// byte-exact by contract -- the editor must never reformat what it did not
+// touch.
+import { ApiError } from './client';
+import {
+  getScenariosByScenarioIdRequests,
+  postScenariosByScenarioIdRequestsValidate,
+  putScenariosByScenarioIdRequests,
+} from './generated';
 
 /** The fragment's YAML exactly as stored (no server-side normalization). */
 export function getScenarioRequests(scenarioId: number): Promise<string> {
-  return apiClient.text(`/scenarios/${scenarioId}/requests`);
+  return getScenariosByScenarioIdRequests(scenarioId);
 }
 
 /**
  * Saves the fragment. The body is sent verbatim as text/yaml -- the G3
  * handler dispatches on media type and stores non-multipart bodies
- * byte-for-byte.
+ * byte-for-byte. The wire answers with a {message} envelope; the page
+ * contract here stays void.
  */
-export function setScenarioRequests(scenarioId: number, yaml: string): Promise<void> {
-  return apiClient.putRaw(`/scenarios/${scenarioId}/requests`, 'text/yaml; charset=utf-8', yaml);
+export async function setScenarioRequests(scenarioId: number, yaml: string): Promise<void> {
+  await putScenariosByScenarioIdRequests(scenarioId, yaml);
 }
 
-/** One finding from G4/G6, line-anchored (mirrors scenarioapp.Diagnostic). */
+/** One finding from G4/G6, line-anchored (mirrors scenarioapp.Diagnostic).
+ * The page contract deliberately narrows the generated type: a 400 only
+ * carries error diagnostics and a 200 only info findings, both always with
+ * message and line. */
 export interface Diagnostic {
   severity: 'error' | 'info';
   message: string;
@@ -43,8 +54,8 @@ export async function validateScenarioRequests(
   yaml: string,
 ): Promise<ValidateResponse> {
   try {
-    await apiClient.putRaw(`/scenarios/${scenarioId}/requests/validate`, 'text/yaml; charset=utf-8', yaml);
-    return { valid: true, diagnostics: [] };
+    const res = await postScenariosByScenarioIdRequestsValidate(scenarioId, yaml);
+    return { valid: res.valid ?? true, diagnostics: (res.diagnostics ?? []) as Diagnostic[] };
   } catch (err) {
     if (err instanceof ApiError && err.status === 400) {
       const diags = (err.data as { diagnostics?: Diagnostic[] } | undefined)?.diagnostics;

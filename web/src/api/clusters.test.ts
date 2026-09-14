@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as clusters from './clusters';
 import { listClusters } from './clusters';
+import { getClusters } from './generated';
 
 describe('listClusters', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  // Phase 64 migration pin: the module must keep re-exporting the generated
+  // client's fetcher, not grow a parallel hand-rolled copy.
+  it('re-exports the generated client cluster list fetcher', () => {
+    expect(clusters.listClusters).toBe(getClusters);
   });
 
   it('GETs the registry list and passes entries through unchanged', async () => {
