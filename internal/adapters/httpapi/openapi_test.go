@@ -1,6 +1,8 @@
 package httpapi_test
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,7 +23,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	doc := loadOpenAPI(t)
 
 	documented := make(map[string]bool)
-	for path, item := range doc.Paths {
+	for path, item := range pathsOf(t, doc) {
 		for key := range item {
 			// A path item legally holds non-operation keys ("parameters",
 			// "summary", "description", "servers", "$ref"). Only the HTTP
@@ -65,7 +67,7 @@ func TestOpenAPITagsMatchRouteGroups(t *testing.T) {
 	doc := loadOpenAPI(t)
 
 	for _, r := range httpapi.Routes() {
-		item, ok := doc.Paths[r.Pattern]
+		item, ok := pathsOf(t, doc)[r.Pattern]
 		if !ok {
 			continue // reported by TestOpenAPIMatchesRoutes
 		}
@@ -115,6 +117,62 @@ func TestRouteTableWellFormed(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpecStructure validates the document's own structural
+// integrity, independent of the router: it must declare OpenAPI 3.1, carry
+// an info block, declare a non-empty paths object, and every path item must
+// hold at least one operation -- a path with only parameters/description
+// keys describes no route and is always a document bug.
+func TestOpenAPISpecStructure(t *testing.T) {
+	t.Parallel()
+
+	doc := loadOpenAPI(t)
+
+	version, ok := doc["openapi"].(string)
+	if !ok || !strings.HasPrefix(version, "3.1.") {
+		t.Errorf("openapi field %v, want a 3.1.x version string", doc["openapi"])
+	}
+
+	info, ok := doc["info"].(map[string]any)
+	if !ok {
+		t.Error("info block missing")
+	} else {
+		for _, field := range []string{"title", "version"} {
+			if s, _ := info[field].(string); s == "" {
+				t.Errorf("info.%s missing or empty", field)
+			}
+		}
+	}
+
+	paths := pathsOf(t, doc)
+	for path, item := range paths {
+		ops := 0
+		for key := range item {
+			if isHTTPMethod(key) {
+				ops++
+			}
+		}
+		if ops == 0 {
+			t.Errorf("path %q declares no operation", path)
+		}
+	}
+}
+
+// TestOpenAPIRefsResolve walks the entire document -- paths and components
+// alike -- and fails on any $ref that does not resolve within the document
+// itself: the published spec is self-contained by contract, and a dangling
+// reference is a broken contract.
+func TestOpenAPIRefsResolve(t *testing.T) {
+	t.Parallel()
+
+	doc := loadOpenAPI(t)
+
+	for _, ref := range collectRefs(doc, nil) {
+		if err := resolveLocalRef(doc, ref); err != nil {
+			t.Errorf("$ref %q: %v", ref, err)
+		}
+	}
+}
+
 // httpMethods are the operation keys OpenAPI defines for a path item.
 var httpMethods = map[string]bool{
 	"get": true, "put": true, "post": true, "delete": true,
@@ -123,11 +181,9 @@ var httpMethods = map[string]bool{
 
 func isHTTPMethod(key string) bool { return httpMethods[strings.ToLower(key)] }
 
-type openAPIDoc struct {
-	Paths map[string]map[string]any `yaml:"paths"`
-}
-
-func loadOpenAPI(t *testing.T) openAPIDoc {
+// loadOpenAPI parses api/openapi.yaml into its generic document tree, so
+// both the route comparison and the structural/ref walks see the same shape.
+func loadOpenAPI(t *testing.T) map[string]any {
 	t.Helper()
 	// test file lives in internal/adapters/httpapi
 	path := filepath.Join("..", "..", "..", "api", "openapi.yaml")
@@ -135,14 +191,78 @@ func loadOpenAPI(t *testing.T) openAPIDoc {
 	if err != nil {
 		t.Fatalf("read openapi.yaml: %v", err)
 	}
-	var doc openAPIDoc
+	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("parse openapi.yaml: %v", err)
 	}
-	if len(doc.Paths) == 0 {
-		t.Fatal("openapi.yaml declares no paths")
+	if len(doc) == 0 {
+		t.Fatal("openapi.yaml parsed to an empty document")
 	}
 	return doc
+}
+
+// pathsOf returns the document's paths object, failing when absent -- every
+// caller needs it, and an empty paths object is always a document bug.
+func pathsOf(t *testing.T, doc map[string]any) map[string]map[string]any {
+	t.Helper()
+	raw, ok := doc["paths"].(map[string]any)
+	if !ok {
+		t.Fatal("openapi.yaml declares no paths object")
+	}
+	paths := make(map[string]map[string]any, len(raw))
+	for p, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Errorf("path %q is not a mapping", p)
+			continue
+		}
+		paths[p] = m
+	}
+	if len(paths) == 0 {
+		t.Fatal("openapi.yaml declares no paths")
+	}
+	return paths
+}
+
+// collectRefs appends every $ref string found anywhere in the node tree.
+func collectRefs(node any, into []string) []string {
+	switch v := node.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if k == "$ref" {
+				if s, ok := val.(string); ok {
+					into = append(into, s)
+				}
+			}
+			into = collectRefs(val, into)
+		}
+	case []any:
+		for _, val := range v {
+			into = collectRefs(val, into)
+		}
+	}
+	return into
+}
+
+// resolveLocalRef walks a JSON-pointer reference ("#/components/...") from
+// the document root, requiring every segment to exist. Non-local references
+// are rejected outright: this document is self-contained.
+func resolveLocalRef(doc map[string]any, ref string) error {
+	if !strings.HasPrefix(ref, "#/") {
+		return errors.New("not a local reference")
+	}
+	var cur any = doc
+	for _, seg := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return fmt.Errorf("segment %q: parent is not a mapping", seg)
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return fmt.Errorf("segment %q not found", seg)
+		}
+	}
+	return nil
 }
 
 func sortedKeys(m map[string]bool) []string {
