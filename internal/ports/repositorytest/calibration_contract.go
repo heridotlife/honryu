@@ -23,7 +23,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 		repo := newRepo(t)
 		ctx := context.Background()
 
-		id, err := repo.CreateCalibrationJob(ctx, 42)
+		id, err := repo.CreateCalibrationJob(ctx, 42, 7)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -37,6 +37,23 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 		}
 		if got.ID != id || got.ExecutionID != 42 {
 			t.Fatalf("GetCalibrationJob = %+v, want id=%d execution_id=42", got, id)
+		}
+		if got.ScenarioID != 7 {
+			t.Fatalf("ScenarioID = %d, want 7 round-tripped", got.ScenarioID)
+		}
+
+		// A 0 scenario is the legacy/unknown marker (the column's NULL),
+		// stored and read back as 0 -- not an error.
+		legacyID, err := repo.CreateCalibrationJob(ctx, 43, 0)
+		if err != nil {
+			t.Fatalf("CreateCalibrationJob(legacy): %v", err)
+		}
+		legacy, err := repo.GetCalibrationJob(ctx, legacyID)
+		if err != nil {
+			t.Fatalf("GetCalibrationJob(legacy): %v", err)
+		}
+		if legacy.ScenarioID != 0 {
+			t.Fatalf("legacy ScenarioID = %d, want 0", legacy.ScenarioID)
 		}
 		if got.Phase != calibration.PhasePending {
 			t.Fatalf("Phase = %q, want pending", got.Phase)
@@ -60,15 +77,15 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 		repo := newRepo(t)
 		ctx := context.Background()
 
-		first, err := repo.CreateCalibrationJob(ctx, 1)
+		first, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob (first): %v", err)
 		}
-		second, err := repo.CreateCalibrationJob(ctx, 1)
+		second, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob (second): %v", err)
 		}
-		if _, err := repo.CreateCalibrationJob(ctx, 2); err != nil {
+		if _, err := repo.CreateCalibrationJob(ctx, 2, 0); err != nil {
 			t.Fatalf("CreateCalibrationJob (other execution): %v", err)
 		}
 
@@ -84,7 +101,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("ClaimNextStepReturnsAPendingJob", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -115,7 +132,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("ClaimNextStepRespectsAnUnexpiredLease", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -136,11 +153,11 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("ClaimNextStepExcludesDoneAndFailedJobs", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		doneID, err := repo.CreateCalibrationJob(ctx, 1)
+		doneID, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob (done): %v", err)
 		}
-		failedID, err := repo.CreateCalibrationJob(ctx, 1)
+		failedID, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob (failed): %v", err)
 		}
@@ -167,7 +184,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("RecordStepUpdatesStateAppendsHistoryAndClearsTheClaim", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -212,7 +229,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("RecordStepStoresATerminalResult", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -250,7 +267,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("StepsForEmptyUntilAnyRecorded", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}
@@ -266,7 +283,7 @@ func RunCalibrationJobRepositoryContract(t *testing.T, newRepo NewCalibrationJob
 	t.Run("MarkFailedSetsPhaseAndReasonAndClearsTheClaim", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
-		id, err := repo.CreateCalibrationJob(ctx, 1)
+		id, err := repo.CreateCalibrationJob(ctx, 1, 0)
 		if err != nil {
 			t.Fatalf("CreateCalibrationJob: %v", err)
 		}

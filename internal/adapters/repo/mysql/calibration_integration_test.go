@@ -71,7 +71,7 @@ func TestMySQLCalibrationJobRepository_ClaimNextStep_ConcurrentClaimsExactlyOneW
 	repo := mysqladapter.NewRepository(db)
 	ctx := context.Background()
 
-	jobID, err := repo.CreateCalibrationJob(ctx, 1)
+	jobID, err := repo.CreateCalibrationJob(ctx, 1, 0)
 	if err != nil {
 		t.Fatalf("CreateCalibrationJob: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestMySQLCalibrationJobRepository_RecordStep_ReclaimableAfterwards(t *testi
 	repo := mysqladapter.NewRepository(db)
 	ctx := context.Background()
 
-	jobID, err := repo.CreateCalibrationJob(ctx, 1)
+	jobID, err := repo.CreateCalibrationJob(ctx, 1, 0)
 	if err != nil {
 		t.Fatalf("CreateCalibrationJob: %v", err)
 	}

@@ -234,6 +234,10 @@ var routes = []Route{
 	{"DELETE", "/api/projects/{project_id}/digest", "digests", hf(func(h *handlers) http.HandlerFunc { return h.deleteDigestConfig })},
 	{"GET", "/api/projects/{project_id}/digests", "digests", hf(func(h *handlers) http.HandlerFunc { return h.listDigests })},
 
+	// Phase 67a: the scenario-first reads. The flat list is the tenant-scoped
+	// "what can I run" view (never templates -- those are the catalog's);
+	// a scenario's execution list is its run history across every rig.
+	{"GET", "/api/scenarios", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarios })},
 	{"POST", "/api/scenarios", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.createScenario })},
 	{"POST", "/api/scenarios/import", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.importScenario })},
 	{"GET", "/api/scenarios/{scenario_id}", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.getScenario })},
@@ -244,6 +248,7 @@ var routes = []Route{
 	{"GET", "/api/scenarios/{scenario_id}/requests", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.getScenarioRequests })},
 	{"POST", "/api/scenarios/{scenario_id}/requests/validate", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.validateScenarioRequests })},
 	{"PUT", "/api/scenarios/{scenario_id}/requests", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.setScenarioRequests })},
+	{"GET", "/api/scenarios/{scenario_id}/executions", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarioExecutions })},
 
 	// Phase 65: templates are scenarios with a flag. The catalog is its own
 	// read surface (templates are global, so no project scopes it), and
@@ -329,6 +334,11 @@ var routes = []Route{
 
 	{"POST", "/api/calibrations", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.createCalibration })},
 	{"POST", "/api/executions/{execution_id}/calibration/trigger", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.triggerCalibration })},
+	// Phase 67a: the scenario-first trigger -- the operator names the
+	// scenario, the service picks its newest CalibrateEngine execution. The
+	// execution-scoped route above stays as the deprecated alias; both are
+	// the same service call, so both record execution_id AND scenario_id.
+	{"POST", "/api/scenarios/{scenario_id}/calibration/trigger", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.triggerScenarioCalibration })},
 	{"GET", "/api/calibrations/{job_id}", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCalibrationJob })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.getCapacityProfile })},
 	{"GET", "/api/scenarios/{scenario_id}/capacity-profile/fanout", "calibration", hf(func(h *handlers) http.HandlerFunc { return h.fanOutCapacity })},

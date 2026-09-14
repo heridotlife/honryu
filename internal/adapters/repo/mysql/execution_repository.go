@@ -108,6 +108,36 @@ func (r *Repository) ListExecutionsByProjects(ctx context.Context, projectIDs []
 	return out, nil
 }
 
+// ListExecutionsByScenario returns every execution whose load profile binds
+// scenarioID -- a row in execution_scenario, the execution↔scenario link --
+// newest first (created_time desc, id desc, the ListExecutionsByProjects
+// order). An unknown scenario joins nothing and returns an empty list, not
+// an error. The link is read through an IN-subquery so the shared bare
+// executionColumns projection stays unambiguous.
+func (r *Repository) ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT "+executionColumns+" FROM execution WHERE id IN"+
+			" (SELECT execution_id FROM execution_scenario WHERE scenario_id = ?)"+
+			" ORDER BY created_time DESC, id DESC", scenarioID)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: list executions by scenario: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []execution.Execution{}
+	for rows.Next() {
+		c, scanErr := scanExecution(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("mysql: scan execution: %w", scanErr)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql: iterate executions: %w", err)
+	}
+	return out, nil
+}
+
 // DeleteExecution removes the execution with id, or ports.ErrNotFound.
 // The schema has no FK cascades, so the execution's scenario links go first,
 // in the same transaction -- left behind they survive as orphaned

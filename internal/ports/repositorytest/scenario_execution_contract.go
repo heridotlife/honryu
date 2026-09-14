@@ -346,6 +346,65 @@ func RunScenarioRepositoryContract(t *testing.T, newRepo NewRepo) {
 			t.Fatal("ScenarioInUse = false after the scenario was added to an execution")
 		}
 	})
+
+	// ListExecutionsByScenario is the scenario-first lens: every execution
+	// whose load profile binds the scenario, newest first -- whatever kind
+	// it is and however many scenarios each execution also runs.
+	t.Run("ListExecutionsByScenarioNewestFirst", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+		scenarioA := mustCreateScenario(t, repo, "alpha", 10)
+		scenarioB := mustCreateScenario(t, repo, "beta", 10)
+
+		first := mustCreateExecution(t, repo, "first", 10)
+		if err := repo.StoreLoadProfile(ctx, first, false, []loadprofile.Entry{
+			{Name: "alpha", ScenarioID: scenarioA, Engines: 1, Concurrency: 1, Duration: 60},
+		}); err != nil {
+			t.Fatalf("StoreLoadProfile(first): %v", err)
+		}
+		second := mustCreateExecution(t, repo, "second", 10)
+		if err := repo.StoreLoadProfile(ctx, second, false, []loadprofile.Entry{
+			{Name: "alpha", ScenarioID: scenarioA, Engines: 1, Concurrency: 1, Duration: 60},
+			{Name: "beta", ScenarioID: scenarioB, Engines: 1, Concurrency: 1, Duration: 60},
+		}); err != nil {
+			t.Fatalf("StoreLoadProfile(second): %v", err)
+		}
+		third := mustCreateExecution(t, repo, "third", 10)
+		if err := repo.StoreLoadProfile(ctx, third, false, []loadprofile.Entry{
+			{Name: "beta", ScenarioID: scenarioB, Engines: 1, Concurrency: 1, Duration: 60},
+		}); err != nil {
+			t.Fatalf("StoreLoadProfile(third): %v", err)
+		}
+		// An execution bound to no scenario at all must appear in neither list.
+		_ = mustCreateExecution(t, repo, "unbound", 10)
+
+		forA, err := repo.ListExecutionsByScenario(ctx, scenarioA)
+		if err != nil {
+			t.Fatalf("ListExecutionsByScenario(alpha): %v", err)
+		}
+		if len(forA) != 2 || forA[0].ID != second || forA[1].ID != first {
+			t.Fatalf("ListExecutionsByScenario(alpha) = %v, want [second first] newest-first", idsOf(forA))
+		}
+
+		// An execution bound to two scenarios appears in both lists.
+		forB, err := repo.ListExecutionsByScenario(ctx, scenarioB)
+		if err != nil {
+			t.Fatalf("ListExecutionsByScenario(beta): %v", err)
+		}
+		if len(forB) != 2 || forB[0].ID != third || forB[1].ID != second {
+			t.Fatalf("ListExecutionsByScenario(beta) = %v, want [third second] newest-first", idsOf(forB))
+		}
+
+		// A scenario nothing runs, and a scenario id that does not exist at
+		// all: empty results, not errors.
+		none, err := repo.ListExecutionsByScenario(ctx, 424242)
+		if err != nil {
+			t.Fatalf("ListExecutionsByScenario(unknown): %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("ListExecutionsByScenario(unknown) = %v, want empty", idsOf(none))
+		}
+	})
 }
 
 // RunExecutionRepositoryContract exercises ExecutionRepository behaviour.
