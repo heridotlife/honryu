@@ -15,12 +15,13 @@ import (
 	"sort"
 	"strings"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/heridotlife/honryu/internal/domain/jmx"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/ports"
-	yaml "gopkg.in/yaml.v3"
 )
 
 // Business-rule errors. Callers compare with errors.Is.
