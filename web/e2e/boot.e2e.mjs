@@ -228,12 +228,16 @@ async function scenarioDandE(browser) {
       skip('D. purge two-step', 'no executions on the hub to open');
       return;
     }
-    await page.locator(runRow).first().click();
-    await page.waitForURL(/\/executions\/\d+/, { timeout: 15_000 });
+    // Open a scenario row: land on /scenarios/{id} (Runs tab is the
+    // default), where the run rows link to /executions/{id}.
+    await page.locator(rowSelector).first().click();
+    await page.waitForURL(/\/scenarios\/\d+/, { timeout: 15_000 });
     await page.waitForLoadState('domcontentloaded');
-    // The Runs tab lists that scenario's runs; each links to /executions/{id}.
     const runRow = 'main a[href^="/executions/"]';
     await page.waitForSelector(runRow, { timeout: 15_000 });
+    // Then open the newest run row: the classic /executions/{id} detail.
+    await page.locator(runRow).first().click();
+    await page.waitForURL(/\/executions\/\d+/, { timeout: 15_000 });
     await page.waitForLoadState('domcontentloaded');
 
     const purge = page.getByRole('button', { name: 'Purge', exact: true });
