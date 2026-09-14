@@ -199,7 +199,7 @@ components:
     Cluster:
       type: object
       description: A registered cluster Honryu can generate load from. The credential is never surfaced; secret_ref names it.
-      required: [name, ingest_url, sidecar_image, namespace, secret_ref, origin]
+      required: [name, api_url, ingest_url, sidecar_image, namespace, secret_ref, origin, created_time]
       properties:
         name: { type: string, description: The ClusterRef; empty on an execution means the default cluster }
         api_url: { type: string }
@@ -210,6 +210,12 @@ components:
         origin: { type: string, enum: [operator, byoc] }
         created_by: { type: string }
         created_time: { type: string, format: date-time }
+        engines_used:
+          type: integer
+          description: Aggregate engines in use on the cluster (quota ledger). Absent when the deployment has no quota ledger wired.
+        engines_ceiling:
+          type: integer
+          description: Aggregate engine ceiling across tenants (quota ledger). Absent when the deployment has no quota ledger wired.
     MetricBatch:
       type: object
       description: One engine pod's measurements.

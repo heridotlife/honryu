@@ -7,7 +7,13 @@
 // exercises the generated getExecutionsByExecutionIdReports through
 // reports.test.ts; these cover the generator's other shapes.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { paths, getRunsCompare, postCalibrations } from './generated';
+import {
+  paths,
+  getRunsCompare,
+  postCalibrations,
+  getScenariosByScenarioIdRequests,
+  putScenariosByScenarioIdRequests,
+} from './generated';
 
 function fetchRecorder() {
   const requests: { url: string; init?: RequestInit }[] = [];
@@ -69,5 +75,29 @@ describe('generated client', () => {
     expect(body.get('project_id')).toBe('2');
     expect(body.get('scenario_id')).toBe('11');
     expect(body.get('criterion')).toBe('failures>5%');
+  });
+
+  // Phase 64: text/* operations. A text response is raw text read with
+  // apiClient.text -- never res.json(), which would throw on YAML.
+  it('text/yaml GET is fetched as raw text, not parsed as JSON', async () => {
+    const yaml = 'multi-test:\n  scenario: false\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(yaml, { status: 200, headers: { 'Content-Type': 'text/yaml' } }))
+    );
+
+    await expect(getScenariosByScenarioIdRequests(5)).resolves.toBe(yaml);
+  });
+
+  it('text/yaml PUT sends the body verbatim under the spec media type', async () => {
+    const requests = fetchRecorder();
+    const fragment = 'execution:\n  ramp-up: 30s # keep\n';
+
+    await putScenariosByScenarioIdRequests(5, fragment);
+
+    expect(requests[0].url).toBe('/api/scenarios/5/requests');
+    expect(requests[0].init?.method).toBe('PUT');
+    expect(new Headers(requests[0].init?.headers).get('Content-Type')).toBe('text/yaml');
+    expect(requests[0].init?.body).toBe(fragment);
   });
 });

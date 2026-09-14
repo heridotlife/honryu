@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { parseDocument } from 'yaml';
 import { validateScenarioRequests, type Diagnostic } from '../api/scenarios';
-import { apiClient, ApiError } from '../api/client';
 
 // The editor's layer-1 check is a pure function of the text -- mirrored
 // here against the SAME library call so the contract is pinned: parse
@@ -22,7 +21,10 @@ function checkParse(text: string): Diagnostic | null {
   };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('layer 1: client parse check', () => {
   it('valid YAML -> null (no network)', () => {
@@ -48,15 +50,36 @@ describe('layer 1: client parse check', () => {
 });
 
 describe('layer 2: G5 validate endpoint', () => {
-  it('200 -> valid with no diagnostics', async () => {
-    vi.spyOn(apiClient, 'putRaw').mockResolvedValue(undefined);
-    const res = await validateScenarioRequests(5, 'a: 1\n');
-    expect(res).toEqual({ valid: true, diagnostics: [] });
-    expect(apiClient.putRaw).toHaveBeenCalledWith(
-      '/scenarios/5/requests/validate',
-      'text/yaml; charset=utf-8',
-      'a: 1\n',
+  // Phase 64: validateScenarioRequests delegates to the generated client, so
+  // these pin the wire (method, media type, bytes) and let the real ApiClient
+  // build the ApiErrors, instead of mocking its internal call shape.
+  function stubFetchOnce(status: number, body: string): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status, headers: { 'Content-Type': 'application/json' } })),
     );
+  }
+
+  it('200 -> valid with no diagnostics', async () => {
+    const requests: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: String(input), init });
+        return new Response(JSON.stringify({ valid: true, diagnostics: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+
+    const res = await validateScenarioRequests(5, 'a: 1\n');
+
+    expect(res).toEqual({ valid: true, diagnostics: [] });
+    expect(requests[0].url).toBe('/api/scenarios/5/requests/validate');
+    expect(requests[0].init?.method).toBe('POST');
+    expect(new Headers(requests[0].init?.headers).get('Content-Type')).toBe('text/yaml');
+    expect(requests[0].init?.body).toBe('a: 1\n');
   });
 
   it('400 DiagnosticsError -> valid:false with the diagnostics unwrapped', async () => {
@@ -64,23 +87,26 @@ describe('layer 2: G5 validate endpoint', () => {
       { severity: 'error', message: 'unknown field "requestz"', line: 4 },
       { severity: 'info', message: 'uncompiled key "think-time"', line: 6 },
     ];
-    vi.spyOn(apiClient, 'putRaw').mockRejectedValue(
-      new ApiError(400, 'invalid requests', { message: 'invalid requests', diagnostics: diags }),
-    );
+    stubFetchOnce(400, JSON.stringify({ message: 'invalid requests', diagnostics: diags }));
+
     const res = await validateScenarioRequests(5, 'a: 1\n');
+
     expect(res.valid).toBe(false);
     expect(res.diagnostics).toEqual(diags);
   });
 
   it('400 without a diagnostics body -> empty list, still invalid', async () => {
-    vi.spyOn(apiClient, 'putRaw').mockRejectedValue(new ApiError(400, 'bad body'));
+    stubFetchOnce(400, JSON.stringify({ message: 'bad body' }));
+
     const res = await validateScenarioRequests(5, 'a: 1\n');
+
     expect(res.valid).toBe(false);
     expect(res.diagnostics).toEqual([]);
   });
 
   it('non-400 (404 scenario) propagates -- the banner owns it', async () => {
-    vi.spyOn(apiClient, 'putRaw').mockRejectedValue(new ApiError(404, 'no scenario'));
+    stubFetchOnce(404, JSON.stringify({ message: 'no scenario' }));
+
     await expect(validateScenarioRequests(5, 'a: 1\n')).rejects.toThrow('no scenario');
   });
 });
