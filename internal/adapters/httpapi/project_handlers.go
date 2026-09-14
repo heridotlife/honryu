@@ -204,7 +204,7 @@ func (h *handlers) projectSummary(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	s, err := h.deps.Projects.Summary(r.Context(), projectID, queryInt(r, "limit"))
+	s, err := h.deps.Projects.Summary(r.Context(), projectID, queryInt(r))
 	if err != nil {
 		respondError(w, err)
 		return
