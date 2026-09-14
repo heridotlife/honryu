@@ -183,4 +183,21 @@ describe('Home (phase 52)', () => {
     const rows = Array.from(container!.querySelectorAll('[data-testid="home-recent"] a[href^="/executions/"]'));
     expect(rows.map((r) => r.getAttribute('href'))).toEqual(['/executions/8']);
   });
+
+  // Phase 67b: the card's rows still deep-link the run hub, but the
+  // card's "view all" (and the run-count KPIs) point at Scenarios -- the
+  // run history's primary surface now; /executions itself just redirects.
+  it('points the recent-executions card and run KPIs at Scenarios', async () => {
+    await renderHome();
+
+    expect(container!.querySelector<HTMLAnchorElement>('[data-testid="home-recent-view-all"]')?.getAttribute('href')).toBe(
+      '/scenarios',
+    );
+    expect(container!.querySelector<HTMLAnchorElement>('[data-testid="kpi-active-runs"]')?.getAttribute('href')).toBe(
+      '/scenarios',
+    );
+    expect(container!.querySelector<HTMLAnchorElement>('[data-testid="kpi-total-executions"]')?.getAttribute('href')).toBe(
+      '/scenarios',
+    );
+  });
 });

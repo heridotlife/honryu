@@ -89,10 +89,10 @@ const ROUTES = ['/', '/reports', '/reservations', '/status', '/campaigns', '/clu
  * now, so one constant cannot assert it for everyone (task 24).
  */
 const PERSONAS = [
-  { id: 'alice', hrefs: ['/reports', '/executions', '/reservations', '/campaigns', '/clusters'] },
-  { id: 'bob', hrefs: ['/reports', '/executions', '/reservations'] },
-  { id: 'carol', hrefs: ['/reports', '/executions', '/reservations'] },
-  { id: 'dave', hrefs: ['/reports', '/executions', '/reservations', '/campaigns'] },
+  { id: 'alice', hrefs: ['/reports', '/scenarios', '/reservations', '/campaigns', '/clusters'] },
+  { id: 'bob', hrefs: ['/reports', '/scenarios', '/reservations'] },
+  { id: 'carol', hrefs: ['/reports', '/scenarios', '/reservations'] },
+  { id: 'dave', hrefs: ['/reports', '/scenarios', '/reservations', '/campaigns'] },
 ];
 
 /**

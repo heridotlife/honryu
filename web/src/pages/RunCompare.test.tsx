@@ -444,8 +444,9 @@ describe('RunCompare multi-run (phase 61)', () => {
   });
 });
 
-// Phase 52: the breadcrumb trail -- "Executions / #5 / Compare". Two
-// ancestor links, the current page as aria-current text, chevrons between.
+// Phase 52: the breadcrumb trail -- "Scenarios / #5 / Compare" (the list
+// root moved to /scenarios in phase 67b). Two ancestor links, the current
+// page as aria-current text, chevrons between.
 describe('RunCompare breadcrumbs (phase 52)', () => {
   it('renders the trail with two links and aria-current on the last item', async () => {
     await renderCompare();
@@ -453,10 +454,10 @@ describe('RunCompare breadcrumbs (phase 52)', () => {
     const nav = container!.querySelector('nav[aria-label="breadcrumb"]');
     expect(nav).not.toBeNull();
     const items = Array.from(nav!.querySelectorAll('li'));
-    expect(items.map((li) => li.textContent?.trim())).toEqual(['Executions', '#5', 'Compare']);
+    expect(items.map((li) => li.textContent?.trim())).toEqual(['Scenarios', '#5', 'Compare']);
     // Ancestors are links; the current page is not.
     const links = Array.from(nav!.querySelectorAll('a')).map((a) => a.getAttribute('href'));
-    expect(links).toEqual(['/executions', '/executions/5']);
+    expect(links).toEqual(['/scenarios', '/executions/5']);
     const current = nav!.querySelector('[aria-current="page"]');
     expect(current).not.toBeNull();
     expect(current!.textContent).toBe('Compare');

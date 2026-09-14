@@ -625,10 +625,12 @@ export default function Execution() {
   return (
     <div className="space-y-6">
       {/* Phase 52: the trail back up -- the hub is one click away, named
-          rather than guessed from the back button. */}
+          rather than guessed from the back button. Phase 67b: the list the
+          trail roots at is /scenarios (the flat /executions list redirects
+          there), so the way back never bounces through a redirect. */}
       <Breadcrumbs
         items={[
-          { label: 'Executions', href: '/executions' },
+          { label: 'Scenarios', href: '/scenarios' },
           { label: `#${executionId}` },
         ]}
       />

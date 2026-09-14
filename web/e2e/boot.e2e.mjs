@@ -173,7 +173,7 @@ async function scenarioABandC(browser) {
     // C. SESSION DEATH: kill the cookie server-side-of-the-browser, click a
     // nav link, and the once-latch dead-session redirect must land on /.
     await page.context().clearCookies();
-    await page.locator('[data-testid="nav-links"] a', { hasText: 'Executions' }).click();
+    await page.locator('[data-testid="nav-links"] a', { hasText: 'Scenarios' }).click();
     await sleep(3_000);
     const finalPath = new URL(page.url()).pathname;
     if (finalPath !== '/') {
@@ -200,12 +200,14 @@ async function scenarioDandE(browser) {
   try {
     const alice = await openPicker(page);
     await login(page, alice);
-    await page.goto(`${BASE_URL}/executions`, { waitUntil: 'domcontentloaded' });
+    // 67b: the hub is /scenarios (executions redirects there). Scenario rows
+    // link /scenarios/{id}; run rows on a scenario Runs tab link /executions/{id}.
+    await page.goto(`${BASE_URL}/scenarios`, { waitUntil: 'domcontentloaded' });
 
     // E. ROW SANITY runs on the list itself, before D leaves it.
     // Rows link to /executions/{id}; the page's own "New test" CTA links to
     // /executions/new and must not be mistaken for a row.
-    const rowSelector = 'main a[href^="/executions/"]:not([href="/executions/new"])';
+    const rowSelector = 'main a[href^="/scenarios/"]:not([href="/scenarios/new"])';
     await page.waitForSelector(`${rowSelector}, main p`, { timeout: 15_000 });
     const rows = await page.locator(rowSelector).all();
     const isoLeak = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
@@ -226,8 +228,12 @@ async function scenarioDandE(browser) {
       skip('D. purge two-step', 'no executions on the hub to open');
       return;
     }
-    await page.locator(rowSelector).first().click();
+    await page.locator(runRow).first().click();
     await page.waitForURL(/\/executions\/\d+/, { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded');
+    // The Runs tab lists that scenario's runs; each links to /executions/{id}.
+    const runRow = 'main a[href^="/executions/"]';
+    await page.waitForSelector(runRow, { timeout: 15_000 });
     await page.waitForLoadState('domcontentloaded');
 
     const purge = page.getByRole('button', { name: 'Purge', exact: true });
