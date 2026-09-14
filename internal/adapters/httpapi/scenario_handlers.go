@@ -16,12 +16,17 @@ import (
 )
 
 type planResponse struct {
-	ID          int64                 `json:"id"`
-	Name        string                `json:"name"`
-	ProjectID   int64                 `json:"project_id"`
-	CreatedTime time.Time             `json:"created_time"`
-	TestFile    *scenarioapp.FileRef  `json:"test_file"`
-	Data        []scenarioapp.FileRef `json:"data"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	ProjectID   int64     `json:"project_id"`
+	CreatedTime time.Time `json:"created_time"`
+	// Phase 65: templates ride the same wire shape (the catalog list and
+	// every scenario response carry the flag), so the SPA can badge a
+	// template without a second endpoint.
+	IsTemplate   bool                  `json:"is_template"`
+	TemplateName string                `json:"template_name,omitempty"`
+	TestFile     *scenarioapp.FileRef  `json:"test_file"`
+	Data         []scenarioapp.FileRef `json:"data"`
 }
 
 func (h *handlers) getScenario(w http.ResponseWriter, r *http.Request) {
@@ -44,14 +49,10 @@ func (h *handlers) getScenario(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, planResponse{
-		ID:          p.ID,
-		Name:        p.Name,
-		ProjectID:   p.ProjectID,
-		CreatedTime: p.CreatedTime,
-		TestFile:    files.TestFile,
-		Data:        files.Data,
-	})
+	resp := toScenarioResponse(p)
+	resp.TestFile = files.TestFile
+	resp.Data = files.Data
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *handlers) createScenario(w http.ResponseWriter, r *http.Request) {
@@ -353,10 +354,12 @@ func (h *handlers) authorizeScenario(r *http.Request, scenarioID int64, action r
 
 func toScenarioResponse(p scenario.Scenario) planResponse {
 	return planResponse{
-		ID:          p.ID,
-		Name:        p.Name,
-		ProjectID:   p.ProjectID,
-		CreatedTime: p.CreatedTime,
-		Data:        []scenarioapp.FileRef{},
+		ID:           p.ID,
+		Name:         p.Name,
+		ProjectID:    p.ProjectID,
+		CreatedTime:  p.CreatedTime,
+		IsTemplate:   p.IsTemplate,
+		TemplateName: p.TemplateName,
+		Data:         []scenarioapp.FileRef{},
 	}
 }

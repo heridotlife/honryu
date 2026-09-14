@@ -100,6 +100,10 @@ var badRequestErrors = []error{
 var conflictErrors = []error{
 	ports.ErrFileExists,
 	scenarioapp.ErrScenarioInUse, scenarioapp.ErrScenarioNotPortable,
+	// Instantiating an ordinary scenario addresses the wrong id: the route
+	// clones templates, and silently producing a clone would bury the
+	// mistake under a 201 (scenarioapp's own stance, mapped to the wire).
+	scenarioapp.ErrScenarioNotTemplate,
 	projectapp.ErrProjectHasScenarios, projectapp.ErrProjectHasExecutions,
 	run.ErrNotDeployed, run.ErrEnginesNotReady, run.ErrAlreadyRunning, run.ErrNotRunning,
 	// Triggering engines that already finished: re-deploying is the fix, and

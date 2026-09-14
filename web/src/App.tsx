@@ -11,6 +11,7 @@ import ProfilePicker from './pages/ProfilePicker';
 import Reports from './pages/Reports';
 import Reservations from './pages/Reservations';
 import RunCompare from './pages/RunCompare';
+import Scenario from './pages/Scenario';
 import SharedReport from './pages/SharedReport';
 import Tenants from './pages/Tenants';
 
@@ -31,6 +32,9 @@ export default function App() {
             <Route path="/executions/new" element={<NewTest />} />
             <Route path="/executions" element={<Executions />} />
             <Route path="/executions/:id" element={<Execution />} />
+            {/* Phase 65: where a template instantiation lands (there is no
+                scenario list -- the NewTest picker browses the catalog). */}
+            <Route path="/scenarios/:id" element={<Scenario />} />
             {/* Phase 21: run-over-run comparison for one execution (task 10). */}
             <Route path="/executions/:id/compare" element={<RunCompare />} />
             {/* R1: /status is now the execution hub's job; keep the bookmark alive. */}

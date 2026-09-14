@@ -454,6 +454,20 @@ func (s *Store) ScenarioInUse(_ context.Context, scenarioID int64) (bool, error)
 	return false, nil
 }
 
+// ListTemplates returns every scenario flagged as a template, in id order.
+func (s *Store) ListTemplates(_ context.Context) ([]scenario.Scenario, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []scenario.Scenario{}
+	for _, p := range s.scenarios {
+		if p.IsTemplate {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // --- Executions ------------------------------------------------------------
 
 func (s *Store) CreateExecution(_ context.Context, c execution.Execution) (int64, error) {

@@ -73,6 +73,14 @@ export interface Scenario {
   name?: string;
   project_id?: number;
   created_time?: string;
+  is_template?: boolean;
+  template_name?: string;
+}
+
+export interface InstantiateRequest {
+  name: string;
+  project_id: number;
+  overrides?: { target_url?: string };
 }
 
 export interface Webhook {
@@ -487,8 +495,10 @@ export const paths = {
   putProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
   deleteProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
   getProjectsByProjectIdDigests: (projectId: number | string) => `/projects/${projectId}/digests`,
+  getTemplates: () => `/templates`,
   postScenarios: () => `/scenarios`,
   postScenariosImport: () => `/scenarios/import`,
+  postScenariosByScenarioIdInstantiate: (scenarioId: number | string) => `/scenarios/${scenarioId}/instantiate`,
   getScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   deleteScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   getScenariosByScenarioIdFiles: (scenarioId: number | string) => `/scenarios/${scenarioId}/files`,
@@ -670,6 +680,11 @@ export function getProjectsByProjectIdDigests(projectId: number | string, opts?:
   return apiClient.get<Digest[]>(paths.getProjectsByProjectIdDigests(projectId) + toQuery(opts?.query ?? {}));
 }
 
+/** List the template catalog */
+export function getTemplates(): Promise<Scenario[]> {
+  return apiClient.get<Scenario[]>(paths.getTemplates());
+}
+
 /** Create a scenario */
 export function postScenarios(body: { name: string; project_id: number }): Promise<Scenario> {
   return apiClient.post<Scenario>(paths.postScenarios(), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
@@ -678,6 +693,15 @@ export function postScenarios(body: { name: string; project_id: number }): Promi
 /** Import a JMeter plan as a scenario */
 export function postScenariosImport(): Promise<{ scenario?: Scenario; report?: { test_plan_name?: string; thread_groups?: { name?: string; threads?: number; ramp_up_seconds?: number; duration_seconds?: number }[]; data_files?: string[]; findings?: { kind?: "load-overridden" | "unreachable-path" | "listener-ignored" | "external-reporting"; element?: string; detail?: string }[] } }> {
   return apiClient.request<{ scenario?: Scenario; report?: { test_plan_name?: string; thread_groups?: { name?: string; threads?: number; ramp_up_seconds?: number; duration_seconds?: number }[]; data_files?: string[]; findings?: { kind?: "load-overridden" | "unreachable-path" | "listener-ignored" | "external-reporting"; element?: string; detail?: string }[] } }>(paths.postScenariosImport(), { method: 'POST' });
+}
+
+/** Instantiate a template into a new scenario */
+export function postScenariosByScenarioIdInstantiate(scenarioId: number | string, body: InstantiateRequest): Promise<Scenario> {
+  return apiClient.request<Scenario>(paths.postScenariosByScenarioIdInstantiate(scenarioId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 /** Get a scenario and its files */

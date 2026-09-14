@@ -231,6 +231,54 @@ func RunScenarioRepositoryContract(t *testing.T, newRepo NewRepo) {
 		}
 	})
 
+	// Templates are scenarios with a flag: the flag and its slug must
+	// round-trip, the template catalog must list them, and a template must
+	// validate (global: no project, no tenant).
+	t.Run("TemplatesRoundTrip", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+
+		tpl, err := scenario.NewTemplate("HTTPbin baseline", "httpbin-baseline")
+		if err != nil {
+			t.Fatalf("NewTemplate: %v", err)
+		}
+		tplID, err := repo.CreateScenario(ctx, tpl)
+		if err != nil {
+			t.Fatalf("CreateScenario(template): %v", err)
+		}
+		// An ordinary scenario beside it, so the catalog cannot be "everything".
+		mustCreateScenario(t, repo, "smoke", 10)
+
+		got, err := repo.GetScenario(ctx, tplID)
+		if err != nil {
+			t.Fatalf("GetScenario(template): %v", err)
+		}
+		if !got.IsTemplate || got.TemplateName != "httpbin-baseline" {
+			t.Errorf("GetScenario = is_template=%v template_name=%q, want true/httpbin-baseline", got.IsTemplate, got.TemplateName)
+		}
+		if err := got.Validate(); err != nil {
+			t.Errorf("template round trip does not validate: %v", err)
+		}
+
+		templates, err := repo.ListTemplates(ctx)
+		if err != nil {
+			t.Fatalf("ListTemplates: %v", err)
+		}
+		if len(templates) != 1 || templates[0].ID != tplID || templates[0].TemplateName != "httpbin-baseline" {
+			t.Fatalf("ListTemplates = %+v, want only the httpbin-baseline template", templates)
+		}
+
+		// A template is projectless by design (project_id 0): the per-project
+		// list is the ordinary scenarios' surface and must not show it.
+		inProject, err := repo.ListScenariosByProject(ctx, 10)
+		if err != nil {
+			t.Fatalf("ListScenariosByProject: %v", err)
+		}
+		if len(inProject) != 1 || inProject[0].IsTemplate {
+			t.Fatalf("ListScenariosByProject(10) = %+v, want only the non-template smoke", inProject)
+		}
+	})
+
 	t.Run("Files", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()

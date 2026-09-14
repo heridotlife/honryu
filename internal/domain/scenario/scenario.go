@@ -15,6 +15,10 @@ import (
 // MaxNameLen mirrors the persisted schema (scenario.name VARCHAR(100)).
 const MaxNameLen = 100
 
+// MaxTemplateNameLen mirrors the persisted schema
+// (scenario.template_name VARCHAR(128)).
+const MaxTemplateNameLen = 128
+
 // Validation errors. Callers compare with errors.Is.
 var (
 	ErrNameRequired    = errors.New("scenario: name is required")
@@ -25,6 +29,13 @@ var (
 	ErrEngineUnknown        = errors.New("scenario: unknown engine")
 	ErrPortableEnginePinned = errors.New("scenario: a portable scenario must not pin an engine")
 	ErrNativeEngineRequired = errors.New("scenario: a native scenario must name its engine")
+
+	// ErrTemplateNameRequired is the one way a template slug can be wrong:
+	// missing on a template, or present on a non-template. The slug is what
+	// seeds and operator tooling address the template by, so it must be set
+	// exactly when IsTemplate is.
+	ErrTemplateNameRequired = errors.New("scenario: template name must be set exactly when the scenario is a template")
+	ErrTemplateNameTooLong  = errors.New("scenario: template name exceeds maximum length")
 
 	// ErrEngineNeedsScript and ErrEnginePinned are the two ways an engine
 	// selection can be refused; both surface to the caller through the API.
@@ -65,6 +76,15 @@ type Scenario struct {
 	CreatedBy   string
 	UpdatedBy   string
 	CreatedTime time.Time
+	// IsTemplate marks a scenario as a starting point rather than a runnable
+	// test: templates are excluded from the per-project lists and can only
+	// become scenarios through instantiate. A template is global -- it belongs
+	// to no project (ProjectID 0) and no tenant -- and is addressed by
+	// TemplateName.
+	IsTemplate bool
+	// TemplateName is the template's stable slug ("httpbin-baseline"). Empty
+	// for a non-template; required (<= MaxTemplateNameLen) for one.
+	TemplateName string
 }
 
 // New constructs a portable Scenario: one expressed as Taurus requests, which
@@ -91,6 +111,17 @@ func NewNative(name string, projectID int64, engine taurus.Executor) (Scenario, 
 	return s, nil
 }
 
+// NewTemplate constructs a template Scenario: a portable, projectless workload
+// definition others instantiate. Name is the display name; templateName is the
+// stable slug ("httpbin-baseline").
+func NewTemplate(name, templateName string) (Scenario, error) {
+	s := Scenario{Name: strings.TrimSpace(name), TemplateName: strings.TrimSpace(templateName), IsTemplate: true, Kind: KindPortable}
+	if err := s.Validate(); err != nil {
+		return Scenario{}, err
+	}
+	return s, nil
+}
+
 // Validate checks the Scenario's invariants.
 func (s Scenario) Validate() error {
 	switch {
@@ -98,7 +129,15 @@ func (s Scenario) Validate() error {
 		return ErrNameRequired
 	case len(s.Name) > MaxNameLen:
 		return ErrNameTooLong
-	case s.ProjectID <= 0:
+	case s.IsTemplate && s.TemplateName == "":
+		return ErrTemplateNameRequired
+	case s.IsTemplate && len(s.TemplateName) > MaxTemplateNameLen:
+		return ErrTemplateNameTooLong
+	case !s.IsTemplate && s.TemplateName != "":
+		return ErrTemplateNameRequired
+	case s.ProjectID <= 0 && !s.IsTemplate:
+		// A template belongs to no project (the column cannot be NULL, so it
+		// carries 0); a scenario must.
 		return ErrProjectRequired
 	}
 

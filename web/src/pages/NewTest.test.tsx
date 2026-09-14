@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import newTestSource from './NewTest.tsx?raw';
 import NewTest from './NewTest';
 import { SessionProvider } from '../hooks/useSession';
@@ -255,5 +255,111 @@ describe('NewTest action-error details (mounted)', () => {
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('scenario name already in use');
     expect(container!.querySelector('[data-testid="action-error-details"]')).toBeNull();
+  });
+});
+
+// Phase 65: the "From template" flow. Catalog from GET /api/templates drives
+// the picker; the create button fires the project-if-absent resolve and one
+// instantiate POST, then navigates to the created scenario's page. The
+// from-scratch flow above is untouched by all of it -- its stubs 500 on
+// /api/templates and the card degrades to a note.
+const templateRow = { id: 7, name: 'HTTPbin baseline', project_id: 0, is_template: true, template_name: 'httpbin-baseline' };
+
+describe('NewTest from template (mounted flow)', () => {
+  it('lists the catalog in the picker, instantiates with the override, and lands on the scenario page', async () => {
+    const instantiates: Array<{ url: string; body: unknown }> = [];
+    let landed: string | null = null;
+    function LocationProbe() {
+      const location = useLocation();
+      landed = location.pathname;
+      return null;
+    }
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url.endsWith('/api/me')) {
+          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+        }
+        if (method === 'GET' && url.endsWith('/api/templates')) {
+          return json([templateRow]);
+        }
+        if (method === 'GET' && url.endsWith('/api/projects')) {
+          return json([]);
+        }
+        if (method === 'POST' && url.endsWith('/api/projects')) {
+          return json({ id: 1, name: 'tests-from-baseline' });
+        }
+        if (method === 'POST' && url.endsWith('/api/scenarios/7/instantiate')) {
+          instantiates.push({ url, body: JSON.parse(String(init?.body)) });
+          return json({ id: 42, name: 'from-baseline', project_id: 1, is_template: false }, 201);
+        }
+        return json({ message: `no stub for ${method} ${url}` }, 500);
+      }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/executions/new']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/executions/new" element={<NewTest />} />
+              <Route path="/scenarios/:id" element={<LocationProbe />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {});
+
+    // The catalog drives the picker (server-driven state).
+    const picker = container!.querySelector('[aria-label="template picker"]') as HTMLSelectElement;
+    expect(picker).not.toBeNull();
+    expect(picker.options).toHaveLength(2); // placeholder + the one template
+    expect((picker.options[1] as HTMLOptionElement).textContent).toBe('HTTPbin baseline');
+
+    // Create stays disabled until a template is picked.
+    const createBtn = () => container!.querySelector('[data-testid="create-from-template"]') as HTMLButtonElement;
+    expect(createBtn().disabled).toBe(true);
+
+    // Pick, name, override, create.
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      selectSetter.call(picker, '7');
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(createBtn().disabled).toBe(false);
+    await type(container!.querySelector('[aria-label="template test name"]') as HTMLInputElement, 'from-baseline');
+    await type(container!.querySelector('[aria-label="template target URL override"]') as HTMLInputElement, 'http://checkout.svc');
+    await click(createBtn());
+    await act(async () => {});
+
+    // One instantiate call, carrying the name, resolved project, override.
+    expect(instantiates).toHaveLength(1);
+    expect(instantiates[0].url).toContain('/api/scenarios/7/instantiate');
+    expect(instantiates[0].body).toEqual({
+      name: 'from-baseline',
+      project_id: 1,
+      overrides: { target_url: 'http://checkout.svc' },
+    });
+    // The instantiate POST is the scenario-creation step -- no POST
+    // /api/scenarios happened (no client-side cloning).
+    const calls = (fetch as ReturnType<typeof vi.fn>).mock.calls as Array<[RequestInfo | URL]>;
+    expect(calls.filter(([u]) => String(u).endsWith('/api/scenarios'))).toHaveLength(0);
+    // Landed on the created scenario's page.
+    expect(landed).toBe('/scenarios/42');
+  });
+
+  it('keeps the page usable when the catalog is unavailable', async () => {
+    await renderNewTest(); // its stub 500s GET /api/templates
+    await act(async () => {});
+    expect(container!.textContent).toContain('Template catalog unavailable.');
+    // The from-scratch flow's own controls are untouched.
+    expect(container!.querySelector('[data-testid="create-test"]')).not.toBeNull();
+    expect(container!.querySelector('[aria-label="template picker"]')).toBeNull();
   });
 });
