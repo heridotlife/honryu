@@ -728,8 +728,9 @@ describe('Execution heading outline (phase 52)', () => {
   });
 });
 
-// Phase 52: the hub's breadcrumb -- "Executions / #5". One ancestor link
-// back to the list, the current page marked aria-current.
+// Phase 52: the hub's breadcrumb -- "Scenarios / #5" (the trail root moved
+// to the scenario list in phase 67b; the flat /executions list redirects
+// there). One ancestor link back, the current page marked aria-current.
 describe('Execution breadcrumbs (phase 52)', () => {
   it('renders the trail with one link and aria-current on the id', async () => {
     await renderExecution('idle');
@@ -737,9 +738,9 @@ describe('Execution breadcrumbs (phase 52)', () => {
     const nav = container!.querySelector('nav[aria-label="breadcrumb"]');
     expect(nav).not.toBeNull();
     const items = Array.from(nav!.querySelectorAll('li'));
-    expect(items.map((li) => li.textContent?.trim())).toEqual(['Executions', '#5']);
+    expect(items.map((li) => li.textContent?.trim())).toEqual(['Scenarios', '#5']);
     const links = Array.from(nav!.querySelectorAll('a')).map((a) => a.getAttribute('href'));
-    expect(links).toEqual(['/executions']);
+    expect(links).toEqual(['/scenarios']);
     const current = nav!.querySelector('[aria-current="page"]');
     expect(current?.textContent).toBe('#5');
     expect(nav!.querySelectorAll('svg[aria-hidden="true"]').length).toBe(1);

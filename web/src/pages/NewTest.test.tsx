@@ -271,7 +271,9 @@ describe('NewTest from template (mounted flow)', () => {
     let landed: string | null = null;
     function LocationProbe() {
       const location = useLocation();
-      landed = location.pathname;
+      // pathname + search: the instantiate landing carries ?tab=editor
+      // (phase 67b -- the detail page's default tab is the run history).
+      landed = location.pathname + location.search;
       return null;
     }
 
@@ -350,8 +352,10 @@ describe('NewTest from template (mounted flow)', () => {
     // /api/scenarios happened (no client-side cloning).
     const calls = (fetch as ReturnType<typeof vi.fn>).mock.calls as Array<[RequestInfo | URL]>;
     expect(calls.filter(([u]) => String(u).endsWith('/api/scenarios'))).toHaveLength(0);
-    // Landed on the created scenario's page.
-    expect(landed).toBe('/scenarios/42');
+    // Landed on the created scenario's page, editor tab up (phase 67b:
+    // the detail page defaults to the run history; instantiation ends in
+    // the editor where the flow always ended).
+    expect(landed).toBe('/scenarios/42?tab=editor');
   });
 
   it('keeps the page usable when the catalog is unavailable', async () => {

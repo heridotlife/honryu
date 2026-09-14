@@ -1,0 +1,190 @@
+// /scenarios -- the scenario-first list (phase 67b): the inversion of the
+// phase 65 decision that bounded scenarios to the NewTest picker. Each row
+// answers "what can I run and how did its latest runs go" and links into the
+// tabbed scenario detail (/scenarios/:id). Scopes through the global project
+// selection (phase 32) like every other list page -- here as a server-side
+// ?project_id=, which the 67a list endpoint natively supports.
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import Card, { CardContent } from '../components/ui/Card';
+import { getScenarios, type Scenario } from '../api/generated';
+import { useProjectSelection } from '../components/ProjectSwitcher';
+import { ApiError } from '../api/client';
+
+/**
+ * The template badge's classes, reused from the Scenario detail page's
+ * phase 65 badge: rendered only when a row actually carries is_template.
+ * GET /api/scenarios never returns templates today (the service's
+ * ListByProject excludes them for every consumer), so this stays dormant
+ * by contract -- it exists so the list cannot mis-render if the wire ever
+ * includes one, and the test pins that branch.
+ */
+function TemplateBadge({ name }: { name: string }) {
+  return (
+    <span
+      className="ml-2 inline-block rounded-full bg-sky-100 px-2 py-0.5 text-caption text-sky-800 dark:bg-sky-900/40 dark:text-sky-200"
+      data-testid="template-badge"
+    >
+      template · {name}
+    </span>
+  );
+}
+
+/**
+ * Skeleton matching the table's geometry while the first fetch is in
+ * flight (ProjectDashboard's DashboardSkeleton pattern; animate-pulse is
+ * clamped by globals.css under prefers-reduced-motion).
+ */
+function ScenariosSkeleton() {
+  return (
+    <div data-testid="scenarios-loading" className="space-y-2">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700/50" />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The last-run cell. Honestly blank: GET /api/scenarios carries no
+ * last-run status, and deriving it client-side would mean, per scenario, a
+ * full-history call to /api/scenarios/{id}/executions (it has no limit
+ * parameter) chained to a per-execution reports call -- a 2N+ request
+ * fan-out with unbounded payloads that the page refuses to make. The real
+ * fix belongs in the list endpoint (a batch last-run summary); until then
+ * the column says "unknown" rather than implying "never run".
+ */
+function LastRunCell() {
+  return (
+    <td className="px-4 py-3 text-slate-400 dark:text-slate-500" data-testid="last-run-cell">
+      <span title="Last-run status is not reported by the scenarios list yet">—</span>
+    </td>
+  );
+}
+
+/** /scenarios -- every runnable scenario the caller may see, id order (the
+ * server's contract). The project dropdown drives a ?project_id= refetch,
+ * not a client-side filter: the endpoint filters, so the page ships one
+ * request's worth of rows, and the selection stays in sync with the nav
+ * switcher through the shared hook. */
+export default function Scenarios() {
+  // The global project scope (localStorage via the shared hook): the
+  // dropdown below and the nav's ProjectSwitcher are two views of one
+  // selection, so the nav switcher narrows this list and vice versa.
+  const { projects, selectedId, select } = useProjectSelection();
+  const [scenarios, setScenarios] = useState<Scenario[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setScenarios(null);
+    setError(null);
+    getScenarios(selectedId === '' ? undefined : { query: { project_id: selectedId } })
+      .then((rows) => {
+        if (alive) setScenarios(rows);
+      })
+      .catch((err: unknown) => {
+        if (alive) setError(err instanceof ApiError ? err.message : 'Failed to load scenarios.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selectedId]);
+
+  // Project name resolution from the projects list the shared hook already
+  // fetched (no per-row lookup fetch): a scenario whose project fell out of
+  // the caller's view falls back to the raw id, never blank.
+  const projectName = (projectId: number | undefined): string => {
+    if (projectId === undefined) return '—';
+    const name = projects.find((p) => p.id === projectId)?.name;
+    return name ?? `project ${projectId}`;
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-display-sm text-slate-900 dark:text-white">Scenarios</h1>
+        {/* The existing projects fetcher (the shared hook's list) feeds the
+            dropdown; "" is the shared hook's "all projects" value. */}
+        <label className="flex items-center gap-2 text-body-sm text-slate-500 dark:text-slate-400">
+          Project
+          <select
+            data-testid="project-filter"
+            value={selectedId}
+            onChange={(e) => select(e.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-body-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+          >
+            <option value="">All projects</option>
+            {projects.map((p) => (
+              <option key={p.id} value={String(p.id)}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {error !== null ? (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      ) : scenarios === null ? (
+        <ScenariosSkeleton />
+      ) : scenarios.length === 0 ? (
+        <Card>
+          <CardContent>
+            <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="scenarios-empty">
+              {selectedId === ''
+                ? 'No scenarios yet. Create one from New test, or instantiate a template.'
+                : 'No scenarios in this project yet.'}
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card padding="none">
+          <table className="w-full text-body-sm" data-testid="scenarios-table">
+            <thead>
+              <tr className="border-b border-slate-100 text-left text-caption font-medium text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                <th scope="col" className="px-4 py-3">
+                  Name
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Project
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Kind
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Last run
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {scenarios.map((s) => (
+                // Stable id keys, never the array index (UX rule).
+                <tr
+                  key={s.id !== undefined ? `scenario-${s.id}` : `scenario-${s.name}`}
+                  className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 dark:border-slate-800/50 dark:hover:bg-slate-800/50"
+                >
+                  <td className="px-4 py-3">
+                    <Link
+                      to={`/scenarios/${s.id}`}
+                      data-testid={`scenario-link-${s.id}`}
+                      className="font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
+                    >
+                      {s.name}
+                    </Link>
+                    {s.is_template && <TemplateBadge name={s.template_name ?? ''} />}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{projectName(s.project_id)}</td>
+                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{s.kind ?? 'portable'}</td>
+                  <LastRunCell />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
