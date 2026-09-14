@@ -85,3 +85,77 @@ jobs:
         with:
           name: coverage
           path: cover.out
+
+  # Phase 64: the boot e2e harness runs on every PR. INFORMATIONAL ONLY, by
+  # choice: this job is deliberately NOT a required check and does not gate
+  # merges -- results are visible on the PR, and merge-blocking it is a
+  # later, explicit decision.
+  #
+  # Fast by construction: the API embeds the SPA (web/embed.go) and runs on
+  # the default in-memory repo (HONRYU_DB_DRIVER=fake), so the whole stack
+  # under test is one Go binary and NO service containers -- unlike the
+  # coverage lane, which needs Docker for the adapter contract tests. bun's
+  # setup action caches installs, and the Chromium download is cached below,
+  # so steady-state the lane adds well under five minutes.
+  #
+  # The harness's purge scenario (D) finds nothing purgeable here and
+  # records its designed SKIP -- its exit rule counts SKIP as pass, so the
+  # lane treats designed-skip as green by construction.
+  e2e:
+    name: e2e boot harness (informational)
+    runs-on: ubuntu-latest
+    env:
+      # Must track web/package.json's resolved playwright-core version: the
+      # downloaded Chromium build is keyed on it (both here and in the cache).
+      PLAYWRIGHT_VERSION: "1.62.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.6"
+          cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Cache Playwright Chromium
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Build the SPA
+        working-directory: web
+        run: bun run build
+      - name: Build the API (embeds the SPA just built)
+        run: go build -o honryu-api ./cmd/api
+      - name: Provision Chromium
+        working-directory: web
+        run: bunx playwright@$PLAYWRIGHT_VERSION install --with-deps chromium
+      - name: Start the API (demo auth, in-memory repo)
+        run: |
+          ./honryu-api &> api.log &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/healthz > /dev/null; then break; fi
+            sleep 1
+          done
+          # Fails the lane if the API never became ready.
+          curl -fsS http://127.0.0.1:8080/healthz
+        env:
+          HONRYU_AUTH_MODE: demo
+          HONRYU_DEMO_ENABLED: "true"
+          # Demo mode refuses to start without enforced RBAC (a picker over
+          # unenforced RBAC is a costume, not enforcement -- config.Validate).
+          HONRYU_ENABLE_RBAC: "true"
+          HONRYU_DEMO_SIGNING_KEY: ci-e2e-signing-key
+          # One service-provider-admin persona named "alice" -- the harness
+          # looks for that card by text. No tenants: the boot checks need the
+          # picker, a login, and an empty list, nothing seeded.
+          HONRYU_DEMO_PROFILES: '[{"id":"alice","name":"Alice","global":["service_provider_admin"]}]'
+      - name: Run the boot e2e harness
+        working-directory: web
+        run: bun run e2e
+        env:
+          HONRYU_E2E_BASE_URL: http://127.0.0.1:8080
+      - name: API log (diagnostics)
+        if: failure()
+        run: cat api.log
