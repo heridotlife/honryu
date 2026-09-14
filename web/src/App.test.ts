@@ -1,23 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import appSource from './App.tsx?raw';
 
-// R1's route contract, pinned against the router's source: /status must
-// redirect to /executions (existing bookmark, new home) and the execution
-// list must be mounted at /executions. Reading the mounted component through
-// the router in jsdom drags every page's data fetching with it; the ?raw
-// import keeps this test to the wiring itself.
-describe('App routes (R1)', () => {
-  it('redirects /status to /executions', () => {
+// R1's route contract, pinned against the router's source, updated by phase
+// 67b's scenario-first inversion: the /status bookmark and the old flat
+// /executions list URL both redirect to /scenarios (one hop each -- the
+// /executions redirect must not chain), while the run hub stays mounted at
+// /executions/:id. Reading the mounted component through the router in jsdom
+// drags every page's data fetching with it; the ?raw import keeps this test
+// to the wiring itself (App.test.tsx mounts the redirect for real).
+describe('App routes (R1, phase 67b)', () => {
+  it('redirects /status to /scenarios', () => {
     const statusRoute = appSource.split('\n').find((l) => l.includes('path="/status"'));
     expect(statusRoute).toBeDefined();
     expect(statusRoute).toContain('Navigate');
-    expect(statusRoute).toContain('to="/executions"');
+    expect(statusRoute).toContain('to="/scenarios"');
   });
 
-  it('mounts the executions list at /executions', () => {
+  it('redirects the old flat list at /executions to /scenarios', () => {
     const execRoute = appSource.split('\n').find((l) => l.includes('path="/executions"'));
     expect(execRoute).toBeDefined();
-    expect(execRoute).toContain('Executions');
+    expect(execRoute).toContain('Navigate');
+    expect(execRoute).toContain('to="/scenarios"');
+  });
+
+  it('keeps the run hub mounted at /executions/:id', () => {
+    const hubRoute = appSource.split('\n').find((l) => l.includes('path="/executions/:id"'));
+    expect(hubRoute).toBeDefined();
+    expect(hubRoute).toContain('Execution');
+    expect(hubRoute).not.toContain('Navigate');
+  });
+
+  it('mounts the scenarios list at /scenarios', () => {
+    const listRoute = appSource.split('\n').find((l) => l.includes('path="/scenarios"'));
+    expect(listRoute).toBeDefined();
+    expect(listRoute).toContain('Scenarios');
   });
 
   it('does not mount LiveStatus at /status anymore', () => {

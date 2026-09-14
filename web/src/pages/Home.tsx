@@ -197,7 +197,7 @@ export default function Home() {
           label="Active runs"
           value={activeRuns === null ? '—' : String(activeRuns)}
           caption={`across your ${Math.min(ACTIVE_PROBE_LIMIT, scoped?.length ?? 0)} most recent executions`}
-          href="/executions"
+          href="/scenarios"
         />
         <KpiCard
           testid="kpi-last-run"
@@ -218,17 +218,20 @@ export default function Home() {
           label="Total executions"
           value={String(scoped?.length ?? 0)}
           caption="visible to you"
-          href="/executions"
+          href="/scenarios"
         />
       </div>
 
       {/* Recent executions: the five rows an operator is most likely to be
-          looking for, one tap from here to the hub. */}
+          looking for, one tap from here to the hub. Phase 67b: the card's
+          "view all" points at Scenarios -- the run history's primary
+          surface now -- while the rows keep deep-linking the run hub. */}
       <Card padding="none" data-testid="home-recent">
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-800">
           <h2 className="text-body-sm font-semibold text-slate-900 dark:text-white">Recent executions</h2>
           <Link
-            to="/executions"
+            to="/scenarios"
+            data-testid="home-recent-view-all"
             className="rounded text-caption font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
           >
             View all →

@@ -144,3 +144,16 @@ describe('App route table: /executions/:id/compare', () => {
     expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
   });
 });
+
+// Phase 67b: the old flat list URL redirects to /scenarios for real --
+// pushState + BrowserRouter, the way a bookmark arrives. The list page's own
+// data fetches 404 into its error state here (the harness stubs only what
+// this test needs); the assertion is the landing, not the list.
+describe('App route table: /executions redirects (phase 67b)', () => {
+  it('lands an old /executions bookmark on the scenarios list', async () => {
+    await renderAppAt('/executions', () => json(sessionFor('carol')));
+
+    expect(window.location.pathname).toBe('/scenarios');
+    expect(container!.querySelector('h1')?.textContent).toBe('Scenarios');
+  });
+});
