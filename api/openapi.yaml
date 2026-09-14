@@ -612,6 +612,7 @@ components:
     FailingCriterion:
       type: object
       description: One configured Taurus pass/fail criterion that triggered, or whose subject/syntax fell outside the practical grammar subset evaluated.
+      required: [criterion]
       properties:
         criterion: { type: string, description: "The original configured expression, unmodified (e.g. \"failures>10%\")." }
         unparsed:
@@ -778,7 +779,8 @@ components:
 
     Report:
       type: object
-      description: What a run is judged on, kept after its engines and pods are gone.
+      description: What a run is judged on, kept after its engines and pods are gone. The required fields are the stored report's own; the verdict and APM-depth fields are the run-report handler's additive overlay.
+      required: [execution_id, scenario_id, run_id, started_at, ended_at, outcome, requested, achieved, error_rate, latency, attribution]
       properties:
         execution_id: { type: integer, format: int64 }
         scenario_id:
@@ -814,6 +816,21 @@ components:
         labels:
           type: array
           items: { $ref: '#/components/schemas/LabelSummary' }
+        project_id:
+          type: integer
+          format: int64
+          description: The execution's project -- the {{project_id}} an APM link-out substitutes, served on the report so the page needs no second fetch. Absent (zero) when the server could not resolve the execution.
+        baggage:
+          type: string
+          description: The exact W3C baggage header value the run's load carried (e.g. "honryu.service=1,honryu.execution=2,honryu.run=<trace id>"); absent on runs that predate correlation ids.
+        criteria:
+          type: [array, 'null']
+          description: The execution's configured pass/fail criteria, as configured. An empty verdict renders as [] -- never null -- on the run-report route; null only on list rows predating the verdict layer.
+          items: { type: string }
+        failing_criteria:
+          type: [array, 'null']
+          description: Which configured criteria this run tripped (or could not parse).
+          items: { $ref: '#/components/schemas/FailingCriterion' }
     Series:
       type: object
       description: >-
@@ -910,6 +927,7 @@ components:
     Load:
       type: object
       description: A rate of work, requested or achieved.
+      required: [concurrency, throughput]
       properties:
         concurrency: { type: integer }
         throughput:
@@ -921,6 +939,7 @@ components:
     Attribution:
       type: object
       description: A run's failures, split by who caused them. All three are always present -- unknown is never folded into target or engine.
+      required: [target, engine, unknown]
       properties:
         target: { type: integer, format: int64 }
         engine: { type: integer, format: int64 }
@@ -928,6 +947,7 @@ components:
     ErrorSignature:
       type: object
       description: One failure mode across a run, keyed on label, response code, and side -- never on engine message text, which differs per engine for the same failure.
+      required: [label, side, count]
       properties:
         label: { type: string }
         response_code: { type: string }
@@ -942,6 +962,7 @@ components:
     LabelSummary:
       type: object
       description: One request's share of a run.
+      required: [label, samples, failed, error_rate, latency]
       properties:
         label: { type: string }
         samples: { type: integer, format: int64 }
@@ -950,6 +971,17 @@ components:
         latency:
           type: object
           additionalProperties: { type: number }
+        statuses:
+          type: array
+          description: Per-status counts, dominant first. Absent -- never [] -- when the engine reports no response codes or the report predates their accumulation.
+          items: { $ref: '#/components/schemas/StatusLabel' }
+    StatusLabel:
+      type: object
+      description: One HTTP status a label's requests returned, and how often. Codes are consistent across engines where error messages are not.
+      required: [code, count]
+      properties:
+        code: { type: string }
+        count: { type: integer, format: int64 }
 
   responses:
     BadRequest:
@@ -2331,11 +2363,11 @@ paths:
         - { $ref: '#/components/parameters/Limit' }
       responses:
         '200':
-          description: Reports
+          description: Reports, most recent first. JSON null (not []) when the execution has none yet -- the backend encodes an empty list as null.
           content:
             application/json:
               schema:
-                type: array
+                type: [array, 'null']
                 items: { $ref: '#/components/schemas/Report' }
 
   /api/executions/{execution_id}/trend:
