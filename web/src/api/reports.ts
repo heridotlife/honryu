@@ -2,6 +2,11 @@
 // GET /api/executions/{execution_id}/reports and GET /api/runs/{run_id}/report.
 // Field names mirror internal/domain/report.Report's JSON tags exactly.
 import { apiClient } from './client';
+// Phase 63: the reports list fetch is the first call served by the generated
+// client (web/src/api/generated.ts, typed from api/openapi.yaml) — this
+// wrapper stays as the page-facing seam so the null→[] normalization and the
+// hand-written Report type (the richer page contract) are unchanged.
+import { getExecutionsByExecutionIdReports } from './generated';
 
 export interface Load {
   concurrency: number;
@@ -95,8 +100,9 @@ export interface Report {
  * always treat the result as an array.
  */
 export async function listExecutionReports(executionId: number, limit?: number): Promise<Report[]> {
-  const query = limit ? `?limit=${limit}` : '';
-  const got = await apiClient.get<Report[] | null>(`/executions/${executionId}/reports${query}`);
+  const got = await getExecutionsByExecutionIdReports(executionId, {
+    query: limit === undefined ? {} : { limit },
+  });
   return got ?? [];
 }
 
