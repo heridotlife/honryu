@@ -86,10 +86,14 @@ jobs:
           name: coverage
           path: cover.out
 
-  # Phase 64: the boot e2e harness runs on every PR. INFORMATIONAL ONLY, by
-  # choice: this job is deliberately NOT a required check and does not gate
-  # merges -- results are visible on the PR, and merge-blocking it is a
-  # later, explicit decision.
+  # Phase 64 introduced the boot e2e harness on every PR; phase 66 promoted
+  # it to a REQUIRED lane. It runs unconditionally (no `if:`), has no
+  # continue-on-error anywhere, and a failed step fails the job -- which
+  # fails the run red exactly like the coverage gate above. Branch
+  # protection keys on the check name, so the job name is the contract:
+  # "e2e boot harness" is what the required-check set references. Results
+  # stay visible on every PR; the difference since phase 64 is that a red
+  # harness now blocks the merge instead of merely informing it.
   #
   # Fast by construction: the API embeds the SPA (web/embed.go) and runs on
   # the default in-memory repo (HONRYU_DB_DRIVER=fake), so the whole stack
@@ -102,7 +106,7 @@ jobs:
   # records its designed SKIP -- its exit rule counts SKIP as pass, so the
   # lane treats designed-skip as green by construction.
   e2e:
-    name: e2e boot harness (informational)
+    name: e2e boot harness
     runs-on: ubuntu-latest
     env:
       # Must track web/package.json's resolved playwright-core version: the
