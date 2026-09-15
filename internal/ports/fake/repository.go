@@ -622,7 +622,7 @@ func (s *Store) LatestRunsForScenarios(_ context.Context, scenarioIDs []int64) (
 		runID int64
 	}
 	best := make(map[int64]winner, len(newest))
-	for _, rep := range s.ReportStore.reports {
+	for _, rep := range s.reports {
 		scenarioID, ok := execToScenario[rep.ExecutionID]
 		if !ok {
 			continue
