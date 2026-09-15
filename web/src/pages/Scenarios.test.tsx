@@ -20,10 +20,36 @@ const projectsFixture = [
 ];
 
 const scenariosFixture = [
-  { id: 11, name: 'checkout-baseline', project_id: 1, kind: 'portable', created_time: '2026-09-17T00:00:00Z' },
+  {
+    id: 11,
+    name: 'checkout-baseline',
+    project_id: 1,
+    kind: 'portable',
+    created_time: '2026-09-17T00:00:00Z',
+    // Phase 70: the list endpoint batches each scenario's last-run verdict
+    // into the row -- the page never probes per row.
+    last_run: { execution_id: 77, outcome: 'passed', started_at: '2026-09-17T14:05:00Z' },
+  },
   // is_template never rides GET /api/scenarios today (the endpoint excludes
-  // templates); this row pins the "if included" badge branch anyway.
-  { id: 12, name: 'search-smoke', project_id: 2, kind: 'native', is_template: true, template_name: 'search-baseline', created_time: '2026-09-17T01:00:00Z' },
+  // templates); this row pins the "if included" badge branch anyway. Its
+  // last_run is null: no run has finalised a report, so the cell says so.
+  {
+    id: 12,
+    name: 'search-smoke',
+    project_id: 2,
+    kind: 'native',
+    is_template: true,
+    template_name: 'search-baseline',
+    created_time: '2026-09-17T01:00:00Z',
+    last_run: null,
+  },
+];
+
+// The same rows with the last_run key absent entirely (an older spec or a
+// proxy that stripped it): the page must read that exactly like null.
+const scenariosWithoutLastRun = [
+  { id: 11, name: 'checkout-baseline', project_id: 1, kind: 'portable', created_time: '2026-09-17T00:00:00Z' },
+  { id: 12, name: 'search-smoke', project_id: 2, kind: 'native', created_time: '2026-09-17T01:00:00Z' },
 ];
 
 let container: HTMLDivElement | null = null;
@@ -76,6 +102,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   const r = root;
   if (r !== null && container !== null) {
     act(() => {
@@ -105,19 +132,43 @@ describe('Scenarios page (phase 67b)', () => {
     expect(container!.textContent).toContain('native');
   });
 
-  it('badges a template only when a row carries is_template, and blanks last-run honestly', async () => {
+  it('badges a template only when a row carries is_template', async () => {
     stubFetch(scenariosFixture);
     await renderScenarios();
 
     // The badge branch: present on the row that has is_template, absent otherwise.
     expect(container!.querySelectorAll('[data-testid="template-badge"]').length).toBe(1);
     expect(container!.querySelector('[data-testid="template-badge"]')?.textContent).toContain('search-baseline');
+  });
 
-    // Last run: GET /api/scenarios carries no last-run status and deriving
-    // it client-side is a per-scenario fan-out, so the cell renders an
-    // honest unknown dash -- one per row, never a fabricated status.
-    expect(container!.querySelectorAll('[data-testid="last-run-cell"]').length).toBe(2);
-    expect(container!.querySelector('[data-testid="last-run-cell"]')?.textContent).toBe('—');
+  it('shows the batched last-run verdict as badge + time, and a dash when there is none', async () => {
+    vi.stubEnv('TZ', 'UTC');
+    stubFetch(scenariosFixture);
+    await renderScenarios();
+
+    const cells = Array.from(container!.querySelectorAll<HTMLTableCellElement>('[data-testid="last-run-cell"]'));
+    expect(cells.length).toBe(2);
+
+    // Row with a verdict: RunStatusBadge (icon + word, never color-only)
+    // beside the run's start in the one-short-timestamp house style.
+    expect(cells[0].textContent).toContain('passed');
+    expect(cells[0].querySelector('svg')).not.toBeNull();
+    expect(cells[0].textContent).toContain('Sep 17, 14:05');
+
+    // Row with last_run null: the honest dash -- "no verdict yet".
+    expect(cells[1].textContent).toBe('—');
+  });
+
+  it('reads a missing last_run key exactly like null', async () => {
+    stubFetch(scenariosWithoutLastRun);
+    await renderScenarios();
+
+    const cells = Array.from(container!.querySelectorAll<HTMLTableCellElement>('[data-testid="last-run-cell"]'));
+    expect(cells.length).toBe(2);
+    for (const cell of cells) {
+      expect(cell.textContent).toBe('—');
+      expect(cell.querySelector('svg')).toBeNull();
+    }
   });
 
   it('refetches with ?project_id= when the project filter changes', async () => {

@@ -97,6 +97,12 @@ export interface Scenario {
   template_name?: string;
 }
 
+export interface ScenarioLastRun {
+  execution_id: number;
+  outcome: "passed" | "failed" | "aborted" | "error";
+  started_at: string;
+}
+
 export interface InstantiateRequest {
   name: string;
   project_id: number;
@@ -768,8 +774,8 @@ export function getTemplates(): Promise<Scenario[]> {
 }
 
 /** List the caller's scenarios */
-export function getScenarios(opts?: { query?: { project_id?: number | string } }): Promise<Scenario[]> {
-  return apiClient.get<Scenario[]>(paths.getScenarios() + toQuery(opts?.query ?? {}));
+export function getScenarios(opts?: { query?: { project_id?: number | string } }): Promise<Scenario & { last_run: ScenarioLastRun | null }[]> {
+  return apiClient.get<Scenario & { last_run: ScenarioLastRun | null }[]>(paths.getScenarios() + toQuery(opts?.query ?? {}));
 }
 
 /** Create a scenario */

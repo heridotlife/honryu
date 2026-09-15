@@ -39,6 +39,7 @@ function leafType(schema) {
     return 'unknown';
   }
   if (typeof schema.$ref === 'string') return refName(schema.$ref);
+  if (Array.isArray(schema.allOf)) return schema.allOf.map(leafType).join(' & ');
   const variants = schema.oneOf ?? schema.anyOf;
   if (variants) return variants.map(leafType).join(' | ');
   if (schema.enum) return schema.enum.map((v) => (typeof v === 'string' ? JSON.stringify(v) : String(v))).join(' | ');
