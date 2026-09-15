@@ -3,11 +3,15 @@
 // answers "what can I run and how did its latest runs go" and links into the
 // tabbed scenario detail (/scenarios/:id). Scopes through the global project
 // selection (phase 32) like every other list page -- here as a server-side
-// ?project_id=, which the 67a list endpoint natively supports.
+// ?project_id=, which the 67a list endpoint natively supports. Since phase
+// 70 the rows also carry last_run straight from the list endpoint -- one
+// batched read server-side, never a per-row probe fan-out.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Card, { CardContent } from '../components/ui/Card';
-import { getScenarios, type Scenario } from '../api/generated';
+import RunStatusBadge from '../components/RunStatusBadge';
+import { formatRowTime } from '../lib/executionRow';
+import { getScenarios, type Scenario, type ScenarioLastRun } from '../api/generated';
 import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
 
@@ -46,18 +50,26 @@ function ScenariosSkeleton() {
 }
 
 /**
- * The last-run cell. Honestly blank: GET /api/scenarios carries no
- * last-run status, and deriving it client-side would mean, per scenario, a
- * full-history call to /api/scenarios/{id}/executions (it has no limit
- * parameter) chained to a per-execution reports call -- a 2N+ request
- * fan-out with unbounded payloads that the page refuses to make. The real
- * fix belongs in the list endpoint (a batch last-run summary); until then
- * the column says "unknown" rather than implying "never run".
+ * The last-run cell (phase 70): the verdict the list endpoint batched for
+ * the whole page -- RunStatusBadge (icon + word, never color-only) beside
+ * the run's start time in the one-short-timestamp house style. A null
+ * last_run renders the honest dash: the scenario has no runs, or its newest
+ * run has not finalised a report yet -- "no verdict yet", never "failed".
  */
-function LastRunCell() {
+function LastRunCell({ lastRun }: { lastRun: ScenarioLastRun | null }) {
+  if (lastRun === null) {
+    return (
+      <td className="px-4 py-3 text-slate-400 dark:text-slate-500" data-testid="last-run-cell">
+        <span title="No run with a report yet">—</span>
+      </td>
+    );
+  }
   return (
-    <td className="px-4 py-3 text-slate-400 dark:text-slate-500" data-testid="last-run-cell">
-      <span title="Last-run status is not reported by the scenarios list yet">—</span>
+    <td className="px-4 py-3" data-testid="last-run-cell">
+      <div className="flex flex-wrap items-center gap-2">
+        <RunStatusBadge outcome={lastRun.outcome} />
+        <span className="text-slate-500 dark:text-slate-400">{formatRowTime(lastRun.started_at)}</span>
+      </div>
     </td>
   );
 }
@@ -72,7 +84,7 @@ export default function Scenarios() {
   // dropdown below and the nav's ProjectSwitcher are two views of one
   // selection, so the nav switcher narrows this list and vice versa.
   const { projects, selectedId, select } = useProjectSelection();
-  const [scenarios, setScenarios] = useState<Scenario[] | null>(null);
+  const [scenarios, setScenarios] = useState<(Scenario & { last_run: ScenarioLastRun | null })[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -178,7 +190,7 @@ export default function Scenarios() {
                   </td>
                   <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{projectName(s.project_id)}</td>
                   <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{s.kind ?? 'portable'}</td>
-                  <LastRunCell />
+                  <LastRunCell lastRun={s.last_run ?? null} />
                 </tr>
               ))}
             </tbody>

@@ -108,6 +108,80 @@ func (r *Repository) ListExecutionsByProjects(ctx context.Context, projectIDs []
 	return out, nil
 }
 
+// LatestRunsForScenarios answers a whole scenario list's last-run column in
+// ONE query. For each listed scenario it reads the newest execution bound to
+// it -- created_time desc, id desc, the ListExecutionsByScenario order,
+// picked by a NOT EXISTS anti-join, the repo's subquery idiom -- LEFT JOINed
+// to that execution's newest report, started_at desc, run_id desc, the
+// ListReports order, picked the same way. The report is joined by execution
+// alone, never filtered by the report's own scenario_id: that is exactly
+// the probe the scenario detail page makes per row (the execution's newest
+// report, limit 1), so the list and the detail page can never disagree
+// about one scenario.
+//
+// Absence is the honest empty: a scenario with no execution contributes no
+// row, and a newest execution with no report yet LEFT JOINs to NULL columns
+// that are dropped below -- both surface as a missing map key, "no verdict
+// yet", never a fabricated one.
+func (r *Repository) LatestRunsForScenarios(ctx context.Context, scenarioIDs []int64) (map[int64]execution.LastRun, error) {
+	out := make(map[int64]execution.LastRun, len(scenarioIDs))
+	if len(scenarioIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(scenarioIDs))
+	args := make([]any, 0, len(scenarioIDs))
+	for i, id := range scenarioIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	// #nosec G201 -- placeholders are fixed "?" tokens; scenarioIDs are bound params.
+	query := fmt.Sprintf(`SELECT es.scenario_id, es.execution_id, r.outcome, r.started_at
+		FROM execution_scenario es
+		JOIN execution e ON e.id = es.execution_id
+		LEFT JOIN execution_report r
+			ON r.execution_id = es.execution_id
+			AND NOT EXISTS (SELECT 1 FROM execution_report newer
+				WHERE newer.execution_id = r.execution_id
+				  AND (newer.started_at > r.started_at
+				    OR (newer.started_at = r.started_at AND newer.run_id > r.run_id)))
+		WHERE es.scenario_id IN (%s)
+		  AND NOT EXISTS (SELECT 1
+			  FROM execution_scenario newer_es
+			  JOIN execution newer_e ON newer_e.id = newer_es.execution_id
+			  WHERE newer_es.scenario_id = es.scenario_id
+			    AND (newer_e.created_time > e.created_time
+				  OR (newer_e.created_time = e.created_time AND newer_e.id > e.id)))`,
+		strings.Join(placeholders, ","))
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: latest runs for scenarios: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var scenarioID, executionID int64
+		var outcome sql.NullString
+		var startedAt sql.NullTime
+		if scanErr := rows.Scan(&scenarioID, &executionID, &outcome, &startedAt); scanErr != nil {
+			return nil, fmt.Errorf("mysql: scan latest run: %w", scanErr)
+		}
+		// NULLs mean the newest execution has not finalised a report yet:
+		// no verdict, so no map entry.
+		if !outcome.Valid || !startedAt.Valid {
+			continue
+		}
+		out[scenarioID] = execution.LastRun{
+			ExecutionID: executionID,
+			Outcome:     taurus.Outcome(outcome.String),
+			StartedAt:   startedAt.Time,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql: iterate latest runs: %w", err)
+	}
+	return out, nil
+}
+
 // ListExecutionsByScenario returns every execution whose load profile binds
 // scenarioID -- a row in execution_scenario, the execution↔scenario link --
 // newest first (created_time desc, id desc, the ListExecutionsByProjects
