@@ -107,6 +107,17 @@ type Outcome struct {
 	Budget   slo.Budget
 }
 
+// WindowOutcome is one SLO's grade over an explicit span -- the shape the
+// digest builder consumes, whose windows are spans (the digest's own tiling
+// [windowStart, windowEnd)), not the named query windows the HTTP endpoint
+// serves.
+type WindowOutcome struct {
+	SLO      slo.SLO
+	SLOID    int64
+	RunCount int
+	Budget   slo.Budget
+}
+
 // Budget grades the project's SLO over window: the window's eligible reports
 // (started in [now-duration, now), aborted runs excluded) aggregated per the
 // domain's rules -- p95 and error rate as run-count-weighted means, success
@@ -124,7 +135,7 @@ func (s *Service) Budget(ctx context.Context, projectID, sloID int64, window str
 	}
 	end := now
 	start := now.Add(-duration)
-	actual, runCount, err := s.aggregate(ctx, projectID, start, end)
+	actual, runCount, err := s.Aggregate(ctx, projectID, start, end)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -134,6 +145,41 @@ func (s *Service) Budget(ctx context.Context, projectID, sloID int64, window str
 		RunCount: runCount,
 		Budget:   obj.Evaluate(actual),
 	}, nil
+}
+
+// Aggregate composes the project's eligible reports over the half-open span
+// [start, end) into the SLO domain's Actual, plus the eligible count.
+// Exported for the digest builder (phase 68), which grades every SLO the
+// project defines over the digest's own tiling window -- the same
+// aggregation the named-window endpoint serves, with no second accounting
+// of what a run did.
+func (s *Service) Aggregate(ctx context.Context, projectID int64, start, end time.Time) (slo.Actual, int, error) {
+	return s.aggregate(ctx, projectID, start, end)
+}
+
+// ProjectWindowBudgets grades every SLO the project defines over
+// [start, end). Always non-nil; empty when the project has no SLOs. This is
+// digestapp's SLOGrader -- one call per fire, the digest's own span.
+func (s *Service) ProjectWindowBudgets(ctx context.Context, projectID int64, start, end time.Time) ([]WindowOutcome, error) {
+	objs, err := s.repo.ListSLOsByProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WindowOutcome, 0, len(objs))
+	if len(objs) == 0 {
+		return out, nil
+	}
+	actual, runCount, err := s.Aggregate(ctx, projectID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	for _, obj := range objs {
+		out = append(out, WindowOutcome{
+			SLO: obj, SLOID: obj.ID, RunCount: runCount,
+			Budget: obj.Evaluate(actual),
+		})
+	}
+	return out, nil
 }
 
 // aggregate composes the window's eligible reports into the SLO domain's

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/domain/digest"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/ports"
@@ -51,6 +52,24 @@ type ExecutionSummary struct {
 	WorstOutcome string `json:"worst_outcome"`
 }
 
+// SLOBudgetLine is one SLO's share of the window (phase 68): whether the
+// window stayed within the objective, and which metric came closest to --
+// or past -- its target. The worst metric is the one with the least budget
+// remaining, the line a reader triages by; both worst fields are
+// absent/null when the window held no eligible runs for the objective.
+type SLOBudgetLine struct {
+	SLOID     int64  `json:"slo_id"`
+	Name      string `json:"name"`
+	Compliant bool   `json:"compliant"`
+	// WorstMetric names the metric carrying the least budget remaining
+	// ("" when the window held no eligible runs).
+	WorstMetric string `json:"worst_metric,omitempty"`
+	// WorstBudgetRemainingPct is that metric's budget_remaining_pct --
+	// the SLO formula's own number, positive = margin, negative =
+	// burned. Nil when the window held no eligible runs.
+	WorstBudgetRemainingPct *float64 `json:"worst_budget_remaining_pct"`
+}
+
 // Payload is the report.digest event body: what a receiver needs to render
 // one window of a project's load-testing at a glance. Field names are the
 // wire contract -- the same bytes go to webhook receivers and into the
@@ -68,6 +87,11 @@ type Payload struct {
 	// regressions looks for first.
 	ThresholdFailures int                `json:"threshold_failures"`
 	Executions        []ExecutionSummary `json:"executions"`
+	// SLOBudgets grades the project's objectives over this same window
+	// (phase 68). Always an array -- empty when the project defines no
+	// SLOs or no grader is wired -- so a receiver renders "none", never
+	// noughts.
+	SLOBudgets []SLOBudgetLine `json:"slo_budgets"`
 }
 
 // outcomeSeverity orders outcomes worst-ward for WorstOutcome: a passed run
@@ -101,11 +125,24 @@ type Deliverer interface {
 	DeliverDigest(ctx context.Context, projectID int64, body []byte) (delivered bool, err error)
 }
 
+// SLOGrader is the optional SLO-budget source the digest builder consults
+// (phase 68): sloapp satisfies it, grading the project's objectives over
+// exactly the digest's own tiling window -- the same aggregation the
+// budget endpoint serves, so a digest line can never disagree with the
+// dashboard's badge. An interface, not an import, the Deliverer precedent:
+// a deployment without SLOs wires nothing and the payload carries an empty
+// array.
+type SLOGrader interface {
+	ProjectWindowBudgets(ctx context.Context, projectID int64, start, end time.Time) ([]sloapp.WindowOutcome, error)
+}
+
 // Service implements the digest use-cases: building, firing, and listing.
 type Service struct {
 	repo      Repo
 	deliverer Deliverer
-	log       *slog.Logger
+	// grader, when wired, adds the slo_budgets lines to every payload.
+	grader SLOGrader
+	log    *slog.Logger
 }
 
 // NewService wires the digest service. Without a Deliverer (the default),
@@ -119,6 +156,16 @@ func NewService(repo Repo) *Service {
 func (s *Service) WithDeliverer(d Deliverer) *Service {
 	if d != nil {
 		s.deliverer = d
+	}
+	return s
+}
+
+// WithSLOGrader sets the SLO-budget source (phase 68). Returns the receiver
+// for chaining. Without one, payloads carry an empty slo_budgets array --
+// the honest reading of "no objectives are graded here".
+func (s *Service) WithSLOGrader(g SLOGrader) *Service {
+	if g != nil {
+		s.grader = g
 	}
 	return s
 }
@@ -149,6 +196,7 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 		Event: EventDigest, ProjectID: projectID, Period: period,
 		WindowStart: windowStart, WindowEnd: windowEnd,
 		Executions: []ExecutionSummary{},
+		SLOBudgets: []SLOBudgetLine{},
 	}
 	for _, exe := range execs {
 		reps, err := s.repo.ListReports(ctx, exe.ID, 0)
@@ -179,6 +227,30 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 		}
 	}
 	p.ThresholdFailures = p.ByOutcome.Failed
+	// The SLO lines grade over exactly the digest's own tiling window --
+	// never a separate named window -- so a digest's verdict is the same
+	// one the dashboard would compute for the same span. A storage-level
+	// failure fails the build: the fire is skipped and the scheduler's
+	// record shows why, rather than a digest that silently omits data the
+	// operator configured (the same law that fails the run-report read
+	// above instead of sending a hollow digest).
+	if s.grader != nil {
+		grades, err := s.grader.ProjectWindowBudgets(ctx, projectID, windowStart, windowEnd)
+		if err != nil {
+			return digest.Digest{}, fmt.Errorf("digest: slo budgets: %w", err)
+		}
+		for _, g := range grades {
+			line := SLOBudgetLine{
+				SLOID: g.SLOID, Name: g.SLO.Name,
+				Compliant: g.Budget.Compliant,
+			}
+			if worst, ok := g.Budget.Worst(); ok && worst.BudgetRemainingPct != nil {
+				line.WorstMetric = worst.Metric
+				line.WorstBudgetRemainingPct = worst.BudgetRemainingPct
+			}
+			p.SLOBudgets = append(p.SLOBudgets, line)
+		}
+	}
 	body, err := json.Marshal(&p)
 	if err != nil {
 		return digest.Digest{}, fmt.Errorf("digest: marshal payload: %w", err)
