@@ -67,7 +67,7 @@ func TestFakeStore_CampaignContract(t *testing.T) {
 
 func TestFakeStore_CalibrationJobContract(t *testing.T) {
 	t.Parallel()
-	repositorytest.RunCalibrationJobRepositoryContract(t, func(_ *testing.T) ports.CalibrationJobRepository {
+	repositorytest.RunCalibrationJobRepositoryContract(t, func(_ *testing.T) repositorytest.CalibrationWorldRepo {
 		return fake.NewStore()
 	})
 }

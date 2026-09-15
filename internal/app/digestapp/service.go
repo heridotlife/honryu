@@ -70,6 +70,29 @@ type SLOBudgetLine struct {
 	WorstBudgetRemainingPct *float64 `json:"worst_budget_remaining_pct"`
 }
 
+// CalibrationLine is one calibration search's share of the window (phase
+// 71): where the search stands, which scenario it measured, and -- when it
+// finished -- what a single pod sustained. A failed search is as
+// digest-worthy as a finished one (an operational failure IS the capacity
+// story that week), so phase and failure_reason carry it; per_pod_qps and
+// saturated_by are absent until a search actually concludes.
+type CalibrationLine struct {
+	JobID        int64  `json:"job_id"`
+	ScenarioID   int64  `json:"scenario_id"`
+	ScenarioName string `json:"scenario_name"`
+	Phase        string `json:"phase"`
+	// PerPodQPS is the search's terminal per-pod capacity (confirmed or
+	// floor, saturated_by's own doc says which) -- nil until phase done.
+	PerPodQPS *float64 `json:"per_pod_qps"`
+	// SaturatedBy names the side that gave out (engine/target/neither);
+	// absent until phase done.
+	SaturatedBy string `json:"saturated_by,omitempty"`
+	// FailureReason is set once phase is failed -- an operational failure
+	// (a step's run itself errored) or an environment-impaired verdict.
+	FailureReason string    `json:"failure_reason,omitempty"`
+	CreatedTime   time.Time `json:"created_time"`
+}
+
 // Payload is the report.digest event body: what a receiver needs to render
 // one window of a project's load-testing at a glance. Field names are the
 // wire contract -- the same bytes go to webhook receivers and into the
@@ -92,6 +115,12 @@ type Payload struct {
 	// SLOs or no grader is wired -- so a receiver renders "none", never
 	// noughts.
 	SLOBudgets []SLOBudgetLine `json:"slo_budgets"`
+	// Calibrations lists the window's calibration searches for this
+	// project (phase 71), newest first. Always an array -- empty when the
+	// project ran none -- so a receiver renders "none", never noughts. A
+	// job surfaces regardless of whether its scenario produced any runs:
+	// a failed calibration is the window's capacity story too.
+	Calibrations []CalibrationLine `json:"calibrations"`
 }
 
 // outcomeSeverity orders outcomes worst-ward for WorstOutcome: a passed run
@@ -113,6 +142,11 @@ type Repo interface {
 	ports.ReportStore
 	ports.ReportDigestStore
 	ports.DigestScheduleStore
+	// ListCalibrationJobsByProject is the calibration ledger's by-project
+	// window read (ports.CalibrationJobRepository's method, declared here
+	// inline the way calibrationapp.Repo declares its own cross-aggregate
+	// reads): the window's calibration lines, scenario names joined.
+	ListCalibrationJobsByProject(ctx context.Context, projectID int64, start, end time.Time) ([]ports.CalibrationJobSummary, error)
 }
 
 // Deliverer is the delivery sink a digest rides on -- webhookapp satisfies
@@ -195,8 +229,9 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 	p := Payload{
 		Event: EventDigest, ProjectID: projectID, Period: period,
 		WindowStart: windowStart, WindowEnd: windowEnd,
-		Executions: []ExecutionSummary{},
-		SLOBudgets: []SLOBudgetLine{},
+		Executions:   []ExecutionSummary{},
+		SLOBudgets:   []SLOBudgetLine{},
+		Calibrations: []CalibrationLine{},
 	}
 	for _, exe := range execs {
 		reps, err := s.repo.ListReports(ctx, exe.ID, 0)
@@ -227,6 +262,27 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 		}
 	}
 	p.ThresholdFailures = p.ByOutcome.Failed
+	// The window's calibration searches ride the same law as the runs
+	// above: a storage-level failure fails the build -- the fire is skipped
+	// and the scheduler's record shows why -- rather than sending a digest
+	// that silently omits searches the operator ran.
+	cals, err := s.repo.ListCalibrationJobsByProject(ctx, projectID, windowStart, windowEnd)
+	if err != nil {
+		return digest.Digest{}, fmt.Errorf("digest: calibrations: %w", err)
+	}
+	for _, c := range cals {
+		line := CalibrationLine{
+			JobID: c.ID, ScenarioID: c.ScenarioID, ScenarioName: c.ScenarioName,
+			Phase: string(c.Phase), FailureReason: c.FailureReason,
+			CreatedTime: c.CreatedTime,
+		}
+		if c.Result != nil {
+			qps := c.Result.PerPodQPS
+			line.PerPodQPS = &qps
+			line.SaturatedBy = string(c.Result.SaturatedBy)
+		}
+		p.Calibrations = append(p.Calibrations, line)
+	}
 	// The SLO lines grade over exactly the digest's own tiling window --
 	// never a separate named window -- so a digest's verdict is the same
 	// one the dashboard would compute for the same span. A storage-level
