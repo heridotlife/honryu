@@ -935,7 +935,10 @@ components:
       properties:
         status:
           type: string
-          enum: [ok, target_limited, inconclusive, stale, no_profile]
+          # engine_floor: phase 44 split it out of inconclusive (the engine
+          # saturated at EVERY searched rate); the handler emits the domain
+          # status verbatim, so the enum carries all six verdicts.
+          enum: [ok, target_limited, inconclusive, engine_floor, stale, no_profile]
         engines:
           type: integer
           description: Present only when status is "ok".

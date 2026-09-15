@@ -13,6 +13,8 @@ import {
   postCalibrations,
   getScenariosByScenarioIdRequests,
   putScenariosByScenarioIdRequests,
+  getScenariosByScenarioIdCapacityProfile,
+  getScenariosByScenarioIdCapacityProfileFanout,
 } from './generated';
 
 function fetchRecorder() {
@@ -99,5 +101,32 @@ describe('generated client', () => {
     expect(requests[0].init?.method).toBe('PUT');
     expect(new Headers(requests[0].init?.headers).get('Content-Type')).toBe('text/yaml');
     expect(requests[0].init?.body).toBe(fragment);
+  });
+
+  // Phase 69 drift pin: the calibration slice (getCapacityProfile /
+  // fanOutCapacity in api/calibration.ts) now rides these two generated
+  // wrappers. The path builders must interpolate the scenario id into the
+  // /api/scenarios prefix, and the capacity key must serialize in the
+  // handler's own parameter order with the fractional target_qps
+  // string-encoded unrounded — the exact URLs calibration.test.ts pins.
+  it('scenario capacity path builders interpolate the scenario id', () => {
+    expect(paths.getScenariosByScenarioIdCapacityProfile(7)).toBe('/scenarios/7/capacity-profile');
+    expect(paths.getScenariosByScenarioIdCapacityProfileFanout(7)).toBe('/scenarios/7/capacity-profile/fanout');
+  });
+
+  it('capacity-profile fetchers serialize the key in handler order', async () => {
+    const requests = fetchRecorder();
+
+    await getScenariosByScenarioIdCapacityProfile(7, {
+      query: { engine: 'jmeter', cpu: '500m', memory: '512Mi' },
+    });
+    await getScenariosByScenarioIdCapacityProfileFanout(7, {
+      query: { engine: 'jmeter', cpu: '500m', memory: '512Mi', target_qps: 250.5 },
+    });
+
+    expect(requests[0].url).toBe('/api/scenarios/7/capacity-profile?engine=jmeter&cpu=500m&memory=512Mi');
+    expect(requests[1].url).toBe(
+      '/api/scenarios/7/capacity-profile/fanout?engine=jmeter&cpu=500m&memory=512Mi&target_qps=250.5'
+    );
   });
 });
