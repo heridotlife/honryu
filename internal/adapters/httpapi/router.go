@@ -26,6 +26,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
+	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
@@ -108,6 +109,10 @@ type Deps struct {
 	// (phase 40's HTTP surface). Optional; nil disables the
 	// /api/projects/{project_id}/webhooks endpoints (404).
 	Webhooks *webhookapp.Service
+	// SLOs administers the per-project service-level objectives and grades
+	// their budgets against stored run reports (phase 68). Optional; nil
+	// disables the /api/projects/{project_id}/slos endpoints (404).
+	SLOs *sloapp.Service
 	// Audit records administrative actions. Optional; nil disables auditing.
 	Audit ports.AuditLog
 	// DefaultOwners is the owner set used when RBAC is disabled (no-auth mode).
@@ -226,6 +231,15 @@ var routes = []Route{
 	{"GET", "/api/projects/{project_id}/webhooks", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.listWebhooks })},
 	{"DELETE", "/api/projects/{project_id}/webhooks/{webhook_id}", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.deleteWebhook })},
 	{"PUT", "/api/projects/{project_id}/webhooks/{webhook_id}/enabled", "webhooks", hf(func(h *handlers) http.HandlerFunc { return h.setWebhookEnabled })},
+
+	// Phase 68: the per-project SLO registry and its budget grades --
+	// what the operator holds the service to, and how much of it the
+	// recent runs have burned. Same optional-service gate contract as
+	// the webhook routes above.
+	{"POST", "/api/projects/{project_id}/slos", "slos", hf(func(h *handlers) http.HandlerFunc { return h.createSLO })},
+	{"GET", "/api/projects/{project_id}/slos", "slos", hf(func(h *handlers) http.HandlerFunc { return h.listSLOs })},
+	{"DELETE", "/api/projects/{project_id}/slos/{slo_id}", "slos", hf(func(h *handlers) http.HandlerFunc { return h.deleteSLO })},
+	{"GET", "/api/projects/{project_id}/slos/{slo_id}/budget", "slos", hf(func(h *handlers) http.HandlerFunc { return h.sloBudget })},
 
 	// Phase 42: per-project periodic report digests -- configure the
 	// firing schedule and read the stored digest feed.
