@@ -1,6 +1,36 @@
 // Types and fetchers for the capacity panel (R7): the (engine, cpu, memory)
 // fan-out query and calibration job progress. Shapes mirror
 // calibration_handlers.go's response structs exactly.
+//
+// Phase 69 identification: the two scenario GET fetchers below —
+// getCapacityProfile and fanOutCapacity — are the last hand-written calls
+// against /api/scenarios/{id} routes. Both still issue raw apiClient.get
+// calls (import path: web/src/api/client.ts):
+//
+//   getCapacityProfile(scenarioId, key)
+//     GET /api/scenarios/{scenarioId}/capacity-profile
+//         ?engine={key.engine}&cpu={key.cpu}&memory={key.memory}
+//     200 -> CapacityProfile JSON (all fields always present); 404 (ApiError)
+//     when no profile exists for the exact key — the planner and the
+//     editor's save-guard branch on that typed 404.
+//
+//   fanOutCapacity(scenarioId, key, targetQPS)
+//     GET /api/scenarios/{scenarioId}/capacity-profile/fanout
+//         ?engine=...&cpu=...&memory=...&target_qps={String(targetQPS)}
+//     200 -> { status, engines? }; engines is present ONLY alongside
+//     status "ok". status is the domain's six-value verdict
+//     (internal/domain/capacityprofile: ok, target_limited, inconclusive,
+//     engine_floor, stale, no_profile) — note the OpenAPI spec's
+//     FanOutResult enum currently omits engine_floor (drift to fix at the
+//     spec source before the generated client can serve this route).
+//
+// The generated client already carries typed wrappers for both routes
+// (getScenariosByScenarioIdCapacityProfile[Fanout] in web/src/api/
+// generated.ts, built from api/openapi.yaml by web/scripts/gen-client.mjs);
+// the phase 69 migration swap keeps these page-facing signatures and types
+// unchanged. The remaining apiClient calls in this file (capacity-profiles
+// list, calibrations job/create/trigger) are NOT scenario routes and stay
+// hand-written.
 import { apiClient, ApiError } from './client';
 
 /** One (scenario, engine, cpu, memory) fan-out key; engine pins the executor. */
