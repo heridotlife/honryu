@@ -112,6 +112,35 @@ export interface Webhook {
   created_time?: string;
 }
 
+export interface Slo {
+  id: number;
+  project_id: number;
+  name: string;
+  target_p95_ms?: number | null;
+  target_error_rate?: number | null;
+  target_success_ratio?: number | null;
+  created_time: string;
+}
+
+export interface SloMetric {
+  metric: "p95_ms" | "error_rate" | "success_ratio";
+  target: number;
+  actual?: number | null;
+  compliant: boolean;
+  budget_remaining_pct?: number | null;
+}
+
+export interface SloBudget {
+  slo_id: number;
+  name: string;
+  window: "1d" | "7d" | "30d";
+  window_start: string;
+  window_end: string;
+  run_count: number;
+  compliant: boolean;
+  metrics: SloMetric[];
+}
+
 export interface RunCompletedEvent {
   event: "run.completed";
   run_id: number;
@@ -512,6 +541,10 @@ export const paths = {
   postProjectsByProjectIdWebhooks: (projectId: number | string) => `/projects/${projectId}/webhooks`,
   deleteProjectsByProjectIdWebhooksByWebhookId: (projectId: number | string, webhookId: number | string) => `/projects/${projectId}/webhooks/${webhookId}`,
   putProjectsByProjectIdWebhooksByWebhookIdEnabled: (projectId: number | string, webhookId: number | string) => `/projects/${projectId}/webhooks/${webhookId}/enabled`,
+  getProjectsByProjectIdSlos: (projectId: number | string) => `/projects/${projectId}/slos`,
+  postProjectsByProjectIdSlos: (projectId: number | string) => `/projects/${projectId}/slos`,
+  deleteProjectsByProjectIdSlosBySloId: (projectId: number | string, sloId: number | string) => `/projects/${projectId}/slos/${sloId}`,
+  getProjectsByProjectIdSlosBySloIdBudget: (projectId: number | string, sloId: number | string) => `/projects/${projectId}/slos/${sloId}/budget`,
   getProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
   putProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
   deleteProjectsByProjectIdDigest: (projectId: number | string) => `/projects/${projectId}/digest`,
@@ -687,6 +720,26 @@ export function deleteProjectsByProjectIdWebhooksByWebhookId(projectId: number |
 /** Pause or resume one of a project's webhooks */
 export function putProjectsByProjectIdWebhooksByWebhookIdEnabled(projectId: number | string, webhookId: number | string, body: { enabled: boolean }): Promise<{ message?: string }> {
   return apiClient.post<{ message?: string }>(paths.putProjectsByProjectIdWebhooksByWebhookIdEnabled(projectId, webhookId), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
+}
+
+/** List a project's SLOs */
+export function getProjectsByProjectIdSlos(projectId: number | string): Promise<Slo[]> {
+  return apiClient.get<Slo[]>(paths.getProjectsByProjectIdSlos(projectId));
+}
+
+/** Define a service-level objective for a project */
+export function postProjectsByProjectIdSlos(projectId: number | string, body: { name: string; target_p95_ms?: number; target_error_rate?: number; target_success_ratio?: number }): Promise<Slo> {
+  return apiClient.post<Slo>(paths.postProjectsByProjectIdSlos(projectId), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
+}
+
+/** Delete one of a project's SLOs */
+export function deleteProjectsByProjectIdSlosBySloId(projectId: number | string, sloId: number | string): Promise<void> {
+  return apiClient.request<void>(paths.deleteProjectsByProjectIdSlosBySloId(projectId, sloId), { method: 'DELETE' });
+}
+
+/** Grade one SLO over a time window */
+export function getProjectsByProjectIdSlosBySloIdBudget(projectId: number | string, sloId: number | string, opts?: { query?: { window?: "1d" | "7d" | "30d" } }): Promise<SloBudget> {
+  return apiClient.get<SloBudget>(paths.getProjectsByProjectIdSlosBySloIdBudget(projectId, sloId) + toQuery(opts?.query ?? {}));
 }
 
 /** Read a project's digest configuration */
