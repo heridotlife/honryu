@@ -38,6 +38,9 @@ type Repo interface {
 	// scenario's execution list, and the calibration trigger's choice of
 	// the execution to run.
 	ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error)
+	// LatestRunsForScenarios backs the scenario list's last-run column: one
+	// batch read for the whole page, never a probe per row.
+	LatestRunsForScenarios(ctx context.Context, scenarioIDs []int64) (map[int64]execution.LastRun, error)
 	DeleteExecution(ctx context.Context, id int64) error
 	AddExecutionFile(ctx context.Context, executionID int64, filename string) error
 	ExecutionFilesFor(ctx context.Context, executionID int64) ([]string, error)
@@ -131,6 +134,20 @@ func (s *Service) ListForProjects(ctx context.Context, projectIDs []int64) ([]ex
 // execution carries it.
 func (s *Service) ListByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error) {
 	return s.repo.ListExecutionsByScenario(ctx, scenarioID)
+}
+
+// LatestRunsForScenarios returns each listed scenario's last run -- the
+// newest execution bound to it and that execution's newest report's verdict
+// (see ports.ExecutionRepository for the exact semantics). It backs the
+// scenario list's status column, so the read stays one batch for the whole
+// page: a list that probed per row would pay a round trip per scenario.
+// An empty list asks for nothing and returns an empty map, the
+// ListForProjects convention.
+func (s *Service) LatestRunsForScenarios(ctx context.Context, scenarioIDs []int64) (map[int64]execution.LastRun, error) {
+	if len(scenarioIDs) == 0 {
+		return map[int64]execution.LastRun{}, nil
+	}
+	return s.repo.LatestRunsForScenarios(ctx, scenarioIDs)
 }
 
 // Delete removes an execution and its data files.

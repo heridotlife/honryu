@@ -323,3 +323,20 @@ func TestStoreConfig_Errors(t *testing.T) {
 		}
 	})
 }
+
+// The last-run batch read is a pass-through with one rule of its own: an
+// empty id list asks for nothing, the ListForProjects convention, so "no
+// rows" can never turn into "every row". The read semantics themselves are
+// the repository contract's (repositorytest, RunExecutionRepositoryContract),
+// and the HTTP wiring's (scenario_list_handlers_test).
+func TestLatestRunsForScenarios_EmptyListAsksNothing(t *testing.T) {
+	svc, _, _ := newCollService(t)
+
+	got, err := svc.LatestRunsForScenarios(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("LatestRunsForScenarios(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LatestRunsForScenarios(nil) = %v, want empty", got)
+	}
+}

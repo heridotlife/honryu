@@ -36,6 +36,26 @@ type planResponse struct {
 	Data         []scenarioapp.FileRef `json:"data"`
 }
 
+// scenarioLastRun is the last_run object on a GET /api/scenarios row: the
+// scenario's newest run, as the execution service's batch read reports it.
+// It belongs to the list alone -- the single-scenario responses carry the
+// plain scenario wire shape, where a null would claim "never ran" about a
+// scenario the caller has not been told a verdict for.
+type scenarioLastRun struct {
+	ExecutionID int64     `json:"execution_id"`
+	Outcome     string    `json:"outcome"`
+	StartedAt   time.Time `json:"started_at"`
+}
+
+// scenarioListRow is one GET /api/scenarios row: the scenario wire shape
+// plus last_run. The key is always present -- null when the scenario has no
+// run with a report yet -- so a client sees "no verdict yet", never a
+// silently missing field.
+type scenarioListRow struct {
+	planResponse
+	LastRun *scenarioLastRun `json:"last_run"`
+}
+
 func (h *handlers) getScenario(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathInt(r, "scenario_id")
 	if !ok {
@@ -381,6 +401,12 @@ func toScenarioResponse(p scenario.Scenario) planResponse {
 // the caller may see it; a project outside the caller's scope contributes
 // nothing, the same rule GET /api/executions' scoping follows, so a filtered
 // list can never widen it.
+//
+// Each row also carries last_run: the scenario's newest run's verdict, read
+// for the whole page in one batch (the same probe the detail page makes per
+// row, answered once -- the N+1 the web list must never do). Null means the
+// scenario has no runs, or its newest run has not finalised a report yet:
+// "no verdict yet", never a fabricated one.
 func (h *handlers) listScenarios(w http.ResponseWriter, r *http.Request) {
 	projects, err := h.visibleProjects(r)
 	if err != nil {
@@ -401,7 +427,8 @@ func (h *handlers) listScenarios(w http.ResponseWriter, r *http.Request) {
 		}
 		projects = named
 	}
-	out := make([]planResponse, 0)
+	out := make([]scenarioListRow, 0)
+	ids := make([]int64, 0)
 	for _, p := range projects {
 		scenarios, err := h.deps.Scenarios.ListByProject(r.Context(), p.ID)
 		if err != nil {
@@ -409,7 +436,28 @@ func (h *handlers) listScenarios(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, sc := range scenarios {
-			out = append(out, toScenarioResponse(sc))
+			out = append(out, scenarioListRow{planResponse: toScenarioResponse(sc)})
+			ids = append(ids, sc.ID)
+		}
+	}
+	// One batch read for the whole page's status column. A router wired
+	// without the executions service leaves every row's last_run null -- the
+	// honest empty -- rather than 500ing the list (the same stance the
+	// report handlers take).
+	if h.deps.Executions != nil && len(ids) > 0 {
+		lastRuns, err := h.deps.Executions.LatestRunsForScenarios(r.Context(), ids)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		for i := range out {
+			if lr, ok := lastRuns[out[i].ID]; ok {
+				out[i].LastRun = &scenarioLastRun{
+					ExecutionID: lr.ExecutionID,
+					Outcome:     string(lr.Outcome),
+					StartedAt:   lr.StartedAt,
+				}
+			}
 		}
 	}
 	// Per-project lists are id-ordered; the concatenation is re-sorted so the

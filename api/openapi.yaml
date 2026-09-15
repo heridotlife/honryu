@@ -369,6 +369,22 @@ components:
         template_name:
           type: string
           description: The template's slug (e.g. httpbin-baseline); present only when is_template is true.
+    ScenarioLastRun:
+      type: object
+      description: >-
+        A scenario's last run: the newest execution bound to the scenario,
+        and the verdict of THAT execution's newest report -- the same probe
+        the scenario detail page makes per row, answered once for the whole
+        list. A scenario whose newest run has not finalised a report yet has
+        no verdict, so its last_run is null: "not yet", never "failed".
+      required: [execution_id, outcome, started_at]
+      properties:
+        execution_id: { type: integer, format: int64 }
+        outcome:
+          type: string
+          enum: [passed, failed, aborted, error]
+          description: The newest report's verdict.
+        started_at: { type: string, format: date-time }
     InstantiateRequest:
       type: object
       description: >-
@@ -1704,12 +1720,25 @@ paths:
           schema: { type: integer, format: int64 }
       responses:
         '200':
-          description: Scenarios, id order, templates excluded
+          description: >-
+            Scenarios, id order, templates excluded. Each row carries
+            last_run: null until the scenario's newest execution has a
+            report.
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Scenario' }
+                items:
+                  allOf:
+                    - { $ref: '#/components/schemas/Scenario' }
+                    - type: object
+                      required: [last_run]
+                      properties:
+                        last_run:
+                          description: The scenario's newest run's verdict, or null when there is no verdict yet.
+                          oneOf:
+                            - { $ref: '#/components/schemas/ScenarioLastRun' }
+                            - type: 'null'
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
