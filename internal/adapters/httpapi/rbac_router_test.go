@@ -30,6 +30,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
+	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
@@ -103,6 +104,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		Campaigns:    campaigns,
 		Calibrations: calibrations,
 		Webhooks:     webhookapp.NewService(store),
+		SLOs:         sloapp.NewService(store),
 		Digests:      digestapp.NewService(store),
 		Store:        obj,
 		Reports:      reports,

@@ -49,6 +49,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
+	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
@@ -73,6 +74,7 @@ type repository interface {
 	ports.ReportStore
 	ports.ShareStore
 	ports.WebhookStore
+	ports.SLOStore
 	ports.ReportDigestStore
 	ports.DigestScheduleStore
 	// ports.ExecutionRepository in full: the digest aggregation lists a
@@ -145,6 +147,10 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// Digests deliver through the same webhook machinery a run completion
 	// rides on -- one signing path, one set of delivery bounds (phase 42).
 	digests := digestapp.NewService(repo).WithDeliverer(webhooks)
+	// SLOs grade a project's run reports against its per-project objectives
+	// (phase 68); the same repo serves the registry and the reports the
+	// budgets read.
+	slos := sloapp.NewService(repo)
 	// Nothing to resume after a restart: pods push, so a run already under way
 	// simply keeps sending to whichever controller is listening.
 	usage := usageapp.NewService(repo)
@@ -219,6 +225,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Admin:            admin,
 		Webhooks:         webhooks,
 		Digests:          digests,
+		SLOs:             slos,
 		Events:           bus,
 		Store:            store,
 		Auth:             authapp.NewService(authProvider, repo, cfg.Auth.EnableRBAC),

@@ -131,6 +131,7 @@ type Store struct {
 	*ReportStore
 	*ShareStore
 	*WebhookStore
+	*SLOStore
 	*DigestStore
 	*DigestScheduleStore
 }
@@ -174,6 +175,7 @@ func NewStore() *Store {
 		ReportStore:          NewReportStore(),
 		ShareStore:           NewShareStore(),
 		WebhookStore:         NewWebhookStore(),
+		SLOStore:             NewSLOStore(),
 		DigestStore:          NewDigestStore(),
 		DigestScheduleStore:  NewDigestScheduleStore(),
 	}

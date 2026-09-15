@@ -16,6 +16,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/app/quotaapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
+	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/campaign"
@@ -29,6 +30,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/run"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/schedule"
+	"github.com/heridotlife/honryu/internal/domain/slo"
 	"github.com/heridotlife/honryu/internal/domain/tenant"
 	"github.com/heridotlife/honryu/internal/domain/webhook"
 	"github.com/heridotlife/honryu/internal/ports"
@@ -97,6 +99,12 @@ var badRequestErrors = []error{
 	// secret-over-long registration is the caller's endpoint to fix.
 	webhook.ErrProjectRequired, webhook.ErrURLRequired, webhook.ErrURLNotHTTPS,
 	webhook.ErrURLTooLong, webhook.ErrSecretTooLong,
+	// SLO definition input (phase 68): an unnamed, target-less, or
+	// out-of-range objective is the caller's to fix, as is a window the
+	// grammar does not serve.
+	slo.ErrProjectRequired, slo.ErrNameRequired, slo.ErrNameTooLong,
+	slo.ErrNoTargets, slo.ErrP95NotPositive, slo.ErrErrorRateRange,
+	slo.ErrSuccessRatioRange, slo.ErrWindowInvalid,
 }
 
 // conflictErrors are state conflicts → HTTP 409.
@@ -129,6 +137,10 @@ var conflictErrors = []error{
 	// Registering a duplicate cluster, or deleting one with an active run, are
 	// state conflicts.
 	ports.ErrClusterExists, clusterapp.ErrClusterInUse,
+	// A second SLO with the same name under one project is a conflict with
+	// an existing row (phase 68) -- the fix is a different name, not a
+	// retry.
+	sloapp.ErrDuplicateName,
 }
 
 // respondError maps an application/domain error onto an HTTP status.
