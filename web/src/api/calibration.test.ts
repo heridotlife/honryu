@@ -4,6 +4,16 @@
 // save-guard -- rides on this exact URL contract, so it is pinned here:
 // path, query order and encoding, the number-to-string target encoding,
 // and the "engines only ever accompanies status ok" response shape.
+//
+// Phase 69: fanOutCapacity and getCapacityProfile now delegate to the
+// generated client (getScenariosByScenarioIdCapacityProfile[Fanout] in
+// api/generated.ts, built from api/openapi.yaml). These pins are the
+// other half of generated.test.ts's phase-69 drift block: they hold the
+// delegation to the pre-migration wire shape byte for byte -- same URLs,
+// same query order, same typed ApiErrors -- and the engine_floor verdict
+// (added to the spec's FanOutResult enum this phase) passes through
+// untouched. listCapacityProfiles stays hand-written (not a scenario
+// route) and keeps its original pins.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fanOutCapacity, getCapacityProfile, listCapacityProfiles } from './calibration';
 import { ApiError } from './client';
