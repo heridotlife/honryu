@@ -18,7 +18,7 @@ import (
 
 func TestMySQLCalibrationJobRepository_Contract(t *testing.T) {
 	db := dbtest.StartMySQL(t)
-	repositorytest.RunCalibrationJobRepositoryContract(t, func(t *testing.T) ports.CalibrationJobRepository {
+	repositorytest.RunCalibrationJobRepositoryContract(t, func(t *testing.T) repositorytest.CalibrationWorldRepo {
 		truncateAll(t, db)
 		return mysqladapter.NewRepository(db)
 	})

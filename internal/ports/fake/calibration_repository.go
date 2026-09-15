@@ -50,6 +50,37 @@ func (s *Store) ListCalibrationJobsByExecution(_ context.Context, executionID in
 	return out, nil
 }
 
+// ListCalibrationJobsByProject returns the project's calibration jobs whose
+// created_time falls in [start, end), most recent first, each carrying its
+// scenario's name ("" when the job's scenario is the unknown marker or no
+// longer exists) -- the same join the MySQL adapter performs, derived here
+// from the store's own execution and scenario maps.
+func (s *Store) ListCalibrationJobsByProject(_ context.Context, projectID int64, start, end time.Time) ([]ports.CalibrationJobSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ports.CalibrationJobSummary{}
+	for _, job := range s.calibrationJobs {
+		exe, ok := s.executions[job.ExecutionID]
+		if !ok || exe.ProjectID != projectID {
+			continue
+		}
+		if job.CreatedTime.Before(start) || !job.CreatedTime.Before(end) {
+			continue
+		}
+		summary := ports.CalibrationJobSummary{
+			ID: job.ID, ExecutionID: job.ExecutionID, ScenarioID: job.ScenarioID,
+			Phase: job.Phase, Result: job.Result, FailureReason: job.FailureReason,
+			CreatedTime: job.CreatedTime,
+		}
+		if scenario, ok := s.scenarios[job.ScenarioID]; ok {
+			summary.ScenarioName = scenario.Name
+		}
+		out = append(out, summary)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, nil
+}
+
 // ClaimNextStep locks and returns one non-terminal job whose claim has
 // expired, or found=false if none is due.
 func (s *Store) ClaimNextStep(_ context.Context, now time.Time, leaseFor time.Duration) (ports.CalibrationJob, bool, error) {

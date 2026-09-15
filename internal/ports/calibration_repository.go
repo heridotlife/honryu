@@ -42,6 +42,29 @@ type CalibrationJob struct {
 	CreatedTime   time.Time
 }
 
+// CalibrationJobSummary is one calibration job as a list reader sees it:
+// the job's identity and outcome plus the scenario name it calibrated -- the
+// join a project- or scenario-scoped reader would otherwise re-derive per
+// job. Result and FailureReason keep CalibrationJob's own terminal rules:
+// Result is set once the phase is done, FailureReason once it is failed.
+type CalibrationJobSummary struct {
+	ID          int64
+	ExecutionID int64
+	// ScenarioID is the scenario the search calibrates; 0 is the legacy
+	// unknown marker (the column's NULL).
+	ScenarioID int64
+	// ScenarioName is the joined scenario's name -- "" when ScenarioID is
+	// the unknown marker or names a since-deleted scenario.
+	ScenarioName string
+	Phase        calibration.Phase
+	// Result is the terminal outcome (which side saturated, per-pod QPS),
+	// nil unless Phase is done.
+	Result *calibration.Result
+	// FailureReason is set once Phase is failed.
+	FailureReason string
+	CreatedTime   time.Time
+}
+
 // CalibrationJobRepository persists calibration searches and their
 // step-by-step history, and arbitrates which controller replica advances a
 // given job next.
@@ -55,6 +78,16 @@ type CalibrationJobRepository interface {
 	// ListCalibrationJobsByExecution returns every job ever run for
 	// executionID, most recent first.
 	ListCalibrationJobsByExecution(ctx context.Context, executionID int64) ([]CalibrationJob, error)
+
+	// ListCalibrationJobsByProject returns the project's calibration jobs
+	// whose created_time falls in [start, end), most recent first, each
+	// carrying its scenario's name. The project scope comes from the job's
+	// execution; the name from a LEFT JOIN on the scenario (an unknown or
+	// since-deleted scenario reads back as ""). Jobs exist independently of
+	// runs -- a failed or still-pending search surfaces here exactly like a
+	// finished one, because for the project's capacity story it matters just
+	// as much.
+	ListCalibrationJobsByProject(ctx context.Context, projectID int64, start, end time.Time) ([]CalibrationJobSummary, error)
 
 	// ClaimNextStep locks and returns one non-terminal (not Done or Failed)
 	// job whose claim has expired -- claimed_at is unset, or older than
