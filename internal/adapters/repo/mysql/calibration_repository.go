@@ -75,6 +75,40 @@ func (r *Repository) ListCalibrationJobsByExecution(ctx context.Context, executi
 	return out, nil
 }
 
+// ListCalibrationJobsByProject returns the project's calibration jobs whose
+// created_time falls in [start, end), most recent first, each joined with its
+// scenario's name. The project scope rides the job's execution (the join that
+// makes "this project's jobs" a single query instead of a per-execution fan);
+// the name rides a LEFT JOIN so an unknown-legacy or since-deleted scenario
+// reads back as "" rather than dropping the job -- a failed calibration for a
+// scenario with no runs is exactly the row a digest must not silently lose.
+func (r *Repository) ListCalibrationJobsByProject(ctx context.Context, projectID int64, start, end time.Time) ([]ports.CalibrationJobSummary, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT j.id, j.execution_id, j.scenario_id, s.name, j.phase, j.saturated_by, j.per_pod_qps, j.failure_reason, j.created_time"+
+			" FROM calibration_job j"+
+			" JOIN execution e ON e.id = j.execution_id"+
+			" LEFT JOIN scenario s ON s.id = j.scenario_id"+
+			" WHERE e.project_id = ? AND j.created_time >= ? AND j.created_time < ?"+
+			" ORDER BY j.id DESC", projectID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: list calibration jobs by project: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []ports.CalibrationJobSummary{}
+	for rows.Next() {
+		summary, scanErr := scanCalibrationJobSummary(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("mysql: scan calibration job summary: %w", scanErr)
+		}
+		out = append(out, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mysql: iterate calibration jobs by project: %w", err)
+	}
+	return out, nil
+}
+
 // ClaimNextStep locks and returns one non-terminal job whose claim has
 // expired, or found=false if none is due. See ports.CalibrationJobRepository
 // for why the claim is a lease (claimed_at), not the row lock alone: a
@@ -225,6 +259,32 @@ func scanCalibrationJob(s rowScanner) (ports.CalibrationJob, error) {
 	}
 	j.FailureReason = failureReason.String
 	return j, nil
+}
+
+func scanCalibrationJobSummary(s rowScanner) (ports.CalibrationJobSummary, error) {
+	var (
+		sum           ports.CalibrationJobSummary
+		phase         string
+		saturatedBy   sql.NullString
+		perPodQPS     sql.NullFloat64
+		failureReason sql.NullString
+		scenarioID    sql.NullInt64
+		scenarioName  sql.NullString
+	)
+	if err := s.Scan(&sum.ID, &sum.ExecutionID, &scenarioID, &scenarioName, &phase,
+		&saturatedBy, &perPodQPS, &failureReason, &sum.CreatedTime); err != nil {
+		return ports.CalibrationJobSummary{}, err
+	}
+	sum.Phase = calibration.Phase(phase)
+	// NULL reads back as 0, the scenario column's unknown/legacy marker, and
+	// the LEFT JOIN's miss reads back as "" -- an unnamed job still lists.
+	sum.ScenarioID = scenarioID.Int64
+	sum.ScenarioName = scenarioName.String
+	if saturatedBy.Valid {
+		sum.Result = &calibration.Result{SaturatedBy: calibration.SaturatedBy(saturatedBy.String), PerPodQPS: perPodQPS.Float64}
+	}
+	sum.FailureReason = failureReason.String
+	return sum, nil
 }
 
 // SetCalibrationBounds replaces whatever search bounds are recorded for
