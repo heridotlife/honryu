@@ -207,12 +207,13 @@ describe('SloPanel', () => {
     expect(tid('slo-row-9')).toBeTruthy();
   });
 
-  it('deletes only on the second, confirming click', async () => {
+  it('deletes only on the second, confirming click, naming the SLO', async () => {
     listSLOs = [checkoutSLO];
     await renderPanel();
     await click(tid('slo-delete-3'));
-    // First click arms only: label flips, no DELETE sent.
-    expect(tid('slo-delete-3').textContent).toContain('Confirm delete?');
+    // First click arms only: the confirm names WHAT is being deleted (the
+    // blast radius), no DELETE sent.
+    expect(tid('slo-delete-3').textContent).toContain('Delete “checkout p95”?');
     expect(calls.methods).not.toContain('DELETE');
     await click(tid('slo-delete-3'));
     expect(calls.methods).toContain('DELETE');
@@ -233,5 +234,117 @@ describe('SloPanel', () => {
     // colour alone: aria-pressed).
     expect(tid('slo-window-30d').getAttribute('aria-pressed')).toBe('true');
     expect(tid('slo-window-7d').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('does not refetch when the same window is re-picked', async () => {
+    listSLOs = [checkoutSLO];
+    await renderPanel();
+    const budgetCallsBefore = calls.urls.filter(u => u.includes('/budget')).length;
+    expect(budgetCallsBefore).toBeGreaterThan(0);
+    await click(tid('slo-window-7d'));
+    expect(calls.urls.filter(u => u.includes('/budget')).length).toBe(budgetCallsBefore);
+  });
+
+  it('rounds the budget remaining to one decimal with its unit', async () => {
+    listSLOs = [checkoutSLO];
+    budgetOverrides = {
+      3: {
+        metrics: [
+          { metric: 'p95_ms', target: 250, actual: 187.5, compliant: true, budget_remaining_pct: 33.3333333 },
+          { metric: 'success_ratio', target: 0.99, actual: 0.99, compliant: true, budget_remaining_pct: -12.344 },
+        ],
+      },
+    };
+    await renderPanel();
+    expect(text()).toContain('+33.3% left');
+    expect(text()).toContain('-12.3% left');
+    // The formula's raw fractions never leak through.
+    expect(text()).not.toContain('33.333');
+  });
+
+  it('shows a skeleton while budgets fetch and numbers once they land', async () => {
+    listSLOs = [checkoutSLO];
+    let releaseBudgets: ((r: Response) => void) | undefined;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    calls = { urls: [], methods: [], bodies: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/projects/1/slos') return json(listSLOs);
+        if (url.includes('/budget')) {
+          return new Promise<Response>(resolve => {
+            releaseBudgets = resolve;
+          });
+        }
+        return json({ message: 'unexpected ' + url }, 404);
+      })
+    );
+    await act(async () => {
+      root = createRoot(container as HTMLDivElement);
+      root?.render(<SloPanel projectId={1} />);
+    });
+    await act(async () => {});
+    // In flight: a skeleton row, distinct from both the empty list state
+    // and the no-eligible-runs verdict.
+    expect(tid('slo-budget-loading-3')).toBeTruthy();
+    expect(tid('slo-budget-loading-3').textContent).not.toContain('no eligible runs');
+    expect(document.querySelector('[data-testid="slo-budget-error-3"]')).toBeNull();
+    await act(async () => {
+      releaseBudgets?.(json(budgetFor(checkoutSLO)));
+    });
+    expect(document.querySelector('[data-testid="slo-budget-loading-3"]')).toBeNull();
+    expect(tid('slo-metrics-3')).toBeTruthy();
+  });
+
+  it('renders a failed budget fetch as an explicit error, never eternal loading', async () => {
+    listSLOs = [checkoutSLO];
+    await renderPanel();
+    // First load succeeds, so the baselines exist.
+    expect(tid('slo-metrics-3')).toBeTruthy();
+    budgetOverrides = { 3: { run_count: 1 } }; // unused; the stub now fails
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.urls.push(url);
+        if (url === '/api/projects/1/slos') return json(listSLOs);
+        if (url.includes('/budget')) return json({ message: 'storage down' }, 500);
+        return json({ message: 'unexpected ' + url }, 404);
+      })
+    );
+    await click(tid('slo-window-30d'));
+    // The window switch cleared the stale numbers and the failure rendered
+    // as the failed row -- not a spinner that would spin forever.
+    expect(tid('slo-budget-error-3')).toBeTruthy();
+    expect(tid('slo-budget-error-3').textContent).toContain('Budget failed to load');
+    expect(document.querySelector('[data-testid="slo-budget-loading-3"]')).toBeNull();
+    // Re-picking the same window is the retry the row promises.
+    const budgetCallsBefore = calls.urls.filter(u => u.includes('/budget')).length;
+    await click(tid('slo-window-30d'));
+    expect(calls.urls.filter(u => u.includes('/budget')).length).toBe(budgetCallsBefore + 1);
+  });
+
+  it('refuses a p95 target of 0 at the field (the API requires above 0), but sends error rate 0', async () => {
+    listSLOs = [];
+    await renderPanel();
+    await type(tid('slo-name-input') as HTMLInputElement, 'zero p95');
+    await type(tid('slo-p95-input') as HTMLInputElement, '0');
+    await click(tid('slo-add-btn'));
+    expect(tid('slo-form-error').textContent).toContain('p95 target must be a number above 0');
+    expect(calls.methods).toEqual(['GET']); // no doomed POST left the browser
+
+    // The zero-semantics twin: 0 IS a legal error-rate target ("no errors
+    // allowed") and must reach the API, not be swallowed as "unset".
+    await type(tid('slo-p95-input') as HTMLInputElement, '100');
+    await type(tid('slo-error-input') as HTMLInputElement, '0');
+    await click(tid('slo-add-btn'));
+    expect(calls.methods).toContain('POST');
+    const postIdx = calls.methods.indexOf('POST');
+    expect(calls.bodies[postIdx]).toContain('target_error_rate=0');
+    // The helper note states the rules as the API enforces them.
+    expect(tid('slo-targets-note').textContent).toContain('above 0');
+    expect(tid('slo-targets-note').textContent).toContain('0 is a legal');
   });
 });

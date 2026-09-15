@@ -8,7 +8,7 @@
 // a two-step inline confirm (no browser dialogs, WebhooksCard's pattern);
 // loading and empty states are explicit; the create form's at-least-one-
 // target rule fails at the field, with the reason next to it.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Button from './ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
 import Input from './ui/Input';
@@ -41,7 +41,9 @@ const METRIC_LABELS: Record<SloMetric['metric'], string> = {
 };
 
 /** Renders a remaining budget percentage the way the formula says it:
- * positive = margin left, 0 = on target, negative = burned past it. */
+ * positive = margin left, 0 = on target, negative = burned past it. One
+ * decimal -- the formula's fractions of a percent are precision the
+ * operator cannot act on, and the % sign is the unit, always visible. */
 function formatRemaining(pct: number): string {
   const rounded = Math.round(pct * 10) / 10;
   const sign = rounded > 0 ? '+' : '';
@@ -104,7 +106,16 @@ export default function SloPanel({ projectId }: SloPanelProps) {
   const [slos, setSlos] = useState<Slo[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [budgets, setBudgets] = useState<Record<number, SloBudget>>({});
+  // The budget fetch's shared phase: loading shows a skeleton row per SLO,
+  // error shows an explicit failed row -- a failed fetch must never render
+  // as eternal "loading", and a window switch must never leave the previous
+  // window's numbers standing in for the new one's.
+  const [budgetPhase, setBudgetPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [window, setWindow] = useState<Window>('7d');
+  // Last-write-wins guard: only the newest in-flight budget fetch may
+  // settle state, so a fast window switch cannot let a slow stale response
+  // overwrite the newer window's numbers.
+  const budgetReq = useRef(0);
 
   // Create-form state. The three targets are optional individually; the
   // at-least-one rule is validated here so the error lands at the field.
@@ -118,6 +129,9 @@ export default function SloPanel({ projectId }: SloPanelProps) {
 
   const loadBudgets = useCallback(
     (ids: number[], win: Window): void => {
+      const seq = ++budgetReq.current;
+      setBudgetPhase('loading');
+      setBudgets({});
       void Promise.all(
         ids.map(id =>
           getProjectsByProjectIdSlosBySloIdBudget(projectId, id, { query: { window: win } })
@@ -125,12 +139,17 @@ export default function SloPanel({ projectId }: SloPanelProps) {
         )
       )
         .then(pairs => {
+          if (seq !== budgetReq.current) return; // a newer fetch superseded this one
           setBudgets(Object.fromEntries(pairs));
+          setBudgetPhase('ready');
         })
         .catch(() => {
-          // A failed budget read leaves the badge row without numbers
-          // rather than faking a verdict; the list itself still shows.
+          if (seq !== budgetReq.current) return;
+          // A failed budget read renders an explicit failed row, never a
+          // faked verdict and never an eternal spinner; the list itself
+          // still shows.
           setBudgets({});
+          setBudgetPhase('error');
         });
     },
     [projectId]
@@ -160,6 +179,12 @@ export default function SloPanel({ projectId }: SloPanelProps) {
   }, [projectId, loadBudgets]);
 
   function pickWindow(win: Window): void {
+    if (win === window && budgetPhase !== 'error') {
+      // Same window re-picked while its numbers stand: they are that
+      // window's numbers already; refetching would only flicker the
+      // skeletons. After a failed fetch, though, the re-pick IS the retry.
+      return;
+    }
     setWindow(win);
     if (slos !== null) {
       loadBudgets(
@@ -173,9 +198,27 @@ export default function SloPanel({ projectId }: SloPanelProps) {
     e.preventDefault();
     setFormError(null);
     const targets: Record<string, number> = {};
+    // Parsed-when-present, validated against the API's own rules (the
+    // domain's Validate): p95 must be ABOVE zero -- 0 ms is not a latency
+    // target, it is a typo -- while error rate and success ratio may
+    // legitimately be 0 (a zero error-rate target is "no errors allowed"
+    // and the API accepts it). An empty field stays "not tracked".
     if (p95.trim() !== '') targets.target_p95_ms = Number(p95);
     if (errorRate.trim() !== '') targets.target_error_rate = Number(errorRate);
     if (successRatio.trim() !== '') targets.target_success_ratio = Number(successRatio);
+    if (targets.target_p95_ms !== undefined && !(targets.target_p95_ms > 0)) {
+      setFormError('p95 target must be a number above 0');
+      return;
+    }
+    for (const [field, value] of [
+      ['error rate', targets.target_error_rate],
+      ['success ratio', targets.target_success_ratio],
+    ] as const) {
+      if (value !== undefined && (Number.isNaN(value) || value < 0 || value > 1)) {
+        setFormError(`${field} target must be between 0 and 1`);
+        return;
+      }
+    }
     if (Object.keys(targets).length === 0) {
       setFormError('set at least one target');
       return;
@@ -278,13 +321,23 @@ export default function SloPanel({ projectId }: SloPanelProps) {
                         }
                       }}
                     >
-                      {confirmId === slo.id ? 'Confirm delete?' : 'Delete'}
+                      {confirmId === slo.id ? `Delete “${slo.name}”?` : 'Delete'}
                     </Button>
                   </div>
                   {budget === undefined ? (
-                    <p className="text-caption mt-1 text-slate-500 dark:text-slate-400" data-testid={`slo-budget-loading-${slo.id}`}>
-                      Loading budget…
-                    </p>
+                    budgetPhase === 'error' ? (
+                      <p
+                        className="text-caption mt-1 text-red-600 dark:text-red-400"
+                        data-testid={`slo-budget-error-${slo.id}`}
+                      >
+                        Budget failed to load. Pick a window to retry.
+                      </p>
+                    ) : (
+                      <div className="mt-2 space-y-1.5" data-testid={`slo-budget-loading-${slo.id}`}>
+                        <div className="h-2.5 w-40 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                        <div className="h-2.5 w-64 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+                      </div>
+                    )
                   ) : (
                     <div className="mt-2 space-y-2">
                       <p className="text-caption text-slate-500 dark:text-slate-400">
@@ -377,6 +430,13 @@ export default function SloPanel({ projectId }: SloPanelProps) {
               Add
             </Button>
           </div>
+          {/* The targets' zero rules, stated as the API enforces them (the
+              domain's Validate): 0 ms is not a p95 target, but a zero error
+              rate is a legal one -- "no errors allowed". */}
+          <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="slo-targets-note">
+            p95 target must be above 0&thinsp;ms. Error rate and success ratio may be 0–1; 0 is a legal
+            target (no errors allowed). Leave a field empty to not track it.
+          </p>
           {formError && (
             <p className="text-caption text-red-600 dark:text-red-400" role="alert" data-testid="slo-form-error">
               {formError}
