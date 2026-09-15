@@ -1,7 +1,40 @@
 // Types and fetchers for the capacity panel (R7): the (engine, cpu, memory)
 // fan-out query and calibration job progress. Shapes mirror
 // calibration_handlers.go's response structs exactly.
+//
+// Phase 69 migration: the two scenario GET fetchers below —
+// getCapacityProfile and fanOutCapacity, historically raw apiClient.get
+// calls — now delegate to the generated client's typed wrappers
+// (getScenariosByScenarioIdCapacityProfile[Fanout] in web/src/api/
+// generated.ts, built from api/openapi.yaml by web/scripts/gen-client.mjs).
+// Their wire contracts, pinned by calibration.test.ts:
+//
+//   getCapacityProfile(scenarioId, key)
+//     GET /api/scenarios/{scenarioId}/capacity-profile
+//         ?engine={key.engine}&cpu={key.cpu}&memory={key.memory}
+//     200 -> CapacityProfile JSON (all fields always present); 404 (ApiError)
+//     when no profile exists for the exact key — the planner and the
+//     editor's save-guard branch on that typed 404.
+//
+//   fanOutCapacity(scenarioId, key, targetQPS)
+//     GET /api/scenarios/{scenarioId}/capacity-profile/fanout
+//         ?engine=...&cpu=...&memory=...&target_qps={String(targetQPS)}
+//     200 -> { status, engines? }; engines is present ONLY alongside
+//     status "ok". status is the domain's six-value verdict
+//     (internal/domain/capacityprofile: ok, target_limited, inconclusive,
+//     engine_floor, stale, no_profile) — the spec's FanOutResult enum
+//     gained engine_floor in this same phase so the generated type
+//     matches the wire.
+//
+// Page-facing signatures and types are unchanged; the narrowing to them
+// happens once at each seam. The remaining apiClient calls in this file
+// (capacity-profiles list, calibrations job/create/trigger) are NOT
+// scenario routes and stay hand-written.
 import { apiClient, ApiError } from './client';
+import {
+  getScenariosByScenarioIdCapacityProfile,
+  getScenariosByScenarioIdCapacityProfileFanout,
+} from './generated';
 
 /** One (scenario, engine, cpu, memory) fan-out key; engine pins the executor. */
 export interface CapacityKey {
@@ -31,14 +64,21 @@ export interface FanOutResponse {
  * is the contract: engines is present ONLY alongside "ok" — the panel
  * renders a number exclusively in that case.
  */
-export function fanOutCapacity(scenarioId: number, key: CapacityKey, targetQPS: number): Promise<FanOutResponse> {
-  const q = new URLSearchParams({
-    engine: key.engine,
-    cpu: key.cpu,
-    memory: key.memory,
-    target_qps: String(targetQPS),
+export async function fanOutCapacity(scenarioId: number, key: CapacityKey, targetQPS: number): Promise<FanOutResponse> {
+  // Phase 69: was a hand-rolled apiClient.get with the same URLSearchParams
+  // in this exact key order; the generated wrapper's toQuery serializes
+  // identically (insertion order, String() for scalars).
+  const fan = await getScenariosByScenarioIdCapacityProfileFanout(scenarioId, {
+    query: {
+      engine: key.engine,
+      cpu: key.cpu,
+      memory: key.memory,
+      target_qps: targetQPS,
+    },
   });
-  return apiClient.get(`/scenarios/${scenarioId}/capacity-profile/fanout?${q.toString()}`);
+  // The generated status is the spec's six-value enum (engine_floor
+  // included since this phase); the page contract requires it. Narrow once.
+  return { status: fan.status as FanOutStatus, engines: fan.engines };
 }
 
 export interface CapacityProfile {
@@ -54,9 +94,27 @@ export interface CapacityProfile {
 }
 
 /** The stored profile for one exact key; 404 (ApiError) when none. */
-export function getCapacityProfile(scenarioId: number, key: CapacityKey): Promise<CapacityProfile> {
-  const q = new URLSearchParams({ engine: key.engine, cpu: key.cpu, memory: key.memory });
-  return apiClient.get(`/scenarios/${scenarioId}/capacity-profile?${q.toString()}`);
+export async function getCapacityProfile(scenarioId: number, key: CapacityKey): Promise<CapacityProfile> {
+  // Phase 69: was a hand-rolled apiClient.get; same wire shape via the
+  // generated wrapper.
+  const p = await getScenariosByScenarioIdCapacityProfile(scenarioId, {
+    query: { engine: key.engine, cpu: key.cpu, memory: key.memory },
+  });
+  // Narrow the generated row (spec-optional fields, saturated_by the
+  // handler's closed engine/target/neither verdict) into the page
+  // contract: the handler's response struct carries every field without
+  // omitempty, so each is always on the wire.
+  return {
+    scenario_id: p.scenario_id as number,
+    engine: p.engine as string,
+    cpu: p.cpu as string,
+    memory: p.memory as string,
+    per_pod_qps: p.per_pod_qps as number,
+    saturated_by: p.saturated_by as string,
+    scenario_fingerprint: p.scenario_fingerprint as string,
+    calibrated_at: p.calibrated_at as string,
+    job_id: p.job_id as number,
+  };
 }
 
 /** One row of the fleet-wide capacity matrix (GET /api/capacity-profiles,

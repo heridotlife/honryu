@@ -408,7 +408,7 @@ export interface CapacityProfileSummary {
 }
 
 export interface FanOutResult {
-  status?: "ok" | "target_limited" | "inconclusive" | "stale" | "no_profile";
+  status?: "ok" | "target_limited" | "inconclusive" | "engine_floor" | "stale" | "no_profile";
   engines?: number;
 }
 
