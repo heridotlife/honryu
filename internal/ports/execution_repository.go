@@ -37,6 +37,19 @@ type ExecutionRepository interface {
 	// simply has no executions.
 	ListExecutionsByScenario(ctx context.Context, scenarioID int64) ([]execution.Execution, error)
 
+	// LatestRunsForScenarios returns, for each listed scenario that has one,
+	// its last run: the newest execution bound to the scenario
+	// (ListExecutionsByScenario's newest-first order) paired with the verdict
+	// of that execution's newest report (ListReports' newest-first order).
+	// A scenario absent from the result has no verifiable last run -- either
+	// nothing is bound to it, or its newest execution has not finalised a
+	// report yet -- and a caller must surface that as "no verdict yet",
+	// never as a fabricated one. The batch shape backs list surfaces: one
+	// read answers a whole page, so listing never pays a round trip per row.
+	// An empty scenarioIDs slice returns an empty map and no error, the same
+	// convention ListExecutionsByProjects keeps.
+	LatestRunsForScenarios(ctx context.Context, scenarioIDs []int64) (map[int64]execution.LastRun, error)
+
 	AddExecutionFile(ctx context.Context, executionID int64, filename string) error
 	ExecutionFilesFor(ctx context.Context, executionID int64) ([]string, error)
 	DeleteExecutionFile(ctx context.Context, executionID int64, filename string) error

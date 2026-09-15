@@ -577,6 +577,79 @@ func (s *Store) ListExecutionsByScenario(_ context.Context, scenarioID int64) ([
 	return out, nil
 }
 
+// LatestRunsForScenarios returns each listed scenario's last run: the newest
+// execution bound to it (created time desc, id desc -- the
+// ListExecutionsByScenario order) and the verdict of that execution's newest
+// report (started at desc, run id desc -- the ListReports order). The report
+// is matched by execution alone, never by the report's own scenario_id: the
+// same probe the scenario detail page makes per row. A scenario with no
+// binding, or whose newest execution has no report yet, is absent from the
+// result -- "no verdict yet", matching the MySQL adapter's SQL.
+func (s *Store) LatestRunsForScenarios(_ context.Context, scenarioIDs []int64) (map[int64]execution.LastRun, error) {
+	s.mu.Lock()
+	newest := make(map[int64]execution.Execution, len(scenarioIDs))
+	for _, scenarioID := range scenarioIDs {
+		for execID, entries := range s.exec {
+			bound := false
+			for _, entry := range entries {
+				if entry.ScenarioID == scenarioID {
+					bound = true
+					break
+				}
+			}
+			if !bound {
+				continue
+			}
+			c := s.executions[execID]
+			if cur, ok := newest[scenarioID]; !ok ||
+				c.CreatedTime.After(cur.CreatedTime) ||
+				(c.CreatedTime.Equal(cur.CreatedTime) && c.ID > cur.ID) {
+				newest[scenarioID] = c
+			}
+		}
+	}
+	execToScenario := make(map[int64]int64, len(newest))
+	for scenarioID, c := range newest {
+		execToScenario[c.ID] = scenarioID
+	}
+	s.mu.Unlock()
+
+	// The embedded ReportStore keeps its own lock; the two locks are never
+	// held together, so no ordering constraint exists to violate.
+	s.ReportStore.mu.Lock()
+	type winner struct {
+		run   execution.LastRun
+		runID int64
+	}
+	best := make(map[int64]winner, len(newest))
+	for _, rep := range s.ReportStore.reports {
+		scenarioID, ok := execToScenario[rep.ExecutionID]
+		if !ok {
+			continue
+		}
+		if cur, ok := best[scenarioID]; ok &&
+			(rep.StartedAt.Before(cur.run.StartedAt) ||
+				(rep.StartedAt.Equal(cur.run.StartedAt) && rep.RunID < cur.runID)) {
+			continue
+		}
+		best[scenarioID] = winner{
+			run: execution.LastRun{
+				ExecutionID: rep.ExecutionID,
+				Outcome:     rep.Outcome,
+				StartedAt:   rep.StartedAt,
+			},
+			runID: rep.RunID,
+		}
+	}
+	s.ReportStore.mu.Unlock()
+
+	out := make(map[int64]execution.LastRun, len(best))
+	for scenarioID, w := range best {
+		out[scenarioID] = w.run
+	}
+	return out, nil
+}
+
 func (s *Store) DeleteExecution(_ context.Context, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
+	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/ports"
@@ -21,6 +22,10 @@ type Repository interface {
 	ports.ProjectRepository
 	ports.ScenarioRepository
 	ports.ExecutionRepository
+	// ReportStore rides along because the last-run summary is a join across
+	// aggregates: seeding reports is the only way to pin which execution's
+	// report LatestRunsForScenarios must read.
+	ports.ReportStore
 }
 
 // NewRepo returns a fresh, empty Repository for a single subtest.
@@ -888,6 +893,108 @@ func RunExecutionRepositoryContract(t *testing.T, newRepo NewRepo) {
 			t.Fatalf("LastActivity after delete = %v,%v; want false,nil", ok, err)
 		}
 	})
+
+	// LatestRunsForScenarios must reproduce the scenario detail page's
+	// per-row probe for a whole list at once: the newest execution bound to
+	// the scenario, and THAT execution's newest report -- never a report
+	// from an older execution (however new it is), never the newest
+	// execution's older report, and an honest absence when there is no
+	// verdict yet.
+	t.Run("LatestRunsForScenariosNewestExecutionThenItsNewestReport", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+
+		withRuns := mustCreateScenario(t, repo, "with-runs", 10)
+		// Two executions bound to it, created in order: the second is the
+		// newest either way -- created_time order when the clock separates
+		// them, the id tiebreak when the column's precision does not.
+		older := mustCreateExecution(t, repo, "older", 10)
+		newest := mustCreateExecution(t, repo, "newest", 10)
+		for _, execID := range []int64{older, newest} {
+			if err := repo.StoreLoadProfile(ctx, execID, false, []loadprofile.Entry{
+				{Name: "with-runs", ScenarioID: withRuns, Engines: 1, Concurrency: 1, Duration: 60},
+			}); err != nil {
+				t.Fatalf("StoreLoadProfile(%d): %v", execID, err)
+			}
+		}
+
+		// The trap: an older execution whose report started after anything
+		// on the newest one. A summary that surfaced this picked a report
+		// across executions instead of the newest execution's own.
+		mustSaveReport(t, repo, report.Report{
+			ExecutionID: older, ScenarioID: withRuns, RunID: 901,
+			Outcome:   taurus.OutcomeError,
+			StartedAt: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+		})
+		// The newest execution's two reports, in order: the later one wins.
+		mustSaveReport(t, repo, report.Report{
+			ExecutionID: newest, ScenarioID: withRuns, RunID: 902,
+			Outcome:   taurus.OutcomePassed,
+			StartedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		})
+		mustSaveReport(t, repo, report.Report{
+			ExecutionID: newest, ScenarioID: withRuns, RunID: 903,
+			Outcome:   taurus.OutcomeFailed,
+			StartedAt: time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC),
+		})
+
+		// Bound, but its newest execution never finalised a report: no
+		// verdict, so no entry -- "pending", not "failed".
+		pending := mustCreateScenario(t, repo, "pending", 10)
+		undeclared := mustCreateExecution(t, repo, "undeclared", 10)
+		if err := repo.StoreLoadProfile(ctx, undeclared, false, []loadprofile.Entry{
+			{Name: "pending", ScenarioID: pending, Engines: 1, Concurrency: 1, Duration: 60},
+		}); err != nil {
+			t.Fatalf("StoreLoadProfile(%d): %v", undeclared, err)
+		}
+
+		// Never bound to anything at all.
+		idle := mustCreateScenario(t, repo, "idle", 10)
+
+		got, err := repo.LatestRunsForScenarios(ctx, []int64{withRuns, pending, idle})
+		if err != nil {
+			t.Fatalf("LatestRunsForScenarios: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("LatestRunsForScenarios returned %d entries (%+v), want only the scenario with a verdict", len(got), got)
+		}
+		lr, ok := got[withRuns]
+		if !ok {
+			t.Fatalf("LatestRunsForScenarios missing scenario %d entirely: %+v", withRuns, got)
+		}
+		if lr.ExecutionID != newest || lr.Outcome != taurus.OutcomeFailed {
+			t.Fatalf("LatestRunsForScenarios[%d] = {exec %d, %s}, want {exec %d, failed}", withRuns, lr.ExecutionID, lr.Outcome, newest)
+		}
+		if !lr.StartedAt.Equal(time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC)) {
+			t.Fatalf("LatestRunsForScenarios[%d].StartedAt = %v, want the newest report's start", withRuns, lr.StartedAt)
+		}
+	})
+
+	// An empty id list asks for nothing and must read nothing -- the same
+	// convention ListExecutionsByProjects keeps, so "no rows" can never
+	// become "every row".
+	t.Run("LatestRunsForScenariosEmptyListAsksNothing", func(t *testing.T) {
+		repo := newRepo(t)
+		got, err := repo.LatestRunsForScenarios(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("LatestRunsForScenarios(nil): %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("LatestRunsForScenarios(nil) = %+v, want empty", got)
+		}
+	})
+}
+
+// mustSaveReport stores rep, filling in the ended_at clock a report needs
+// when the test only cares about the start.
+func mustSaveReport(t *testing.T, repo Repository, rep report.Report) {
+	t.Helper()
+	if rep.EndedAt.IsZero() {
+		rep.EndedAt = rep.StartedAt.Add(time.Minute)
+	}
+	if err := repo.SaveReport(context.Background(), rep); err != nil {
+		t.Fatalf("SaveReport(run %d): %v", rep.RunID, err)
+	}
 }
 
 func mustCreateScenario(t *testing.T, repo Repository, name string, projectID int64) int64 {
