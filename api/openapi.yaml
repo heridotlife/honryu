@@ -51,6 +51,11 @@ tags:
       Per-project periodic report digests: the aggregation of every completed
       run in a window, stored for the in-app feed and delivered to the
       project's webhooks as a report.digest event
+  - name: slos
+    description: >-
+      Per-project service-level objectives and their budgets: what the
+      operator holds the service to (p95 latency, error rate, success
+      ratio), and how much of each target a window of run reports has left
   - name: scenarios
     description: Reusable workload definitions
   - name: executions
@@ -121,6 +126,11 @@ components:
       schema: { type: integer, format: int64 }
     WebhookID:
       name: webhook_id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    SloID:
+      name: slo_id
       in: path
       required: true
       schema: { type: integer, format: int64 }
@@ -391,6 +401,77 @@ components:
         enabled: { type: boolean }
         created_by: { type: string }
         created_time: { type: string, format: date-time }
+    Slo:
+      type: object
+      description: >-
+        One service-level objective: a named subset of the three targets an
+        operator holds a project's service to (phase 68). At least one
+        target is always set; the others are null, meaning not tracked.
+      required: [id, project_id, name, created_time]
+      properties:
+        id: { type: integer, format: int64 }
+        project_id: { type: integer, format: int64 }
+        name:
+          type: string
+          maxLength: 128
+          description: Unique within the project -- the identity every badge and digest line shows.
+        target_p95_ms:
+          type: [number, 'null']
+          format: double
+          description: The p95 response-time ceiling in milliseconds (reports keep seconds; this is the unit operators quote). Null when not tracked.
+        target_error_rate:
+          type: [number, 'null']
+          format: double
+          description: The mean per-run error-rate ceiling, 0..1. Null when not tracked.
+        target_success_ratio:
+          type: [number, 'null']
+          format: double
+          description: The floor for passed runs over total non-aborted runs, 0..1. Null when not tracked.
+        created_time: { type: string, format: date-time }
+    SloMetric:
+      type: object
+      description: >-
+        One target's grade. budget_remaining_pct is (actual - target)/target *
+        100, sign-corrected so positive always means margin left, zero exactly
+        on target, negative burned past it. Null actual and
+        budget_remaining_pct mean the window held no eligible runs -- the line
+        is vacuously compliant (absence of evidence is not a violation).
+      required: [metric, target, compliant]
+      properties:
+        metric:
+          type: string
+          enum: [p95_ms, error_rate, success_ratio]
+        target: { type: number, format: double }
+        actual:
+          type: [number, 'null']
+          format: double
+          description: The window's measured value in the target's own unit; null when the window held no eligible runs.
+        compliant: { type: boolean }
+        budget_remaining_pct:
+          type: [number, 'null']
+          format: double
+    SloBudget:
+      type: object
+      description: One SLO's grade over one window (phase 68), served by GET /api/projects/{project_id}/slos/{slo_id}/budget.
+      required: [slo_id, name, window, window_start, window_end, run_count, compliant, metrics]
+      properties:
+        slo_id: { type: integer, format: int64 }
+        name: { type: string }
+        window:
+          type: string
+          enum: [1d, 7d, 30d]
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        run_count:
+          type: integer
+          description: How many eligible reports the window held (aborted runs excluded). A compliant verdict with run_count 0 is vacuous, not measured.
+        compliant:
+          type: boolean
+          description: Every tracked metric within target; true vacuously when the window held no eligible runs.
+        metrics:
+          type: array
+          description: One line per configured target, in the schema columns' own order (p95_ms, error_rate, success_ratio).
+          items: { $ref: '#/components/schemas/SloMetric' }
     RunCompletedEvent:
       type: object
       description: >-
@@ -1405,6 +1486,108 @@ paths:
                 type: object
                 properties:
                   message: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/projects/{project_id}/slos:
+    post:
+      tags: [slos]
+      summary: Define a service-level objective for a project
+      description: |
+        At least one target must be set (400 with the stated reason when
+        none is), and the name must be unique within the project (409 --
+        the fix is a different name, not a retry). Targets are optional
+        individually: an SLO may track any subset of the three.
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 128 }
+                target_p95_ms:
+                  type: number
+                  description: The p95 response-time ceiling in milliseconds. Reports keep seconds; this is the unit operators quote.
+                target_error_rate:
+                  type: number
+                  description: The mean per-run error-rate ceiling, 0..1.
+                target_success_ratio:
+                  type: number
+                  description: The floor for passed runs over total non-aborted runs, 0..1.
+      responses:
+        '201':
+          description: Defined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Slo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [slos]
+      summary: List a project's SLOs
+      description: Definition order, oldest first.
+      parameters: [{ $ref: '#/components/parameters/ProjectID' }]
+      responses:
+        '200':
+          description: The project's SLOs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Slo' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/projects/{project_id}/slos/{slo_id}:
+    delete:
+      tags: [slos]
+      summary: Delete one of a project's SLOs
+      description: Scoped by project; an SLO id under a foreign project is a 404.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectID' }
+        - { $ref: '#/components/parameters/SloID' }
+      responses:
+        '204': { $ref: '#/components/responses/NoContent' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/projects/{project_id}/slos/{slo_id}/budget:
+    get:
+      tags: [slos]
+      summary: Grade one SLO over a time window
+      description: |
+        Computes the SLO's budget from the run reports started in the
+        window: p95 and error rate as means of the runs' own figures (a
+        report's p95 is already merged across pods), success ratio as
+        passed runs over non-aborted runs. Aborted runs are excluded from
+        every metric -- an operator's stop button is not the target's
+        behaviour. A window with no eligible runs is vacuously compliant
+        with no numbers (run_count 0, actual and budget_remaining_pct
+        null): absence of evidence is not a violation.
+
+        budget_remaining_pct is (actual - target)/target * 100, sign-
+        corrected so positive always means margin left, zero exactly on
+        target, negative burned past it. Compliance is inclusive at the
+        boundary.
+      parameters:
+        - { $ref: '#/components/parameters/ProjectID' }
+        - { $ref: '#/components/parameters/SloID' }
+        - name: window
+          in: query
+          required: false
+          schema: { type: string, enum: [1d, 7d, 30d], default: 7d }
+      responses:
+        '200':
+          description: The computed budget
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SloBudget' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }

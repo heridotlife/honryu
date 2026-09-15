@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import Card from './ui/Card';
 import OutcomeBadge from './ui/OutcomeBadge';
+import SloPanel from './SloPanel';
 import Sparkline from './Sparkline';
 import { getProjectsByProjectIdSummary, type ProjectSummary } from '../api/generated';
 import { formatRowTime } from '../lib/executionRow';
@@ -109,10 +110,14 @@ export default function ProjectDashboard({ projectId }: ProjectDashboardProps) {
   if (summary.total_executions === 0) {
     return (
       <Card data-testid="project-dashboard-empty">
-        <div className="p-6">
+        <div className="space-y-4 p-6">
           <p className="text-body-sm text-slate-500 dark:text-slate-400">
             No executions yet. Create one to start this project&rsquo;s dashboard.
           </p>
+          {/* SLO management stays available with no runs: objectives are
+              defined before the first run grades them, and the budget read
+              answers the honest no-data shape. */}
+          <SloPanel projectId={projectId} />
         </div>
       </Card>
     );
@@ -145,8 +150,7 @@ export default function ProjectDashboard({ projectId }: ProjectDashboardProps) {
 
       <Card data-testid="project-sparkline-card">
         <div className="flex flex-wrap items-center justify-between gap-2 p-4 pb-0">
-          <h3 className="text-body-sm font-semibold text-slate-900 dark:text-white">Recent run throughput</h3>
-          {summary.last_run !== null && (
+          <h3 className="text-body-sm font-semibold text-slate-900 dark:text-white">Recent run throughput</h3>          {summary.last_run !== null && (
             <span className="flex items-center gap-2" data-testid="project-last-run">
               <span className="text-caption text-slate-500 dark:text-slate-400">Last run:</span>
               <OutcomeBadge outcome={(summary.last_run.outcome ?? 'aborted') as Outcome} />
@@ -174,6 +178,11 @@ export default function ProjectDashboard({ projectId }: ProjectDashboardProps) {
           )}
         </div>
       </Card>
+
+      {/* The SLO section (phase 68): objectives + their budget grades, with
+          the window selector. Below the sparkline, above the webhook and
+          digest admin cards the page mounts outside this component. */}
+      <SloPanel projectId={projectId} />
     </div>
   );
 }

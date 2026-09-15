@@ -128,6 +128,15 @@ var authzAuditTable = []authzEntry{
 	{method: "DELETE", pattern: "/api/projects/{project_id}/digest", decision: "project:update"},
 	{method: "GET", pattern: "/api/projects/{project_id}/digests", decision: "project:read"},
 
+	// Phase 68: SLO administration is project-scoped like the webhook
+	// registry above -- read to list or grade a budget, create/delete to
+	// mutate the objectives.
+	{method: "POST", pattern: "/api/projects/{project_id}/slos", decision: "project:create",
+		form: url.Values{"name": {"checkout"}, "target_p95_ms": {"250"}}},
+	{method: "GET", pattern: "/api/projects/{project_id}/slos", decision: "project:read"},
+	{method: "DELETE", pattern: "/api/projects/{project_id}/slos/{slo_id}", decision: "project:delete"},
+	{method: "GET", pattern: "/api/projects/{project_id}/slos/{slo_id}/budget", decision: "project:read"},
+
 	{method: "POST", pattern: "/api/scenarios", decision: "scenario:create",
 		form: url.Values{"name": {"s"}, "project_id": {"{project_id}"}}},
 	{method: "POST", pattern: "/api/scenarios/import", decision: "scenario:create",
@@ -282,6 +291,7 @@ type auditSeed struct {
 	projectID, scenarioID, executionID, scheduleID   int64
 	runID, campaignID, calibrationExecutionID, jobID int64
 	webhookID                                        int64
+	sloID                                            int64
 	// shareToken is a live share link for runID (phase 34): the public
 	// report fetch's probe resolves it.
 	shareToken string
@@ -307,6 +317,12 @@ func seedAuditFixture(t *testing.T, f *rbacFixture) auditSeed {
 	s.webhookID = decodeID(t, f.req(t, http.MethodPost,
 		"/api/projects/"+strconv.FormatInt(s.projectID, 10)+"/webhooks", "admin-tok",
 		url.Values{"url": {"https://example.com/hook"}}))
+
+	// A defined SLO under the seeded project (phase 68): the SLO-keyed
+	// probes' path id.
+	s.sloID = decodeID(t, f.req(t, http.MethodPost,
+		"/api/projects/"+strconv.FormatInt(s.projectID, 10)+"/slos", "admin-tok",
+		url.Values{"name": {"checkout"}, "target_p95_ms": {"250"}}))
 
 	// The load profile a schedule create reads to reserve quota.
 	configYAML := "multi-test:\n  collectionid: " + strconv.FormatInt(s.executionID, 10) +
@@ -390,6 +406,7 @@ func (s auditSeed) replace(v string) string {
 		"{campaign_id}", strconv.FormatInt(s.campaignID, 10),
 		"{job_id}", strconv.FormatInt(s.jobID, 10),
 		"{webhook_id}", strconv.FormatInt(s.webhookID, 10),
+		"{slo_id}", strconv.FormatInt(s.sloID, 10),
 		"{shard}", "0",
 		"{name}", "home",
 		"{kind}", "scenario",
