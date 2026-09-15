@@ -60,3 +60,33 @@ it already warned about on develop.
 Gate: go build/vet clean; go test -race ./... ok; config+httpapi ok with
 WIP applied; web tsc strict + 440 vitest green; helm lint ok; env renders
 only when templates set. No push, no PR, no merge.
+
+## 2026-09-15 — phase 71 complete (3 tasks)
+
+- Task 1 `2d95f88`: report.digest payload gains calibrations[] (always an
+  array), newest first, scenario name joined. New port method
+  CalibrationJobRepository.ListCalibrationJobsByProject (mysql: JOIN
+  execution for project scope, LEFT JOIN scenario for the name; fake: same
+  join derived from the store maps). Done jobs carry per_pod_qps +
+  saturated_by; failed ones failure_reason; a failed calibration surfaces
+  even with zero runs. Calibration contract suite widened
+  (repositorytest.CalibrationWorldRepo) with the by-project cases; fake and
+  mysql pass the same suite.
+- Task 2 `7becaf7`: SloPanel -- budget fetch phase machine (skeleton rows
+  while a window refetch is in flight, explicit error row instead of
+  eternal loading, newest-response-wins), same-window re-pick no longer
+  refetches (except as retry after failure), delete confirm names the SLO,
+  target validation mirrors the API (p95 must be > 0 -- refused at the
+  field; error_rate/success_ratio 0 is legal and reaches the wire), helper
+  note under the fields. Rounding to 1 decimal was already there; now
+  pinned by test. vitest 623 -> 628.
+- Task 3 `bdc5f28`: digest golden-shape test -- exact top-level key set +
+  per-field assertions in every section (incl. null-vs-absent laws on
+  calibrations lines).
+
+Zero-semantics finding: slo.SLO.Validate rejects target_p95_ms<=0 but
+accepts 0 for error_rate and success_ratio (0..1 range) -- the UI's
+"0 = unset" fear was unfounded (it dispatched on string emptiness); the
+real fix was refusing p95=0 client-side while letting rate 0 through.
+Ops: golangci-lint binary not installed locally; hard rules followed
+manually, CI runs the pinned v2.12.2. No push, no PR, no merge.
