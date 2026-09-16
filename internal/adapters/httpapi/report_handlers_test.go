@@ -15,9 +15,12 @@ import (
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
+	"github.com/heridotlife/honryu/internal/app/thresholdapp"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/domain/report"
+	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
+	"github.com/heridotlife/honryu/internal/domain/threshold"
 	"github.com/heridotlife/honryu/internal/ports/fake"
 )
 
@@ -1149,5 +1152,109 @@ func TestRunCompare_CarriesCriteriaVerdictPerRun(t *testing.T) {
 		if len(g.FailingCriteria) != 2 {
 			t.Errorf("compare[%d].failing_criteria = %+v, want the tripped p95 and the unparsed window clause", i, g.FailingCriteria)
 		}
+	}
+}
+
+// Phase 73 pin: the run-detail result tabs read three layers off ONE
+// response -- the engine's failing_criteria (Checks tab), the scenario's
+// threshold_results (Thresholds tab), and the latency percentiles map
+// (Percentiles tab). This holds GET /api/runs/{run_id}/report to carrying
+// all three at once, so a tab can only go blank because the data is
+// genuinely absent, never because a field quietly left the wire.
+func TestRunReport_CarriesChecksThresholdsAndLatency(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := fake.NewStore()
+	obj := fake.NewObjectStore()
+	reports := fake.NewReportStore()
+	svc := thresholdapp.NewService(store)
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports:       reports,
+		Thresholds:    svc,
+		Store:         obj,
+		Executions:    executionapp.NewService(store, obj, 100),
+		DefaultOwners: []string{"honryu"},
+	})
+
+	sc, err := scenario.New("tabbed", 1)
+	if err != nil {
+		t.Fatalf("scenario.New: %v", err)
+	}
+	scenarioID, err := store.CreateScenario(ctx, sc)
+	if err != nil {
+		t.Fatalf("CreateScenario: %v", err)
+	}
+	if err := store.SetExecutionCriteria(ctx, 1, []string{"failures>50%", "p95>500ms"}); err != nil {
+		t.Fatalf("SetExecutionCriteria: %v", err)
+	}
+	// 30% failures keep "failures>50%" green; p95 lands at 700ms, tripping
+	// "p95>500ms" -- and grading missed against the scenario's 300ms bound.
+	rep := report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: scenarioID, RunID: 42,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomeFailed,
+		Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 10, Failed: 3, Succeeded: 7,
+			Latency: metrics.Histogram{0.01: 7, 0.7: 3},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if _, err := svc.Replace(ctx, scenarioID, []threshold.Threshold{
+		{ScenarioID: scenarioID, Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 300},
+	}); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if err := svc.EvaluateRun(ctx, rep); err != nil {
+		t.Fatalf("EvaluateRun: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Latency         map[string]float64 `json:"latency"`
+		FailingCriteria []struct {
+			Criterion string `json:"criterion"`
+			Unparsed  bool   `json:"unparsed"`
+		} `json:"failing_criteria"`
+		ThresholdResults []thresholdResultRow `json:"threshold_results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The checks layer: exactly the tripped criterion, parsed -- the
+	// passing one is absent, never listed as failing.
+	if len(got.FailingCriteria) != 1 || got.FailingCriteria[0].Criterion != "p95>500ms" || got.FailingCriteria[0].Unparsed {
+		t.Errorf("failing_criteria = %+v, want exactly the tripped p95, parsed", got.FailingCriteria)
+	}
+	// The thresholds layer: one row, missed, observed 700ms (the wire's
+	// seconds crossed to milliseconds exactly once).
+	if len(got.ThresholdResults) != 1 {
+		t.Fatalf("threshold_results = %+v, want one row", got.ThresholdResults)
+	}
+	p95 := got.ThresholdResults[0]
+	if p95.Metric != "http_p95_ms" || p95.Satisfied == nil || *p95.Satisfied {
+		t.Errorf("p95 threshold row = %+v, want http_p95_ms missed", p95)
+	}
+	if p95.ObservedValue == nil || *p95.ObservedValue != 700 {
+		t.Errorf("p95 observed = %v, want 700ms", p95.ObservedValue)
+	}
+	// The latency layer: the percentiles map the Percentiles tab renders,
+	// p50 at the 10ms floor and p95 at the 700ms tail.
+	if len(got.Latency) == 0 {
+		t.Fatal("latency is empty: the Percentiles tab would render nothing for a measured run")
+	}
+	if got.Latency["50"] != 0.01 {
+		t.Errorf("latency[p50] = %v, want 0.01", got.Latency["50"])
+	}
+	if got.Latency["95"] != 0.7 {
+		t.Errorf("latency[p95] = %v, want 0.7", got.Latency["95"])
 	}
 }

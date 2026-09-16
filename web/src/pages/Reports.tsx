@@ -13,6 +13,7 @@ import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
 import ThresholdResultsCard from '../components/ThresholdResultsCard';
+import Sparkline from '../components/Sparkline';
 import ShareRunModal from '../components/ShareRunModal';
 import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
@@ -1080,25 +1081,206 @@ function CompareCard({ current, siblings }: { current: Report; siblings: Report[
   );
 }
 
-/** The run workspace's tabs, in strip order; each id names its panel and its ?tab= URL value. */
-const RUN_TABS = [
+/**
+ * The Percentiles tab (phase 73): the run's latency distribution, one row
+ * per percentile the report carries (50/90/95/99 today), valued in
+ * milliseconds -- the unit every other latency figure on this page reads
+ * in -- with the wire's seconds figure kept alongside. The sparkline is
+ * the distribution's shape across percentiles (a knee toward the tail is
+ * outliers), not a time series; the house no-charting-library rule applies,
+ * so it is the plain-SVG Sparkline. No data renders the honest empty state.
+ */
+function PercentilesPanel({ report }: { report: Report }) {
+  const entries = sortedPercentiles(report.latency);
+  return (
+    <Card data-testid="percentiles-card">
+      <CardHeader>
+        <CardTitle>Latency percentiles</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {entries.length === 0 ? (
+          <p className="text-body-sm" data-testid="percentiles-empty">
+            No latency data.
+          </p>
+        ) : (
+          <>
+            <table className="w-full text-left text-body-sm" data-testid="percentiles-table">
+              <thead>
+                <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                  <th scope="col" className="py-2 font-medium">Percentile</th>
+                  <th scope="col" className="py-2 font-medium">Response time</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {entries.map(([p, seconds]) => (
+                  <tr key={p} data-testid={`percentile-row-${p}`}>
+                    <td className="py-2 font-medium text-slate-900 dark:text-white">p{p}</td>
+                    <td className="py-2 text-slate-700 dark:text-slate-300" data-testid={`percentile-value-${p}`}>
+                      {(seconds * 1000).toFixed(1)} ms
+                      <span className="text-caption text-slate-500 dark:text-slate-400"> · {seconds.toFixed(3)}s</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="flex items-center gap-3" data-testid="percentiles-dist">
+              <span className="text-caption text-slate-500 dark:text-slate-400">
+                Distribution, p{entries[0][0]} → p{entries[entries.length - 1][0]}
+              </span>
+              <Sparkline
+                values={entries.map(([, s]) => s * 1000)}
+                ariaLabel="Latency distribution across percentiles, in milliseconds"
+                className="text-sky-500"
+              />
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The Checks tab (phase 73): the run's engine pass/fail criteria (Phase
+ * 29's verdict layer, read k6-checks style) -- a pass/fail count line
+ * first, then one row per criterion that tripped or could not be
+ * evaluated. Every configured check holding reads "All checks passed";
+ * a run configured with none says so rather than claiming a pass it
+ * never earned.
+ */
+function ChecksPanel({ report }: { report: Report }) {
+  const criteria = report.criteria ?? [];
+  const failing = report.failing_criteria ?? [];
+  // Unparsed is its own verdict (unknown, not failed): the counts must not
+  // convict a criterion the engine could never evaluate.
+  const failed = failing.filter((f) => !f.unparsed).length;
+  const unparsed = failing.length - failed;
+  const passed = Math.max(0, criteria.length - failing.length);
+  return (
+    <Card data-testid="checks-card">
+      <CardHeader>
+        <CardTitle>Checks</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {criteria.length === 0 ? (
+          <p className="text-body-sm text-slate-500 dark:text-slate-400" data-testid="checks-none">
+            No checks configured for this run. Add pass/fail criteria in the execution&apos;s Configuration card.
+          </p>
+        ) : (
+          <>
+            <p className="text-body-sm text-slate-900 dark:text-white" data-testid="checks-summary">
+              {criteria.length} {criteria.length === 1 ? 'check' : 'checks'} · {passed} passed · {failed} failed
+              {unparsed > 0 && <span className="text-caption text-slate-500 dark:text-slate-400"> · {unparsed} could not be evaluated</span>}
+            </p>
+            {failing.length === 0 ? (
+              <p className="text-body-sm text-slate-900 dark:text-white" data-testid="checks-all-passed">
+                <span role="img" aria-label="all checks passed">✅</span> All checks passed
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {failing.map((f, i) => (
+                  <li key={i} className="flex items-center gap-2" data-testid={`check-row-${i}`}>
+                    {f.unparsed ? (
+                      <span role="img" aria-label="could not be evaluated" data-testid={`check-unparsed-${i}`}>
+                        ❓
+                      </span>
+                    ) : (
+                      <span role="img" aria-label="failed" data-testid={`check-fail-${i}`}>
+                        ❌
+                      </span>
+                    )}
+                    <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-body-sm text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                      {f.criterion}
+                    </code>
+                    {f.unparsed && (
+                      <span className="text-caption text-slate-500 dark:text-slate-400">could not be evaluated</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The Raw tab (phase 73): the report exactly as the wire carried it, for
+ * debugging -- collapsed by default (the JSON dwarfs every other panel),
+ * one click from the full document.
+ */
+function RawPanel({ report }: { report: Report }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Card data-testid="raw-card">
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardTitle>Raw report</CardTitle>
+        <Button variant="outline" size="sm" data-testid="raw-toggle" aria-expanded={open} aria-controls="raw-report" onClick={() => setOpen((o) => !o)}>
+          {open ? 'Hide JSON' : 'Show JSON'}
+        </Button>
+      </CardHeader>
+      {open && (
+        <CardContent>
+          <pre
+            id="raw-report"
+            data-testid="raw-report"
+            className="max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs leading-5 text-slate-200"
+          >
+            {JSON.stringify(report, null, 2)}
+          </pre>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+/** The run workspace's tabs, in strip order; each id names its panel and its ?tab= URL value.
+ * Phase 73 grows the result tabs: Percentiles (latency distribution), Checks (the
+ * engine's pass/fail criteria), Thresholds (the phase-72 scenario bounds), and Raw
+ * (the report JSON) sit beside the phase-28 panels they did not replace. */
+export const RUN_TABS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'percentiles', label: 'Percentiles' },
+  { id: 'checks', label: 'Checks' },
+  { id: 'thresholds', label: 'Thresholds' },
   { id: 'timeseries', label: 'Time series' },
   { id: 'labels', label: 'Labels' },
   { id: 'errors', label: 'Errors' },
   { id: 'config', label: 'Config' },
   { id: 'objects', label: 'Objects' },
+  { id: 'raw', label: 'Raw' },
 ];
+
+/** sessionStorage key for the last viewed run tab (phase 73): coming back to a
+ * run lands where the operator last looked. Session-scoped on purpose -- a
+ * fresh session starts at Overview, the run's own front page. */
+export const RUN_TABS_STORAGE_KEY = 'honryu.runTab';
+
+/** The session's last viewed run tab, when sessionStorage holds one that still
+ * names a real tab (a renamed id must not strand the page on a dead tab).
+ * Storage can throw (privacy modes): reading it must never take the page down. */
+function storedTabId(): string | null {
+  try {
+    const stored = window.sessionStorage.getItem(RUN_TABS_STORAGE_KEY);
+    return stored !== null && RUN_TABS.some((t) => t.id === stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * /reports/:runId as a dense tabbed workspace (phase 28): one header band
  * -- identity, verdict, the get-data-out group, and jumps to this
- * execution's neighbouring runs -- then six panels behind a tab strip.
+ * execution's neighbouring runs -- then the panels behind a tab strip.
  * Every panel renders on first paint, inactive ones behind the hidden
  * attribute, so charts, labels, and shard objects are addressable without
  * clicking first (the mounted suite queries hidden subtrees; deep links
  * land on the URL's tab) and switching costs no refetch. The active tab
- * mirrors into ?tab= so a copied link reopens the exact view.
+ * mirrors into ?tab= so a copied link reopens the exact view, and (phase
+ * 73) into sessionStorage so returning without a ?tab= reopens the last
+ * viewed tab -- the URL keeps priority; storage is only the fallback.
  */
 /**
  * The run workspace (phase 28's tabbed layout): the header band and every
@@ -1148,8 +1330,20 @@ export function ReportWorkspace({
   }, []);
 
   const urlTab = searchParams.get('tab');
-  const tab = urlTab !== null && RUN_TABS.some((t) => t.id === urlTab) ? urlTab : 'overview';
+  // Resolution order (phase 73): an explicit ?tab= wins -- a copied link must
+  // reopen the exact view it names -- then the session's last viewed tab, then
+  // Overview. Clicking always writes both stores: the URL for deep links, the
+  // session for the no-param return visit.
+  const tab =
+    urlTab !== null && RUN_TABS.some((t) => t.id === urlTab)
+      ? urlTab
+      : (storedTabId() ?? 'overview');
   const setTab = (id: string) => {
+    try {
+      window.sessionStorage.setItem(RUN_TABS_STORAGE_KEY, id);
+    } catch {
+      // Storage unavailable (privacy mode): the URL still carries the tab.
+    }
     // View state, not navigation: replace keeps tab clicks out of history.
     setSearchParams({ tab: id }, { replace: true });
   };
@@ -1307,11 +1501,12 @@ export function ReportWorkspace({
                 </CardContent>
               </Card>
 
-              {/* Phase 72: the scenario-threshold layer -- this run graded
-                  against its scenario's k6-style bounds. Hidden entirely
-                  when the scenario defines none; rows are icon + text,
-                  never colour alone. */}
-              <ThresholdResultsCard results={report.threshold_results ?? []} />
+              {/* Phase 72's scenario-threshold layer moved to its own
+                  Thresholds tab (phase 73): grading detail is a
+                  destination, not a glance. The card's own states -- met /
+                  missed / unknown rows, hidden entirely when the scenario
+                  defines none -- are unchanged; the tab adds an explicit
+                  none-state so an empty grading is still a message. */}
 
               {/* Phase 33: the run against a picked baseline from this
                   execution, straight under the verdict — regression context
@@ -1326,26 +1521,6 @@ export function ReportWorkspace({
                 <CardContent className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                   <LoadStat label="Requested" load={report.requested} />
                   <LoadStat label="Achieved" load={report.achieved} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Latency percentiles</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {Object.keys(report.latency).length === 0 ? (
-                    <p className="text-body-sm">No latency data.</p>
-                  ) : (
-                    <div className="flex flex-wrap gap-4">
-                      {sortedPercentiles(report.latency).map(([p, seconds]) => (
-                        <div key={p} className="rounded-lg bg-slate-100 px-3 py-2 dark:bg-slate-700/50">
-                          <p className="text-caption text-slate-500 dark:text-slate-400">p{p}</p>
-                          <p className="text-body-sm font-semibold text-slate-900 dark:text-white">{seconds.toFixed(3)}s</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </CardContent>
               </Card>
 
@@ -1458,6 +1633,38 @@ export function ReportWorkspace({
               )}
             </TabPanel>
 
+            {/* Percentiles (phase 73): the latency distribution, one row
+                per percentile with its figure, plus the distribution's
+                shape across percentiles. */}
+            <TabPanel id="percentiles" active={tab}>
+              <PercentilesPanel report={report} />
+            </TabPanel>
+
+            {/* Checks (phase 73): the engine's pass/fail criteria, k6-style
+                -- a count line, then the criteria that tripped (or could
+                not be evaluated). */}
+            <TabPanel id="checks" active={tab}>
+              <ChecksPanel report={report} />
+            </TabPanel>
+
+            {/* Thresholds (phase 73): the phase-72 scenario-threshold
+                grading on its own tab. The card's states are unchanged
+                (met/missed/unknown rows; hidden when the scenario defines
+                none) -- the tab adds the explicit none message so an empty
+                grading is still a message, not a blank panel. */}
+            <TabPanel id="thresholds" active={tab} className="space-y-6">
+              <ThresholdResultsCard results={report.threshold_results ?? []} />
+              {(report.threshold_results ?? []).length === 0 && (
+                <Card>
+                  <CardContent>
+                    <p className="text-body-sm text-slate-500 dark:text-slate-400" data-testid="thresholds-none">
+                      This scenario defines no thresholds. Add k6-style bounds in the scenario&apos;s threshold editor.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </TabPanel>
+
             {/* Time series: the per-second shape, re-used exactly -- the
                 section owns its loading/error/empty states and its own
                 requested-vs-achieved overlay hide rule. */}
@@ -1531,6 +1738,12 @@ export function ReportWorkspace({
 
             <TabPanel id="objects" active={tab}>
               <ShardObjects report={report} />
+            </TabPanel>
+
+            {/* Raw (phase 73): the report as the wire carried it, collapsed
+                by default -- the debug view, last in the strip. */}
+            <TabPanel id="raw" active={tab}>
+              <RawPanel report={report} />
             </TabPanel>
           </div>
     </>
