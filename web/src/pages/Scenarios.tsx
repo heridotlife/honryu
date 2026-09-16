@@ -8,7 +8,9 @@
 // batched read server-side, never a per-row probe fan-out.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import Card, { CardContent } from '../components/ui/Card';
+import { FlaskConical } from 'lucide-react';
+import Card from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import RunStatusBadge from '../components/RunStatusBadge';
 import { formatRowTime } from '../lib/executionRow';
 import { getScenarios, type Scenario, type ScenarioLastRun } from '../api/generated';
@@ -144,13 +146,22 @@ export default function Scenarios() {
         <ScenariosSkeleton />
       ) : scenarios.length === 0 ? (
         <Card>
-          <CardContent>
-            <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="scenarios-empty">
-              {selectedId === ''
-                ? 'No scenarios yet. Create one from New test, or instantiate a template.'
-                : 'No scenarios in this project yet.'}
-            </p>
-          </CardContent>
+          {/* Phase 76: the shared empty state. The one primary action routes
+              to the template picker (NewTest) -- the create flow this SPA
+              actually has. The action's href deliberately avoids
+              ^/scenarios/ so the e2e harness's row selector can never
+              mistake it for a scenario row (pinned in Scenarios.test). */}
+          <EmptyState
+            testId="scenarios-empty"
+            icon={<FlaskConical className="size-6" />}
+            title="No scenarios yet"
+            description={
+              selectedId === ''
+                ? 'Create one from a template — the catalog ships HTTPbin baselines to start from.'
+                : 'No scenarios in this project yet. Create one from a template.'
+            }
+            action={{ label: 'Create from template', to: '/executions/new' }}
+          />
         </Card>
       ) : (
         <Card padding="none">

@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { CalendarClock } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listTenantReservations } from '../api/reservations';
@@ -156,10 +158,16 @@ export default function Reservations() {
 
       {reservations && (
         <Card padding="none">
+          {/* Phase 76: message-only by design -- reservations are created
+              by the scheduler when runs reserve engines; the SPA offers no
+              create flow, so a button here would be dead. */}
           {reservations.length === 0 ? (
-            <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">
-              No reservations for this tenant in the selected window.
-            </p>
+            <EmptyState
+              testId="reservations-empty"
+              icon={<CalendarClock className="size-6" />}
+              title="No reservations for this tenant"
+              description="Nothing is scheduled in the selected window — reservations appear when runs reserve engines."
+            />
           ) : (
             <ul className="divide-y divide-slate-200 dark:divide-slate-700">
               {groups.map(([day, items]) => (

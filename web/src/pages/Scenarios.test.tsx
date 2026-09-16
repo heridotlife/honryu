@@ -192,8 +192,40 @@ describe('Scenarios page (phase 67b)', () => {
     stubFetch([]);
     await renderScenarios();
 
-    expect(container!.querySelector('[data-testid="scenarios-empty"]')?.textContent).toContain('No scenarios yet');
+    // Phase 76: the shared EmptyState -- title + description + the ONE
+    // action (the template picker, i.e. NewTest).
+    const empty = container!.querySelector('[data-testid="scenarios-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="scenarios-empty-title"]')?.textContent).toContain('No scenarios yet');
+    const action = empty.querySelector<HTMLAnchorElement>('[data-testid="scenarios-empty-action"]')!;
+    expect(action?.getAttribute('href')).toBe('/executions/new');
+    expect(action?.textContent).toBe('Create from template');
     expect(container!.querySelector('[data-testid="scenarios-table"]')).toBeNull();
+  });
+
+  it('keeps the project-scoped empty wording distinct from the all-projects one', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, '2');
+    stubFetch([]);
+    await renderScenarios();
+
+    const empty = container!.querySelector('[data-testid="scenarios-empty"]')!;
+    expect(empty.querySelector('[data-testid="scenarios-empty-description"]')?.textContent).toContain(
+      'No scenarios in this project yet',
+    );
+  });
+
+  // e2e selector safety (boot.e2e.mjs scenario E): the harness counts
+  // `main a[href^="/"]`-style scenario rows with the selector
+  //   'main a[href^="/scenarios/"]:not([href="/scenarios/new"])'
+  // and treats zero rows as a vacuous pass. The empty state's ONE action
+  // must therefore never carry a ^/scenarios/ href, or the harness would
+  // click it as a row instead of recording the honest skip.
+  it('renders no ^/scenarios/ anchor while empty (e2e row-selector safety)', async () => {
+    stubFetch([]);
+    await renderScenarios();
+
+    expect(container!.querySelector('[data-testid="scenarios-empty"]')).not.toBeNull();
+    expect(container!.querySelectorAll('a[href^="/scenarios/"]').length).toBe(0);
   });
 
   it('shows a loading skeleton while the fetch is in flight', async () => {

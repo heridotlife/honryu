@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ExternalLink, Download, Check, ChevronDown, Share2 } from 'lucide-react';
+import { ExternalLink, Download, Check, ChevronDown, Share2, FileText } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import ClusterBadge from '../components/ui/ClusterBadge';
 import CopyButton from '../components/ui/CopyButton';
 import CopyLink from '../components/CopyLink';
@@ -241,51 +242,65 @@ function ReportsList() {
       )}
 
       <Card>
-        <ul className="divide-y divide-slate-200 dark:divide-slate-700" data-testid="execution-list">
-          {executions === null ? (
-            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">Loading executions…</li>
-          ) : executions.length === 0 ? (
-            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
-              No executions visible to you yet.
-            </li>
-          ) : filtered.length === 0 ? (
-            <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
-              No executions match the current filters.
-            </li>
-          ) : (
-            filtered.map((e) => {
-              const active = loadedExecutionId === e.id;
-              return (
-                <li key={e.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExecutionId(String(e.id));
-                      void load(String(e.id));
-                    }}
-                    className={`flex w-full items-center justify-between rounded py-3 px-2 text-left text-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 ${
-                      active ? 'bg-slate-50 dark:bg-slate-800/50' : ''
-                    }`}
-                    data-testid={`execution-${e.id}`}
-                  >
-                    <span className="font-medium text-slate-900 dark:text-slate-100">
-                      #{e.id} {executionDisplayName(e.name)}
-                    </span>
-                    <span className="text-slate-500 dark:text-slate-400">
-                      {e.engine ?? 'default'}
-                      {' · '}
-                      {/* One short timestamp, no raw ISO (phase 49): the
-                          calibrate flow bakes one into the name, which the
-                          display name above strips. */}
-                      {formatRowTime(e.created_time)}
-                      {active ? ' · loaded' : ''}
-                    </span>
-                  </button>
-                </li>
-              );
-            })
-          )}
-        </ul>
+        {/* Phase 76: loading (skeleton rows, Scenarios' geometry), empty
+            (the shared EmptyState with the one action -- /scenarios, where
+            a scenario gets run), then the rows. The three states must
+            never blur: a skeleton is not an empty state. */}
+        {executions === null ? (
+          <div className="space-y-2" data-testid="executions-loading">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700/50" />
+            ))}
+          </div>
+        ) : executions.length === 0 ? (
+          <EmptyState
+            testId="reports-empty"
+            icon={<FileText className="size-6" />}
+            title="No reports yet"
+            description="Reports appear once a scenario runs and its runs finalise."
+            action={{ label: 'Run a scenario first', to: '/scenarios' }}
+          />
+        ) : (
+          <ul className="divide-y divide-slate-200 dark:divide-slate-700" data-testid="execution-list">
+            {filtered.length === 0 ? (
+              <li className="py-3 text-body-sm text-slate-500 dark:text-slate-400">
+                No executions match the current filters.
+              </li>
+            ) : (
+              filtered.map((e) => {
+                const active = loadedExecutionId === e.id;
+                return (
+                  <li key={e.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExecutionId(String(e.id));
+                        void load(String(e.id));
+                      }}
+                      className={`flex w-full items-center justify-between rounded py-3 px-2 text-left text-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 ${
+                        active ? 'bg-slate-50 dark:bg-slate-800/50' : ''
+                      }`}
+                      data-testid={`execution-${e.id}`}
+                    >
+                      <span className="font-medium text-slate-900 dark:text-slate-100">
+                        #{e.id} {executionDisplayName(e.name)}
+                      </span>
+                      <span className="text-slate-500 dark:text-slate-400">
+                        {e.engine ?? 'default'}
+                        {' · '}
+                        {/* One short timestamp, no raw ISO (phase 49): the
+                            calibrate flow bakes one into the name, which the
+                            display name above strips. */}
+                        {formatRowTime(e.created_time)}
+                        {active ? ' · loaded' : ''}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        )}
         <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
           {showManual ? (
             <form

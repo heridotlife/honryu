@@ -322,8 +322,48 @@ describe('RunCompare (mounted)', () => {
   it('shows the no-runs state when the execution has no reports', async () => {
     await renderCompare({ reports: [] });
 
-    expect(container!.querySelector('[data-testid="compare-no-runs"]')).not.toBeNull();
+    // Phase 76: the shared EmptyState -- first-run guidance, the one
+    // action routed to /scenarios (never into this same runless
+    // execution), and no pickers at all.
+    const empty = container!.querySelector('[data-testid="compare-no-runs"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="compare-no-runs-title"]')?.textContent).toBe('No runs yet');
+    const action = empty.querySelector<HTMLAnchorElement>('[data-testid="compare-no-runs-action"]')!;
+    expect(action.getAttribute('href')).toBe('/scenarios');
+    expect(action.textContent).toBe('Run a scenario first');
     expect(container!.querySelector('[data-testid="select-run-a"]')).toBeNull();
+  });
+
+  // e2e selector safety, route shape: the empty state itself must not
+  // introduce any /executions/ link -- with no runs, such a link would be
+  // a dead loop (this very execution has nothing to show). The one action
+  // points back at /scenarios instead. (The page's breadcrumb trail back
+  // to the execution hub is navigation, not empty-state guidance, and
+  // stays.)
+  it('renders no ^/executions/ anchor inside the no-runs empty state (dead-loop safety)', async () => {
+    await renderCompare({ reports: [] });
+
+    const empty = container!.querySelector('[data-testid="compare-no-runs"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelectorAll('a[href^="/executions/"]').length).toBe(0);
+  });
+
+  it('fills the results area with a pick hint while the selection is incomplete', async () => {
+    await renderCompare(); // A=8, B=9 preselected -- table up, no hint.
+    expect(container!.querySelector('[data-testid="compare-pick-hint"]')).toBeNull();
+
+    // Collapse to the same run twice: the pick hint appears -- the results
+    // area is never blank -- but carries no action button (the pickers
+    // above ARE the action).
+    await setSelect('select-run-b', '8');
+    const hint = container!.querySelector('[data-testid="compare-pick-hint"]')!;
+    expect(hint).not.toBeNull();
+    expect(hint.querySelector('[data-testid="compare-pick-hint-title"]')?.textContent).toBe('Pick runs to compare');
+    expect(hint.querySelector('button, a')).toBeNull();
+
+    // A real pair restores the table and retires the hint.
+    await setSelect('select-run-b', '9');
+    expect(container!.querySelector('[data-testid="compare-pick-hint"]')).toBeNull();
   });
 
   it('surfaces a reports-load failure and an invalid execution id', async () => {

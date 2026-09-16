@@ -18,6 +18,15 @@
  *   F. MOBILE NO OVERFLOW    at a 375px viewport the page must not scroll
  *                            sideways (phase 52's 5px-overflow audit fix).
  *
+ * Phase 76 empty-state audit: the list pages now render shared EmptyState
+ * components when empty. E still works on an empty project because the
+ * wait below matches `main p` (the empty state's title/description) and
+ * its "Create from template" action points at /executions/new -- it can
+ * never satisfy rowSelector's ^/scenarios/ prefix. D is safe because the
+ * scenario Runs tab's "Run this scenario" action is a Button (no href),
+ * so runRow can only ever match real run rows. Both properties are pinned
+ * in vitest (Scenarios.test / Scenario.test, "e2e selector safety").
+ *
  * It is NOT wired into `bun run test` (it needs jsdom-free real browser
  * navigation), but since phase 64 CI runs it on every PR: the e2e lane in
  * .github/workflows/ci.yml boots the API with demo auth and the in-memory

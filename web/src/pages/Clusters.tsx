@@ -5,7 +5,9 @@
 // surface). No health probing either: this shows stored registration
 // state, not live connectivity.
 import { useEffect, useState } from 'react';
+import { Server } from 'lucide-react';
 import Card, { CardContent } from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import { ApiError } from '../api/client';
 import { listClusters } from '../api/clusters';
 import type { Cluster, ClusterOrigin } from '../api/clusters';
@@ -139,10 +141,23 @@ export default function Clusters() {
             </p>
           )}
 
+          {/* Phase 76: loading is its own state -- skeleton geometry, so
+              it can never blur into the empty state below. */}
+          {clusters === null && !error && (
+            <div className="space-y-2" data-testid="clusters-loading">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700/50" />
+              ))}
+            </div>
+          )}
+
           {clusters && clusters.length === 0 && (
-            <p className="text-body-sm text-slate-500 dark:text-slate-400">
-              No registered clusters — all load runs on the deployment&apos;s default cluster.
-            </p>
+            <EmptyState
+              testId="clusters-empty"
+              icon={<Server className="size-6" />}
+              title="No registered clusters"
+              description="All load runs on the deployment's default cluster. Registering a cluster is an API operation — POST /api/clusters and friends."
+            />
           )}
 
           {clusters && clusters.length > 0 && (

@@ -277,8 +277,71 @@ describe('Scenario detail (phase 67b)', () => {
     });
     await renderScenario();
 
-    expect(container!.querySelector('[data-testid="runs-empty"]')?.textContent).toContain('No runs yet');
+    // Phase 76: the shared EmptyState -- title, guidance, and the ONE
+    // action: the existing per-scenario run flow (the 67a calibration
+    // trigger), as a Button (never a Link into /executions/, which the
+    // e2e harness treats as a run row).
+    const empty = container!.querySelector('[data-testid="runs-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="runs-empty-title"]')?.textContent).toContain('No runs yet');
+    expect(empty.querySelector('a[href^="/executions/"]')).toBeNull();
+    const action = empty.querySelector<HTMLButtonElement>('[data-testid="runs-empty-action"]')!;
+    expect(action?.tagName).toBe('BUTTON');
+    expect(action?.textContent).toBe('Run this scenario');
     expect(container!.querySelector('[data-testid="runs-table"]')).toBeNull();
+
+    // The action triggers the same flow the Calibrate button drives.
+    await act(async () => {
+      action.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const post = calls.find((c) => c.method === 'POST');
+    expect(post?.url).toBe('/api/scenarios/42/calibration/trigger');
+  });
+
+  it('keeps the runs empty state message-only without the scenario:create grant', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url === '/api/me') {
+        return json({
+          subject: 'demo:carol',
+          name: 'Carol',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { scenario: ['list', 'read'] },
+          demo: true,
+        });
+      }
+      if (url.endsWith('/api/scenarios/42/executions')) {
+        return json([]);
+      }
+      return undefined;
+    });
+    await renderScenario();
+
+    expect(container!.querySelector('[data-testid="runs-empty"]')).not.toBeNull();
+    // No grant, no dead button: the action is absent, the message stands.
+    expect(container!.querySelector('[data-testid="runs-empty-action"]')).toBeNull();
+  });
+
+  // e2e selector safety (boot.e2e.mjs scenario D): the harness, having
+  // opened a scenario, waits for 'main a[href^="/executions/"]' to click
+  // the newest RUN row. The runs-empty branch must therefore render no
+  // such anchor at rest -- "Run this scenario" is a Button on purpose --
+  // or the harness would click the empty state's action and time out
+  // waiting for an execution url that never comes.
+  it('renders no ^/executions/ anchor while the runs list is empty (e2e run-row safety)', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/scenarios/42/executions')) {
+        return json([]);
+      }
+      return undefined;
+    });
+    await renderScenario();
+
+    expect(container!.querySelector('[data-testid="runs-empty"]')).not.toBeNull();
+    expect(container!.querySelectorAll('a[href^="/executions/"]').length).toBe(0);
   });
 
   it('surfaces the error when the scenario does not exist', async () => {
