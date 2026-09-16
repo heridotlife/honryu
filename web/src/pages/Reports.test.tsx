@@ -1125,3 +1125,81 @@ describe('ReportDetail result tabs (phase 73)', () => {
     expect(panelVisible('checks')).toBe(false);
   });
 });
+
+// Phase 73 regression pins: the tab refactor moved data between panels;
+// these hold the three load-bearing reads to what they were before the
+// move -- each stated as the observable a reader would lose first.
+describe('run-detail result tab regression pins (phase 73)', () => {
+  afterEach(() => {
+    sessionStorage.removeItem(RUN_TABS_STORAGE_KEY);
+  });
+
+  const gradedReport: Report = {
+    ...reportFixture,
+    latency: { '50': 0.05, '90': 0.1, '95': 0.2, '99': 0.4 },
+    criteria: ['failures>10%', 'p95>500ms'],
+    failing_criteria: [{ criterion: 'p95>500ms' }],
+    threshold_results: [
+      { threshold_id: 1, metric: 'http_p95_ms', comparison: 'lt', value: 300, observed_value: 200, satisfied: true },
+      { threshold_id: 2, metric: 'error_rate', comparison: 'lt', value: 0.05, observed_value: 0.06, satisfied: false },
+    ],
+  };
+
+  const click = async (id: string) => {
+    await act(async () => {
+      container!
+        .querySelector(`#tab-${id}`)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  };
+
+  it('threshold tab still grades the run: met and missed rows in definition order', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], gradedReport);
+
+    await click('thresholds');
+    const panel = container!.querySelector('#panel-thresholds')!;
+    expect(panel.querySelector('[data-testid="scenario-thresholds-card"]')).not.toBeNull();
+    // Row 0: p95 200ms against a 300ms bound -- met, observed rendered.
+    expect(panel.querySelector('[data-testid="scenario-threshold-met-0"]')).not.toBeNull();
+    expect(panel.textContent).toContain('observed 200 ms');
+    // Row 1: error rate 6% against a 5% ceiling -- missed.
+    expect(panel.querySelector('[data-testid="scenario-threshold-missed-1"]')).not.toBeNull();
+    expect(panel.textContent).toContain('observed 6.00%');
+  });
+
+  it('percentiles table matches the report exactly, wire seconds rendered as milliseconds', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], gradedReport);
+
+    await click('percentiles');
+    const value = (p: string) =>
+      container!.querySelector(`#panel-percentiles [data-testid="percentile-value-${p}"]`)?.textContent;
+    expect(value('50')).toBe('50.0 ms · 0.050s');
+    expect(value('90')).toBe('100.0 ms · 0.100s');
+    expect(value('95')).toBe('200.0 ms · 0.200s');
+    expect(value('99')).toBe('400.0 ms · 0.400s');
+  });
+
+  it('checks tab fails exactly the criteria named in failing_criteria and passes the rest', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], gradedReport);
+
+    await click('checks');
+    const panel = container!.querySelector('#panel-checks')!;
+    // The tripped criterion is the one failed row; the passing one never
+    // appears as a failure.
+    expect(panel.querySelector('[data-testid="check-fail-0"]')).not.toBeNull();
+    expect(panel.textContent).toContain('p95>500ms');
+    expect(panel.textContent).not.toContain('failures>10%');
+    expect(panel.querySelector('[data-testid="checks-summary"]')?.textContent).toBe('2 checks · 1 passed · 1 failed');
+
+    // The same report with no failures flips the verdict wholesale.
+    const passing = renderReportDetail(
+      () => json({ points: [] }),
+      [],
+      { ...gradedReport, failing_criteria: [] }
+    );
+    await passing;
+    await click('checks');
+    expect(container!.querySelector('#panel-checks [data-testid="checks-all-passed"]')).not.toBeNull();
+    expect(container!.querySelector('#panel-checks [data-testid="check-fail-0"]')).toBeNull();
+  });
+});
