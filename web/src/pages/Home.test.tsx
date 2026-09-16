@@ -63,7 +63,7 @@ const json = (body: unknown, status = 200) =>
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderHome(storedProject: string | null = null) {
+async function renderHome(storedProject: string | null = null, executions: unknown = executionsFixture) {
   if (storedProject !== null) {
     localStorage.setItem(PROJECT_STORAGE_KEY, storedProject);
   }
@@ -77,7 +77,7 @@ async function renderHome(storedProject: string | null = null) {
         return json(alice);
       }
       if (url === '/api/executions' || url.endsWith('/api/executions')) {
-        return json(executionsFixture);
+        return json(executions);
       }
       if (url.endsWith('/api/projects')) {
         return json(projectsFixture);
@@ -182,6 +182,25 @@ describe('Home (phase 52)', () => {
     expect(container!.querySelector('[data-testid="kpi-total-executions"]')!.textContent).toContain('1');
     const rows = Array.from(container!.querySelectorAll('[data-testid="home-recent"] a[href^="/executions/"]'));
     expect(rows.map((r) => r.getAttribute('href'))).toEqual(['/executions/8']);
+  });
+
+  // Phase 76: with nothing visible, the recent card guides instead of
+  // greeting with blank space -- title + the ONE action (the template
+  // picker), same card header as always.
+  it('renders the first-run empty state with the template-picker action when no executions are visible', async () => {
+    await renderHome(null, []);
+
+    const empty = container!.querySelector('[data-testid="home-recent-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="home-recent-empty-title"]')?.textContent).toBe(
+      'No executions visible to you yet',
+    );
+    const action = empty.querySelector<HTMLAnchorElement>('[data-testid="home-recent-empty-action"]')!;
+    expect(action.getAttribute('href')).toBe('/executions/new');
+    expect(action.textContent).toBe('Create from template');
+    // No rows, and the KPI that counts them reads zero.
+    expect(container!.querySelector('[data-testid="home-recent"] [data-testid^="execution-"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="kpi-total-executions"]')!.textContent).toContain('0');
   });
 
   // Phase 67b: the card's rows still deep-link the run hub, but the

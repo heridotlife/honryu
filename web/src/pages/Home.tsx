@@ -10,7 +10,9 @@
 // here.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Inbox } from 'lucide-react';
 import Card from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
 import Sparkline from '../components/Sparkline';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
@@ -237,8 +239,17 @@ export default function Home() {
             View all →
           </Link>
         </div>
+        {/* Phase 76: first-run guidance with the one action -- the
+            template picker. Inside the recent card so its header (and the
+            view-all link) still frame the state. */}
         {recent.length === 0 ? (
-          <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No executions visible to you yet.</p>
+          <EmptyState
+            testId="home-recent-empty"
+            icon={<Inbox className="size-6" />}
+            title="No executions visible to you yet"
+            description="Create one from a template to get this project's numbers moving."
+            action={{ label: 'Create from template', to: '/executions/new' }}
+          />
         ) : (
           <ul className="divide-y divide-slate-200 dark:divide-slate-700">
             {recent.map((e) => (

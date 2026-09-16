@@ -5,6 +5,7 @@
 // -- never a chart of nothing.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ProjectDashboard from './ProjectDashboard';
 import type { ProjectSummary } from '../api/generated';
@@ -49,7 +50,13 @@ async function renderDashboard(projectId = 1): Promise<void> {
   );
   root = createRoot(container);
   await act(async () => {
-    root!.render(<ProjectDashboard projectId={projectId} />);
+    // MemoryRouter: the empty state's action is a Link into the template
+    // picker, which needs a router ancestor.
+    root!.render(
+      <MemoryRouter>
+        <ProjectDashboard projectId={projectId} />
+      </MemoryRouter>,
+    );
   });
   // Drain the fetch promise chain.
   await act(async () => {});
@@ -121,6 +128,13 @@ describe('ProjectDashboard', () => {
     const empty = container!.querySelector('[data-testid="project-dashboard-empty"]');
     expect(empty).not.toBeNull();
     expect(empty?.textContent).toContain('No executions yet');
+    // Phase 76 alignment: icon + title + the ONE action (the template
+    // picker, the create flow this SPA has), SloPanel still mounted below
+    // -- objectives are defined before the first run grades them.
+    expect(empty!.querySelector('svg')).not.toBeNull();
+    const action = empty!.querySelector<HTMLAnchorElement>('[data-testid="empty-state-action"]')!;
+    expect(action?.getAttribute('href')).toBe('/executions/new');
+    expect(container!.querySelector('[data-testid="slo-panel"]')).not.toBeNull();
     // No KPI grid, no chart of nothing.
     expect(container!.querySelector('[data-testid="project-kpis"]')).toBeNull();
     expect(container!.querySelector('svg[role="img"]')).toBeNull();

@@ -367,7 +367,16 @@ const projectsFixture = [
   { id: 2, name: 'phase16-sched', owner: 'heri', tenant_id: 1, created_time: '2026-08-02T00:00:00Z' },
 ];
 
-async function renderReportsList(permissions: Record<string, string[]> | null, reports: Report[] = listFixture) {
+async function renderReportsList(
+  permissions: Record<string, string[]> | null,
+  reports: Report[] = listFixture,
+  executions: unknown = [
+    { id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
+    { id: 2, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
+    // Phase 49: calibrate-minted names must not leak their raw ISO.
+    { id: 16, name: 'calibrate checkout 2026-09-10T16:47:22.442Z', project_id: 1, engine: 'k6', created_time: '2026-09-10T16:47:22.442Z' },
+  ],
+) {
   container = document.createElement('div');
   document.body.appendChild(container);
   vi.stubGlobal(
@@ -380,12 +389,7 @@ async function renderReportsList(permissions: Record<string, string[]> | null, r
           : json({ message: 'unauthenticated' }, 401);
       }
       if (url === '/api/executions' || url.endsWith('/api/executions')) {
-        return json([
-          { id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' },
-          { id: 2, name: 'beta-exec', project_id: 2, engine: 'jmeter', created_time: '2026-09-02T00:00:00Z' },
-          // Phase 49: calibrate-minted names must not leak their raw ISO.
-          { id: 16, name: 'calibrate checkout 2026-09-10T16:47:22.442Z', project_id: 1, engine: 'k6', created_time: '2026-09-10T16:47:22.442Z' },
-        ]);
+        return json(executions);
       }
       if (url.endsWith('/api/projects')) {
         return json(projectsFixture);
@@ -520,6 +524,67 @@ describe('ReportsList compare link (mounted)', () => {
     await loadExecution();
 
     expect(container!.querySelector('[data-testid="compare-runs-link"]')).toBeNull();
+  });
+});
+
+describe('ReportsList empty + loading states (phase 76)', () => {
+  it('shows the shared empty state with the one action when the caller has no executions', async () => {
+    await renderReportsList(navPersonas.alice, [], []);
+
+    const empty = container!.querySelector('[data-testid="reports-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="reports-empty-title"]')?.textContent).toBe('No reports yet');
+    const action = empty.querySelector<HTMLAnchorElement>('[data-testid="reports-empty-action"]')!;
+    expect(action.getAttribute('href')).toBe('/scenarios');
+    expect(action.textContent).toBe('Run a scenario first');
+    expect(container!.querySelector('[data-testid="execution-list"]')).toBeNull();
+  });
+
+  it('renders a loading skeleton, never the empty state, while the list is in flight', async () => {
+    let release!: (value: Response) => void;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/me')) {
+          return json({ subject: 'demo:x', name: 'x', email: '', global_roles: [], tenants: {}, permissions: navPersonas.alice, demo: true });
+        }
+        if (url === '/api/executions' || url.endsWith('/api/executions')) {
+          return new Promise<Response>((resolve) => {
+            release = resolve;
+          });
+        }
+        if (url.endsWith('/api/projects')) {
+          return json(projectsFixture);
+        }
+        return json({ message: `no stub for ${url}` }, 500);
+      }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/reports']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/reports" element={<Reports />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {});
+
+    // Loading is its own state: skeleton geometry, not the empty copy.
+    expect(container!.querySelector('[data-testid="executions-loading"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="reports-empty"]')).toBeNull();
+
+    await act(async () => {
+      release(json([]));
+    });
+    expect(container!.querySelector('[data-testid="executions-loading"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="reports-empty"]')).not.toBeNull();
   });
 });
 

@@ -211,3 +211,76 @@ describe('Campaigns landmarks (phase 51)', () => {
     expect(region!.getAttribute('aria-label')).toBe('Campaigns panel');
   });
 });
+
+// Phase 76: an empty campaign list renders the shared EmptyState. The
+// create flow EXISTS on this page (the card above the list), so the one
+// action focuses the create form's first field -- a real step, not a dead
+// button. Loading (the submit's "Loading…") never blurs into the empty
+// copy: the empty state mounts only after the response.
+describe('Campaigns empty state (phase 76, mounted)', () => {
+  it('offers the create-form focus action when a tenant has no campaigns', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/me')) {
+          return new Response(
+            JSON.stringify({
+              subject: 'demo:alice',
+              name: 'Alice',
+              email: '',
+              global_roles: [],
+              tenants: {},
+              permissions: { '*': ['*'] },
+              demo: true,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.endsWith('/api/tenants/7/campaigns')) {
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ message: `no stub for ${url}` }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(SessionProvider, null, createElement(Campaigns)));
+    });
+    await act(async () => {}); // flush /api/me
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const tenant = container!.querySelector('input[type="number"]') as HTMLInputElement;
+    await act(async () => {
+      setter.call(tenant, '7');
+      tenant.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      container!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await act(async () => {});
+
+    const empty = container!.querySelector('[data-testid="campaigns-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="campaigns-empty-title"]')?.textContent).toBe(
+      'No campaigns for this tenant',
+    );
+    const action = empty.querySelector<HTMLButtonElement>('[data-testid="campaigns-empty-action"]')!;
+    expect(action?.textContent).toBe('Create a campaign');
+
+    // The action's whole job: put the cursor in the create form's name
+    // field (the form sits directly above the list).
+    const nameInput = container!.querySelector('#campaign-name') as HTMLInputElement;
+    expect(nameInput).not.toBeNull();
+    expect(document.activeElement).not.toBe(nameInput);
+    await act(async () => {
+      action.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(document.activeElement).toBe(nameInput);
+  });
+});

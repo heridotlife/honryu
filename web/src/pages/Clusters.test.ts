@@ -309,3 +309,55 @@ describe('Clusters capacity meters (phase 55, mounted)', () => {
     expect(container!.textContent).toContain('no capacity reported');
   });
 });
+
+// Phase 76: the empty registry renders the shared EmptyState -- register
+// HINT, not a register button: the SPA deliberately offers no registration
+// flow (phase 13: writes stay API operations), so an action here would be
+// dead. Message-only is the honest shape.
+describe('Clusters empty state (phase 76)', () => {
+  it('renders the register hint message-only after an empty registry load', async () => {
+    await mountClusters([]);
+
+    const empty = container!.querySelector('[data-testid="clusters-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="clusters-empty-title"]')?.textContent).toBe('No registered clusters');
+    expect(empty.querySelector('[data-testid="clusters-empty-description"]')?.textContent).toContain(
+      "default cluster",
+    );
+    expect(empty.textContent).toContain('POST /api/clusters');
+    expect(empty.querySelector('button, a')).toBeNull();
+  });
+});
+
+describe('Clusters loading vs empty (phase 76)', () => {
+  it('renders a skeleton, never the empty state, while the registry is in flight', async () => {
+    let release!: (value: Response) => void;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/api/capacity-profiles')) {
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Clusters));
+    });
+    await act(async () => {}); // flush the profiles fetch; clusters still pending
+
+    expect(container!.querySelector('[data-testid="clusters-loading"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="clusters-empty"]')).toBeNull();
+
+    await act(async () => {
+      release(new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    expect(container!.querySelector('[data-testid="clusters-loading"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="clusters-empty"]')).not.toBeNull();
+  });
+});
