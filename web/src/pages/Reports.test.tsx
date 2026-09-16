@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, default as Reports } from './Reports';
+import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, RUN_TABS_STORAGE_KEY, default as Reports } from './Reports';
 import type { Report } from '../api/reports';
 import type { ApmLinkTemplate } from '../api/apm';
 import type { SeriesPoint } from '../api/series';
@@ -68,7 +68,8 @@ async function renderReportDetail(
   report: Report = reportFixture,
   siblings: Report[] | null = null,
   baselineReports: Record<number, Report> = {},
-  apmLinks: ApmLinkTemplate[] = []
+  apmLinks: ApmLinkTemplate[] = [],
+  initialPath = '/reports/9'
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -106,7 +107,7 @@ async function renderReportDetail(
   root = createRoot(container);
   await act(async () => {
     root!.render(
-      <MemoryRouter initialEntries={['/reports/9']}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="/reports/:runId" element={<Reports />} />
         </Routes>
@@ -194,7 +195,9 @@ describe('ReportDetail time series (mounted)', () => {
     await renderReportDetail(() => json({ points: [] }));
 
     expect(container!.querySelector('[data-testid="series-empty"]')).not.toBeNull();
-    expect(container!.querySelectorAll('svg[role="img"]').length).toBe(0);
+    // Scoped to the time-series panel: the phase-73 percentiles tab ships
+    // its own (hidden) distribution sparkline, which is not a series chart.
+    expect(container!.querySelector('#panel-timeseries')!.querySelectorAll('svg[role="img"]').length).toBe(0);
   });
 
   it('shows the error with a retry that refetches', async () => {
@@ -906,5 +909,219 @@ describe('ReportDetail APM link-outs (mounted)', () => {
 
     expect(container!.querySelector('[data-testid="apm-link-Grafana Tempo"]')).toBeNull();
     expect(container!.querySelector('[data-testid="apm-link-Wiki"]')).not.toBeNull();
+  });
+});
+
+// Phase 73: the run workspace's result tabs -- Percentiles, Checks,
+// Thresholds, Raw -- beside the phase-28 panels. Feature behaviour here;
+// the commit-2 regression pins re-state the three load-bearing contracts
+// (threshold results intact, percentile figures exact, checks verdict
+// from failing_criteria alone).
+describe('ReportDetail result tabs (phase 73)', () => {
+  /** A report whose checks partially failed: two tripped/unparseable of
+   * four configured, and a full percentile set for the table. */
+  const failingReport: Report = {
+    ...reportFixture,
+    latency: { '50': 0.05, '90': 0.1, '95': 0.2, '99': 0.4 },
+    criteria: ['failures>10%', 'p95>500ms', 'connections>100', 'p99<1s for 5s'],
+    failing_criteria: [{ criterion: 'p95>500ms' }, { criterion: 'p99<1s for 5s', unparsed: true }],
+  };
+
+  /** Clicks a tab button by its DOM id and flushes the re-render. */
+  async function clickTab(id: string) {
+    await act(async () => {
+      container!
+        .querySelector(`#tab-${id}`)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  }
+
+  /** The panel's hidden state: visible when the attribute is absent. */
+  const panelVisible = (id: string) =>
+    container!.querySelector(`#panel-${id}`)?.hasAttribute('hidden') === false;
+
+  afterEach(() => {
+    sessionStorage.removeItem(RUN_TABS_STORAGE_KEY);
+  });
+
+  it('renders the result tabs in the strip, between Overview and the phase-28 panels', async () => {
+    await renderReportDetail();
+
+    const strip = container!.querySelector('[data-testid="run-tabs"]');
+    expect(strip).not.toBeNull();
+    const labels = Array.from(strip!.querySelectorAll('[role="tab"]')).map((t) => t.textContent);
+    expect(labels).toEqual([
+      'Overview',
+      'Percentiles',
+      'Checks',
+      'Thresholds',
+      'Time series',
+      'Labels',
+      'Errors',
+      'Config',
+      'Objects',
+      'Raw',
+    ]);
+    // Overview still opens first without any stored or URL state.
+    expect(panelVisible('overview')).toBe(true);
+  });
+
+  it('switches panels on click without refetching, and hides the panel it left', async () => {
+    const calls: string[] = [];
+    await renderReportDetail(() => json({ points: seriesFixture }), calls);
+
+    await clickTab('percentiles');
+    expect(panelVisible('percentiles')).toBe(true);
+    expect(panelVisible('overview')).toBe(false);
+    expect(container!.querySelector('#tab-percentiles')?.getAttribute('aria-selected')).toBe('true');
+
+    // Panels are pre-rendered, not lazily fetched: switching is free.
+    expect(calls.filter((u) => u.endsWith('/api/runs/9/series')).length).toBe(1);
+  });
+
+  it('lists one row per percentile with the report\'s figures, and the distribution sparkline', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], failingReport);
+
+    await clickTab('percentiles');
+    const panel = container!.querySelector('#panel-percentiles')!;
+    expect(panel.querySelector('[data-testid="percentiles-table"]')).not.toBeNull();
+    // The wire's seconds render as milliseconds, seconds kept alongside --
+    // sortedPercentiles order (50, 90, 95, 99).
+    const figures = Array.from(panel.querySelectorAll('[data-testid^="percentile-value-"]')).map((v) => v.textContent);
+    expect(figures).toEqual(['50.0 ms · 0.050s', '100.0 ms · 0.100s', '200.0 ms · 0.200s', '400.0 ms · 0.400s']);
+    expect(panel.querySelector('[data-testid="percentile-row-95"]')).not.toBeNull();
+    // The shape-across-percentiles sparkline rides the table.
+    expect(panel.querySelector('[data-testid="percentiles-dist"] svg[role="img"]')).not.toBeNull();
+  });
+
+  it('says no latency data when the report carries an empty percentile map', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], { ...reportFixture, latency: {} });
+
+    await clickTab('percentiles');
+    const panel = container!.querySelector('#panel-percentiles')!;
+    expect(panel.querySelector('[data-testid="percentiles-empty"]')?.textContent).toContain('No latency data');
+    expect(panel.querySelector('[data-testid="percentiles-table"]')).toBeNull();
+    // No data, no shape: the sparkline collapses with the table.
+    expect(panel.querySelector('[data-testid="percentiles-dist"]')).toBeNull();
+  });
+
+  it('shows the checks count line and one row per failed or unparseable criterion', async () => {
+    await renderReportDetail(() => json({ points: [] }), [], failingReport);
+
+    await clickTab('checks');
+    const panel = container!.querySelector('#panel-checks')!;
+    expect(panel.querySelector('[data-testid="checks-summary"]')?.textContent).toBe(
+      '4 checks · 2 passed · 1 failed · 1 could not be evaluated'
+    );
+    // The tripped criterion reads failed; the for-window clause reads
+    // unknown, never silently convicted.
+    expect(panel.querySelector('[data-testid="check-fail-0"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid="check-unparsed-1"]')).not.toBeNull();
+    expect(panel.textContent).toContain('p95>500ms');
+    expect(panel.textContent).toContain('p99<1s for 5s');
+    // Passing criteria are counted, not listed: the failures are the work.
+    expect(panel.textContent).not.toContain('failures>10%');
+  });
+
+  it('reads all checks passed when criteria are configured and none failed', async () => {
+    const passing: Report = {
+      ...reportFixture,
+      criteria: ['failures>10%'],
+      failing_criteria: [],
+    };
+    await renderReportDetail(() => json({ points: [] }), [], passing);
+
+    await clickTab('checks');
+    const panel = container!.querySelector('#panel-checks')!;
+    expect(panel.querySelector('[data-testid="checks-all-passed"]')?.textContent).toContain('All checks passed');
+    expect(panel.querySelector('[data-testid="check-fail-0"]')).toBeNull();
+  });
+
+  it('never claims a pass for a run configured with no checks at all', async () => {
+    // The bare fixture has no criteria: "All checks passed" would be a lie.
+    await renderReportDetail();
+
+    await clickTab('checks');
+    const panel = container!.querySelector('#panel-checks')!;
+    expect(panel.querySelector('[data-testid="checks-none"]')?.textContent).toContain('No checks configured');
+    expect(panel.querySelector('[data-testid="checks-all-passed"]')).toBeNull();
+  });
+
+  it('shows the scenario-threshold grading on the Thresholds tab, with an explicit none state', async () => {
+    const graded: Report = {
+      ...reportFixture,
+      threshold_results: [
+        { threshold_id: 1, metric: 'http_p95_ms', comparison: 'lt', value: 300, observed_value: 500, satisfied: false },
+        { threshold_id: 2, metric: 'throughput_qps', comparison: 'gt', value: 50, observed_value: 95, satisfied: true },
+      ],
+    };
+    await renderReportDetail(() => json({ points: [] }), [], graded);
+
+    await clickTab('thresholds');
+    const panel = container!.querySelector('#panel-thresholds')!;
+    expect(panel.querySelector('[data-testid="scenario-thresholds-card"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid="scenario-threshold-missed-0"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid="scenario-threshold-met-1"]')).not.toBeNull();
+
+    // A scenario with no thresholds: the card hides (its own contract) and
+    // the tab still says something.
+    const ungraded = renderReportDetail(() => json({ points: [] }));
+    await ungraded;
+    await clickTab('thresholds');
+    const emptyPanel = container!.querySelector('#panel-thresholds')!;
+    expect(emptyPanel.querySelector('[data-testid="scenario-thresholds-card"]')).toBeNull();
+    expect(emptyPanel.querySelector('[data-testid="thresholds-none"]')?.textContent).toContain('defines no thresholds');
+  });
+
+  it('keeps the raw report JSON collapsed until asked, then shows the full document', async () => {
+    await renderReportDetail();
+
+    await clickTab('raw');
+    expect(container!.querySelector('[data-testid="raw-report"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="raw-toggle"]')?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      container!
+        .querySelector('[data-testid="raw-toggle"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const pre = container!.querySelector('[data-testid="raw-report"]');
+    expect(pre).not.toBeNull();
+    expect(container!.querySelector('[data-testid="raw-toggle"]')?.getAttribute('aria-expanded')).toBe('true');
+    // The full report document, pretty-printed: identity fields verbatim.
+    const parsed = JSON.parse(pre!.textContent ?? '{}') as Report;
+    expect(parsed.run_id).toBe(9);
+    expect(parsed.execution_id).toBe(1);
+    expect(pre!.textContent).toContain('\n  "run_id": 9');
+  });
+
+  it('persists the last viewed tab in sessionStorage and restores it on return', async () => {
+    await renderReportDetail(() => json({ points: [] }));
+    expect(sessionStorage.getItem(RUN_TABS_STORAGE_KEY)).toBeNull();
+
+    await clickTab('checks');
+    expect(sessionStorage.getItem(RUN_TABS_STORAGE_KEY)).toBe('checks');
+
+    // A fresh mount without ?tab= lands where the operator last looked.
+    act(() => {
+      root!.unmount();
+    });
+    container!.remove();
+    await renderReportDetail(() => json({ points: [] }));
+    expect(panelVisible('checks')).toBe(true);
+    expect(panelVisible('overview')).toBe(false);
+  });
+
+  it('ignores a stored tab that names no real panel, and lets the URL win over storage', async () => {
+    sessionStorage.setItem(RUN_TABS_STORAGE_KEY, 'bogus');
+    await renderReportDetail(() => json({ points: [] }));
+    expect(panelVisible('overview')).toBe(true);
+
+    // Deep link beats the session: ?tab=labels opens labels even though
+    // storage says checks.
+    sessionStorage.setItem(RUN_TABS_STORAGE_KEY, 'checks');
+    await renderReportDetail(() => json({ points: [] }), [], reportFixture, null, {}, [], '/reports/9?tab=labels');
+    expect(panelVisible('labels')).toBe(true);
+    expect(panelVisible('checks')).toBe(false);
   });
 });
