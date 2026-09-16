@@ -18,11 +18,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/domain/digest"
+	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
+	"github.com/heridotlife/honryu/internal/domain/threshold"
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
@@ -70,6 +73,18 @@ type SLOBudgetLine struct {
 	WorstBudgetRemainingPct *float64 `json:"worst_budget_remaining_pct"`
 }
 
+// Outcome names for ThresholdLine.Outcome -- the three verdicts a digest
+// reader acts on (ThresholdLine's doc carries the law).
+const (
+	// ThresholdOutcomeAllMet: every graded bound was satisfied.
+	ThresholdOutcomeAllMet = "all_met"
+	// ThresholdOutcomeMissed: at least one bound was definitively crossed.
+	ThresholdOutcomeMissed = "missed"
+	// ThresholdOutcomeUnknown: nothing definitively crossed, but some
+	// bound could not be judged (its metric was absent from the report).
+	ThresholdOutcomeUnknown = "unknown"
+)
+
 // CalibrationLine is one calibration search's share of the window (phase
 // 71): where the search stands, which scenario it measured, and -- when it
 // finished -- what a single pod sustained. A failed search is as
@@ -91,6 +106,49 @@ type CalibrationLine struct {
 	// (a step's run itself errored) or an environment-impaired verdict.
 	FailureReason string    `json:"failure_reason,omitempty"`
 	CreatedTime   time.Time `json:"created_time"`
+}
+
+// ThresholdMiss is one bound a run did not meet (or could not be judged
+// on): the definition as it stood at evaluation time -- a result is
+// historical evidence, legible even after the operator re-edits the
+// scenario's thresholds -- plus what the run actually produced.
+type ThresholdMiss struct {
+	Metric     threshold.Metric     `json:"metric"`
+	Comparison threshold.Comparison `json:"comparison"`
+	// Value is the bound in the metric's own unit.
+	Value float64 `json:"value"`
+	// ObservedValue is the run's own figure for the metric; nil when the
+	// report carried none (the reason then says which figure was missing).
+	ObservedValue *float64 `json:"observed_value"`
+	// Reason is set only for an unjudgeable bound -- why there was nothing
+	// to compare. Empty for a plain miss.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ThresholdLine is one run's threshold verdict (phase 74): whether the
+// scenario's bounds held over that run, and which did not. Only runs that
+// were actually graded carry a line -- a run whose scenario defined no
+// thresholds (or predates the feature) is excluded rather than rendered as
+// null-empty noise, the same honesty calibrations' job lines follow. A run
+// graded but unjudgeable (every metric missing) still carries one: the
+// unknown verdict IS the evidence.
+type ThresholdLine struct {
+	RunID       int64 `json:"run_id"`
+	ExecutionID int64 `json:"execution_id"`
+	// ScenarioName is the graded scenario's name at build time (joined
+	// from the project's scenario list; empty if the scenario was since
+	// deleted).
+	ScenarioName string `json:"scenario_name"`
+	// Outcome summarises the run's results: all_met when every graded
+	// bound was satisfied, missed when any bound was definitively crossed,
+	// unknown when nothing was crossed but some bound could not be judged
+	// (a percentile the engine never measured). A definitive miss outranks
+	// an unknown -- triage reads missed first.
+	Outcome string `json:"outcome"`
+	// Missed lists every bound the run did not meet: definitive crosses
+	// with their observed values, and unjudgeable bounds with the reason
+	// (observed_value null). Empty for an all_met run.
+	Missed []ThresholdMiss `json:"missed"`
 }
 
 // Payload is the report.digest event body: what a receiver needs to render
@@ -121,6 +179,11 @@ type Payload struct {
 	// job surfaces regardless of whether its scenario produced any runs:
 	// a failed calibration is the window's capacity story too.
 	Calibrations []CalibrationLine `json:"calibrations"`
+	// Thresholds carries one line per window run that was graded against
+	// its scenario's thresholds (phase 74), in run order. Always an array
+	// -- empty when no window run has threshold results -- so a receiver
+	// renders "none", never noughts.
+	Thresholds []ThresholdLine `json:"thresholds"`
 }
 
 // outcomeSeverity orders outcomes worst-ward for WorstOutcome: a passed run
@@ -147,6 +210,16 @@ type Repo interface {
 	// inline the way calibrationapp.Repo declares its own cross-aggregate
 	// reads): the window's calibration lines, scenario names joined.
 	ListCalibrationJobsByProject(ctx context.Context, projectID int64, start, end time.Time) ([]ports.CalibrationJobSummary, error)
+	// ListScenariosByProject is the project's scenario list
+	// (ports.ScenarioRepository's method, declared here inline like the
+	// read above): the id→name join the threshold lines' scenario_name
+	// needs.
+	ListScenariosByProject(ctx context.Context, projectID int64) ([]scenario.Scenario, error)
+	// ThresholdResultsForRun is the run's stored threshold results
+	// (ports.ThresholdStore's method, declared here inline): the per-run
+	// grading evidence the threshold lines aggregate. Empty (never nil)
+	// when the run was never graded.
+	ThresholdResultsForRun(ctx context.Context, runID int64) ([]threshold.Result, error)
 }
 
 // Deliverer is the delivery sink a digest rides on -- webhookapp satisfies
@@ -232,7 +305,16 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 		Executions:   []ExecutionSummary{},
 		SLOBudgets:   []SLOBudgetLine{},
 		Calibrations: []CalibrationLine{},
+		Thresholds:   []ThresholdLine{},
 	}
+	// The window's graded runs, kept in iteration order for the threshold
+	// section below -- the same run set the executions section covers.
+	type windowRun struct {
+		executionID int64
+		scenarioID  int64
+		runID       int64
+	}
+	var windowRuns []windowRun
 	for _, exe := range execs {
 		reps, err := s.repo.ListReports(ctx, exe.ID, 0)
 		if err != nil {
@@ -245,6 +327,7 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 			}
 			summary.Runs++
 			p.RunsTotal++
+			windowRuns = append(windowRuns, windowRun{executionID: exe.ID, scenarioID: rep.ScenarioID, runID: rep.RunID})
 			switch rep.Outcome {
 			case taurus.OutcomePassed:
 				p.ByOutcome.Passed++
@@ -262,6 +345,64 @@ func (s *Service) BuildDigest(ctx context.Context, projectID int64, period diges
 		}
 	}
 	p.ThresholdFailures = p.ByOutcome.Failed
+	// The threshold section joins the same run set the executions section
+	// covers with the per-run grading evidence (phase 74): scenario names
+	// resolved in one project read, each window run's results read the way
+	// the run-detail surface reads them. A storage-level failure fails the
+	// build -- the same law the calibrations read follows -- rather than
+	// sending a digest whose threshold section silently understates the
+	// window's misses.
+	if len(windowRuns) > 0 {
+		scenarios, err := s.repo.ListScenariosByProject(ctx, projectID)
+		if err != nil {
+			return digest.Digest{}, fmt.Errorf("digest: thresholds: %w", err)
+		}
+		names := make(map[int64]string, len(scenarios))
+		for _, sc := range scenarios {
+			names[sc.ID] = sc.Name
+		}
+		// Deterministic wire order: run id ascending, independent of
+		// each execution's report-list ordering.
+		sort.Slice(windowRuns, func(i, j int) bool { return windowRuns[i].runID < windowRuns[j].runID })
+		for _, wr := range windowRuns {
+			results, err := s.repo.ThresholdResultsForRun(ctx, wr.runID)
+			if err != nil {
+				return digest.Digest{}, fmt.Errorf("digest: thresholds: %w", err)
+			}
+			if len(results) == 0 {
+				continue // never graded: excluded, not null-empty noise
+			}
+			line := ThresholdLine{
+				RunID: wr.runID, ExecutionID: wr.executionID,
+				ScenarioName: names[wr.scenarioID],
+				Missed:       []ThresholdMiss{},
+			}
+			missed, unknown := false, false
+			for _, r := range results {
+				if r.Satisfied != nil && *r.Satisfied {
+					continue // met: no line
+				}
+				if r.Satisfied == nil {
+					unknown = true
+				} else {
+					missed = true
+				}
+				line.Missed = append(line.Missed, ThresholdMiss{
+					Metric: r.Metric, Comparison: r.Comparison, Value: r.Value,
+					ObservedValue: r.Observed, Reason: r.Reason,
+				})
+			}
+			switch {
+			case missed:
+				line.Outcome = ThresholdOutcomeMissed
+			case unknown:
+				line.Outcome = ThresholdOutcomeUnknown
+			default:
+				line.Outcome = ThresholdOutcomeAllMet
+			}
+			p.Thresholds = append(p.Thresholds, line)
+		}
+	}
 	// The window's calibration searches ride the same law as the runs
 	// above: a storage-level failure fails the build -- the fire is skipped
 	// and the scheduler's record shows why -- rather than sending a digest
