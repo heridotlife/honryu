@@ -14,6 +14,7 @@ import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import TaurusEditor from '../components/TaurusEditor';
+import ThresholdEditor from '../components/ThresholdEditor';
 import RunStatusBadge from '../components/RunStatusBadge';
 import { ApiError } from '../api/client';
 import { listExecutionReports, type Outcome, type Report } from '../api/reports';
@@ -320,14 +321,24 @@ export default function Scenario() {
         </div>
       </TabPanel>
 
-      {/* The editor tab: phase 65's page content, unchanged. */}
-      <TabPanel id="editor" active={tab}>
+      {/* The editor tab: phase 65's requests editor, plus the phase 72
+          threshold rows -- the scenario's k6-style pass/fail bounds, saved
+          as a whole via PUT replace-all. */}
+      <TabPanel id="editor" active={tab} className="space-y-4">
         <Card>
           <CardHeader>
             <CardTitle>Requests</CardTitle>
           </CardHeader>
           <CardContent>
             <TaurusEditor scenarioId={scenarioId} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Thresholds</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ThresholdEditor scenarioId={scenarioId} />
           </CardContent>
         </Card>
       </TabPanel>
