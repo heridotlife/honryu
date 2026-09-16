@@ -334,6 +334,20 @@ describe('RunCompare (mounted)', () => {
     expect(container!.querySelector('[data-testid="select-run-a"]')).toBeNull();
   });
 
+  // e2e selector safety, route shape: the empty state itself must not
+  // introduce any /executions/ link -- with no runs, such a link would be
+  // a dead loop (this very execution has nothing to show). The one action
+  // points back at /scenarios instead. (The page's breadcrumb trail back
+  // to the execution hub is navigation, not empty-state guidance, and
+  // stays.)
+  it('renders no ^/executions/ anchor inside the no-runs empty state (dead-loop safety)', async () => {
+    await renderCompare({ reports: [] });
+
+    const empty = container!.querySelector('[data-testid="compare-no-runs"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelectorAll('a[href^="/executions/"]').length).toBe(0);
+  });
+
   it('fills the results area with a pick hint while the selection is incomplete', async () => {
     await renderCompare(); // A=8, B=9 preselected -- table up, no hint.
     expect(container!.querySelector('[data-testid="compare-pick-hint"]')).toBeNull();

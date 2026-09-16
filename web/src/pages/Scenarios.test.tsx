@@ -214,6 +214,20 @@ describe('Scenarios page (phase 67b)', () => {
     );
   });
 
+  // e2e selector safety (boot.e2e.mjs scenario E): the harness counts
+  // `main a[href^="/"]`-style scenario rows with the selector
+  //   'main a[href^="/scenarios/"]:not([href="/scenarios/new"])'
+  // and treats zero rows as a vacuous pass. The empty state's ONE action
+  // must therefore never carry a ^/scenarios/ href, or the harness would
+  // click it as a row instead of recording the honest skip.
+  it('renders no ^/scenarios/ anchor while empty (e2e row-selector safety)', async () => {
+    stubFetch([]);
+    await renderScenarios();
+
+    expect(container!.querySelector('[data-testid="scenarios-empty"]')).not.toBeNull();
+    expect(container!.querySelectorAll('a[href^="/scenarios/"]').length).toBe(0);
+  });
+
   it('shows a loading skeleton while the fetch is in flight', async () => {
     let release!: (value: Response) => void;
     vi.stubGlobal(

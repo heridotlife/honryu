@@ -324,6 +324,26 @@ describe('Scenario detail (phase 67b)', () => {
     expect(container!.querySelector('[data-testid="runs-empty-action"]')).toBeNull();
   });
 
+  // e2e selector safety (boot.e2e.mjs scenario D): the harness, having
+  // opened a scenario, waits for 'main a[href^="/executions/"]' to click
+  // the newest RUN row. The runs-empty branch must therefore render no
+  // such anchor at rest -- "Run this scenario" is a Button on purpose --
+  // or the harness would click the empty state's action and time out
+  // waiting for an execution url that never comes.
+  it('renders no ^/executions/ anchor while the runs list is empty (e2e run-row safety)', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/scenarios/42/executions')) {
+        return json([]);
+      }
+      return undefined;
+    });
+    await renderScenario();
+
+    expect(container!.querySelector('[data-testid="runs-empty"]')).not.toBeNull();
+    expect(container!.querySelectorAll('a[href^="/executions/"]').length).toBe(0);
+  });
+
   it('surfaces the error when the scenario does not exist', async () => {
     stubFetch();
     overrides.push((_method, url) => {
