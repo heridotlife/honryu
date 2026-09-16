@@ -797,6 +797,47 @@ components:
         unparsed:
           type: boolean
           description: True when the criterion could not be evaluated at all -- its outcome is unknown, not confirmed triggered.
+    ScenarioThreshold:
+      type: object
+      description: One scenario-scoped pass/fail bound (phase 72) -- a metric, a direction, and the bound in the metric's own unit.
+      required: [id, scenario_id, metric, comparison, value, created_time]
+      properties:
+        id: { type: integer, format: int64 }
+        scenario_id: { type: integer, format: int64 }
+        metric:
+          type: string
+          enum: [http_p95_ms, http_p99_ms, error_rate, throughput_qps]
+        comparison:
+          type: string
+          enum: [lt, gt]
+          description: lt = satisfied when the observed value is strictly below the bound; gt = strictly above.
+        value: { type: number }
+        created_time: { type: string, format: date-time }
+    ThresholdResult:
+      type: object
+      description: One run's report graded against one threshold (phase 72). The definition rides along as evaluated; observed_value and satisfied are null when the report carried no figure for the metric -- unknown, never a fabricated fail -- and reason says why.
+      required: [threshold_id, metric, comparison, value, observed_value, satisfied]
+      properties:
+        threshold_id:
+          type: integer
+          format: int64
+          description: The definition the run was graded against; dangling when the operator has since removed it (its rows cascade with the definition).
+        metric:
+          type: string
+          enum: [http_p95_ms, http_p99_ms, error_rate, throughput_qps]
+        comparison:
+          type: string
+          enum: [lt, gt]
+        value: { type: number, description: 'The bound as evaluated (the definition''s snapshot).' }
+        observed_value:
+          type: [number, 'null']
+          description: The report's own figure for the metric, in the metric's unit (latency in milliseconds; error_rate and throughput as stored). Null when the report carried none.
+        satisfied:
+          type: [boolean, 'null']
+          description: Whether the observed value met the bound. Null when there was nothing to compare.
+        reason:
+          type: string
+          description: Why satisfied is null (which figure was missing). Empty for a plain pass/fail.
     ServiceVerdict:
       type: object
       description: One participating service's contribution to a campaign's rolled-up verdict, read from its designated execution's latest report.
@@ -1013,6 +1054,16 @@ components:
           type: [array, 'null']
           description: Which configured criteria this run tripped (or could not parse).
           items: { $ref: '#/components/schemas/FailingCriterion' }
+        threshold_results:
+          type: array
+          description: |
+            The scenario-threshold layer (phase 72): this run's report graded
+            against its scenario's k6-style bounds when the report landed.
+            Always an array -- empty when the scenario defines no thresholds,
+            the run predates the feature, or no threshold service is wired.
+            Strictly additive evidence: the engine's own outcome above is
+            untouched.
+          items: { $ref: '#/components/schemas/ThresholdResult' }
     Series:
       type: object
       description: >-
@@ -1876,6 +1927,82 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/ExecutionSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/scenarios/{scenario_id}/thresholds:
+    get:
+      tags: [scenarios]
+      summary: List a scenario's pass/fail thresholds
+      description: |
+        The scenario's k6-style bounds (phase 72), definition order: each one
+        names a metric (http_p95_ms, http_p99_ms, error_rate,
+        throughput_qps), a direction (lt = the ceiling form, satisfied when
+        the observed value is strictly below; gt = the floor), and the bound
+        in the metric's own unit -- milliseconds for the latency metrics, a
+        0..1 fraction for error_rate, requests/second for throughput. A run
+        is graded against this set when its report lands; the results ride
+        the run report as threshold_results. Always an array, empty when none
+        are defined.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      responses:
+        '200':
+          description: The scenario's thresholds, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ScenarioThreshold' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [scenarios]
+      summary: Replace a scenario's pass/fail thresholds
+      description: |
+        Replace-all, the editor-save semantics: the body's list is the whole
+        truth -- rows kept verbatim from the current set retain their ids (so
+        results already recorded against them survive), gone ones die with
+        their recorded results, new ones are inserted. Saving the same list
+        twice is a no-op; an empty list clears. Responds with the stored set,
+        ids included, so the editor syncs without a second fetch.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The whole set. An absent body is the empty set.
+              properties:
+                thresholds:
+                  type: array
+                  items:
+                    type: object
+                    required: [metric, comparison, value]
+                    properties:
+                      metric:
+                        type: string
+                        enum: [http_p95_ms, http_p99_ms, error_rate, throughput_qps]
+                      comparison:
+                        type: string
+                        enum: [lt, gt]
+                        description: lt = satisfied when the observed value is strictly below the bound; gt = strictly above.
+                      value:
+                        type: number
+                        description: The bound in the metric's own unit. Must be positive for the latency and throughput metrics; 0..1 for error_rate.
+      responses:
+        '200':
+          description: The stored set, ids assigned, caller order preserved
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ScenarioThreshold' }
+        '400':
+          description: A definition is invalid -- unknown metric, unknown comparison, or a value outside the metric's legal range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 

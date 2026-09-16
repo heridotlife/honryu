@@ -480,6 +480,98 @@ func (r *recorder) RunCompleted(_ context.Context, projectID int64, rep report.R
 	r.calls = append(r.calls, recordedRun{projectID: projectID, runID: rep.RunID})
 }
 
+// thresholdSpy is a ThresholdEvaluator that records which reports it was
+// handed, and can be told to fail -- the whole surface the phase-72 grader
+// hook needs from the threshold use-case's side.
+type thresholdSpy struct {
+	reps []report.Report
+	err  error
+}
+
+func (s *thresholdSpy) EvaluateRun(_ context.Context, rep report.Report) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.reps = append(s.reps, rep)
+	return nil
+}
+
+// The phase-72 grader hook: the run's stored report is graded against its
+// scenario's thresholds when the report lands -- the same winner-gated slot
+// the completion notification rides in.
+func TestFinalize_EvaluatesThresholdsAgainstTheStoredReport(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	spy := &thresholdSpy{}
+	e.svc.WithThresholds(spy)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if len(spy.reps) != 1 {
+		t.Fatalf("evaluator saw %d reports, want 1", len(spy.reps))
+	}
+	// The graded report is the one as stored -- the scenario id comes from
+	// the profile (single scenario here), so the grader can find the
+	// scenario's thresholds.
+	if spy.reps[0].RunID != e.runID || spy.reps[0].ScenarioID != e.scenarioIDs[0] {
+		t.Errorf("graded report = run %d scenario %d, want run %d scenario %d",
+			spy.reps[0].RunID, spy.reps[0].ScenarioID, e.runID, e.scenarioIDs[0])
+	}
+}
+
+// An already-finalised run is graded once, exactly as it announces once: a
+// racing Stop/Purge loser must not grade its own would-be replacement
+// report over the survivor's results.
+func TestFinalize_DoesNotReevaluateAnAlreadyFinalisedRun(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	spy := &thresholdSpy{}
+	e.svc.WithThresholds(spy)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("first Finalize: %v", err)
+	}
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("second Finalize: %v", err)
+	}
+	if len(spy.reps) != 1 {
+		t.Fatalf("evaluator saw %d reports, want 1 (first finalisation only)", len(spy.reps))
+	}
+}
+
+// A grading failure is not swallowed: the report surface promises results
+// for a finalised run, so a failed evaluation fails the finalisation the
+// same way a failed working-state discard does.
+func TestFinalize_PropagatesThresholdEvaluationFailure(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	spy := &thresholdSpy{err: errors.New("grading store down")}
+	e.svc.WithThresholds(spy)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err == nil {
+		t.Fatal("Finalize = nil, want the grading error")
+	}
+}
+
+// No grader wired (deployments and tests that do not want thresholds):
+// finalisation proceeds unchanged.
+func TestFinalize_WithoutAThresholdGraderStillFinalizes(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 1)
+	ctx := context.Background()
+
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if _, err := e.reports.GetReport(ctx, e.runID); err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+}
+
 // A completed run announces itself through the Notifier with the
 // execution's project (webhooks are registered per project) and the report
 // exactly as stored -- the notification's payload IS the saved report.

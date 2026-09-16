@@ -67,6 +67,10 @@ type Service struct {
 	// webhookapp service implements it; a no-op default is used when none
 	// is wired (e.g. deployments and tests that do not want notifications).
 	notifier Notifier
+	// thresholds is the post-finalisation grader (phase 72): after the
+	// report is durable it evaluates the owning scenario's thresholds
+	// against it and stores the per-run results. Nil when not wired.
+	thresholds ThresholdEvaluator
 	// seen deduplicates intervals a pod pushed more than once, for the live
 	// view only. The permanent record's exactness comes from ReportProgress's
 	// own per-shard sequence, which survives a restart this map does not.
@@ -90,6 +94,15 @@ type noopNotifier struct{}
 
 func (noopNotifier) RunCompleted(context.Context, int64, report.Report) {}
 
+// ThresholdEvaluator grades a finalised run's report against its scenario's
+// thresholds and stores the results. Implemented by thresholdapp; wired with
+// WithThresholds. Additive evidence only: an evaluation never rewrites the
+// run's own verdict, and a deployment that wires no evaluator simply records
+// no threshold results, exactly as before phase 72.
+type ThresholdEvaluator interface {
+	EvaluateRun(ctx context.Context, rep report.Report) error
+}
+
 // NewService wires the metric service.
 func NewService(repo Repo, sink ports.MetricsSink, bus ports.EventBus, progress ports.ReportProgress, reports ports.ReportStore) *Service {
 	return &Service{repo: repo, sink: sink, bus: bus, progress: progress, reports: reports, notifier: noopNotifier{}, seen: newSeen(), now: time.Now}
@@ -101,6 +114,16 @@ func NewService(repo Repo, sink ports.MetricsSink, bus ports.EventBus, progress 
 func (s *Service) WithNotifier(n Notifier) *Service {
 	if n != nil {
 		s.notifier = n
+	}
+	return s
+}
+
+// WithThresholds overrides the post-finalisation threshold grader. A nil
+// evaluator is ignored, so WithThresholds(nil) disables nothing. Returns the
+// receiver for chaining.
+func (s *Service) WithThresholds(e ThresholdEvaluator) *Service {
+	if e != nil {
+		s.thresholds = e
 	}
 	return s
 }
@@ -269,6 +292,17 @@ func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcom
 	// no error to propagate onto the run.
 	if !alreadyFinalised {
 		s.notifier.RunCompleted(ctx, exe.ProjectID, rep)
+		// The threshold grader rides the same winner gate as the
+		// notification: the report that survived SaveReport is the one
+		// graded, never the loser's would-be replacement (phase 72). The
+		// error propagates like Discard's below -- the report surface
+		// promises results for a finalised run, so a grading failure is
+		// not quietly swallowed.
+		if s.thresholds != nil {
+			if err := s.thresholds.EvaluateRun(ctx, rep); err != nil {
+				return err
+			}
+		}
 	}
 	if err := s.progress.Discard(ctx, runID); err != nil {
 		return err

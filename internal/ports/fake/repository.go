@@ -31,6 +31,12 @@ type Store struct {
 	mu  sync.Mutex
 	now func() time.Time
 
+	// thresholds is the embedded threshold store (phase 72): its methods
+	// promote onto Store so one fake satisfies the whole repository
+	// interface, with its own mutex -- none of Store's internals mediate
+	// these rows.
+	*ThresholdStore
+
 	// namedLocks backs WithTenantLock/WithScheduleLock: a lock per key,
 	// distinct from mu, since fn typically calls back into other Store
 	// methods that themselves lock mu -- reusing mu here would self-deadlock.
@@ -140,6 +146,7 @@ type Store struct {
 func NewStore() *Store {
 	return &Store{
 		now:                  time.Now,
+		ThresholdStore:       NewThresholdStore(),
 		namedLocks:           make(map[string]*sync.Mutex),
 		projects:             make(map[int64]project.Project),
 		scenarios:            make(map[int64]scenario.Scenario),
