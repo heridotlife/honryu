@@ -6,7 +6,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import RunCompare, { deltaClass, deltaKind, formatDelta, pctDelta } from './RunCompare';
+import RunCompare, { deltaArrow, deltaClass, deltaKind, formatDelta, NEUTRAL_BAND_PCT, pctDelta, signedAbs } from './RunCompare';
 import type { Report } from '../api/reports';
 
 describe('delta math (pure)', () => {
@@ -22,16 +22,46 @@ describe('delta math (pure)', () => {
     expect(pctDelta(Number.NaN, 5)).toBeNull();
   });
 
-  it('classifies improvement vs regression by metric direction', () => {
+  it('classifies improvement vs regression by metric direction (outside the band)', () => {
     // lower-is-better: latency, error rate.
     expect(deltaKind('lower', -10)).toBe('improvement');
     expect(deltaKind('lower', 100)).toBe('regression');
     // higher-is-better: RPS.
     expect(deltaKind('higher', 15.8)).toBe('improvement');
-    expect(deltaKind('higher', -3)).toBe('regression');
-    // no change, nothing to say.
-    expect(deltaKind('lower', 0)).toBe('neutral');
+    expect(deltaKind('higher', -20)).toBe('regression');
+    // unmeasurable on one side, nothing to say.
+    expect(deltaKind('lower', null)).toBe('none');
     expect(deltaKind('higher', null)).toBe('none');
+  });
+
+  // Phase 75: within ±5% a movement is "no real movement" -- neutral in
+  // both directions, boundary inclusive; a hair past the band classifies.
+  it('reads a delta inside the 5% band as neutral, each direction', () => {
+    expect(deltaKind('lower', -3)).toBe('neutral');
+    expect(deltaKind('higher', 3)).toBe('neutral');
+    expect(deltaKind('lower', 4.9)).toBe('neutral');
+    expect(deltaKind('higher', -4.9)).toBe('neutral');
+    expect(deltaKind('lower', 0)).toBe('neutral');
+    expect(deltaKind('lower', -NEUTRAL_BAND_PCT)).toBe('neutral');
+    expect(deltaKind('higher', NEUTRAL_BAND_PCT)).toBe('neutral');
+    expect(deltaKind('lower', -5.1)).toBe('improvement');
+    expect(deltaKind('higher', 5.1)).toBe('improvement');
+    expect(deltaKind('lower', 5.1)).toBe('regression');
+    expect(deltaKind('higher', -5.1)).toBe('regression');
+  });
+
+  it('arrows the raw direction: up when the value rose, down when it fell', () => {
+    expect(deltaArrow(20)).toBe('▲');
+    expect(deltaArrow(-0.5)).toBe('▼');
+    expect(deltaArrow(0)).toBe('');
+    expect(deltaArrow(null)).toBe('');
+  });
+
+  it('formats the absolute delta in the metric unit', () => {
+    expect(signedAbs(0.04 - 0.05, (v) => `${(v * 1000).toFixed(1)} ms`)).toBe('-10.0 ms');
+    expect(signedAbs(15, (v) => `${v.toFixed(1)} req/s`)).toBe('+15.0 req/s');
+    expect(signedAbs(0, (v) => `${(v * 1000).toFixed(1)} ms`)).toBe('0.0 ms');
+    expect(signedAbs(null, (v) => `${v}`)).toBe('—');
   });
 
   it('colors improvement green and regression red, nothing else', () => {
@@ -104,16 +134,19 @@ interface MountOptions {
   /** GET /api/runs/compare's reply; absent = the endpoint is down (500),
    * which is the fallback path the older tests ride by default. */
   compare?: () => Response;
+  /** When provided, every stubbed request's URL is recorded into it. */
+  record?: string[];
 }
 
 async function renderCompare(opts: MountOptions = {}) {
-  const { url = '/executions/5/compare', reports = [runNewer, runOlder], series = {}, reportsStatus = 200, compare } = opts;
+  const { url = '/executions/5/compare', reports = [runNewer, runOlder], series = {}, reportsStatus = 200, compare, record } = opts;
   container = document.createElement('div');
   document.body.appendChild(container);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url_ = String(input);
+      record?.push(url_);
       if (url_.endsWith('/api/executions/5/reports')) {
         return reportsStatus === 200 ? json(reports) : json({ message: 'reports backend down' }, reportsStatus);
       }
@@ -187,33 +220,41 @@ describe('RunCompare (mounted)', () => {
     expect(selectValue('select-run-b')).toBe('9');
   });
 
-  it('renders the delta table with colored, signed percents', async () => {
+  it('renders the delta table with colored abs+percent deltas, arrows and signs', async () => {
     await renderCompare();
 
     const row = (key: string) => container!.querySelector(`tr[data-metric="${key}"]`)!;
-    const deltaCell = (key: string) => row(key).querySelector('td:last-child')!;
+    const absCell = (key: string) => row(key).querySelector('td[data-delta="abs"]')!;
+    const pctCell = (key: string) => row(key).querySelector('td[data-delta="pct"]')!;
 
     // p50 0.05s -> 0.04s: -20%, an improvement (lower latency, green).
+    // The arrow reads the raw direction (the value fell); the sign and the
+    // color carry better/worse, so the cell is never color-only.
     expect(row('p50').textContent).toContain('50.0 ms');
     expect(row('p50').textContent).toContain('40.0 ms');
-    expect(deltaCell('p50').textContent).toBe('-20.0%');
-    expect(deltaCell('p50').className).toContain('text-emerald-600');
+    expect(absCell('p50').textContent).toBe('▼ -10.0 ms');
+    expect(pctCell('p50').textContent).toBe('▼ -20.0%');
+    expect(pctCell('p50').className).toContain('text-emerald-600');
 
     // Error rate 1% -> 2%: +100%, a regression (red).
     expect(row('errorRate').textContent).toContain('1.00%');
     expect(row('errorRate').textContent).toContain('2.00%');
-    expect(deltaCell('errorRate').textContent).toBe('+100.0%');
-    expect(deltaCell('errorRate').className).toContain('text-red-600');
+    expect(absCell('errorRate').textContent).toBe('▲ +1.00%');
+    expect(pctCell('errorRate').textContent).toBe('▲ +100.0%');
+    expect(pctCell('errorRate').className).toContain('text-red-600');
 
     // RPS 95 -> 110: ~+15.8%, an improvement (higher is better).
     expect(row('rps').textContent).toContain('95.0 req/s');
-    expect(deltaCell('rps').textContent).toBe('+15.8%');
-    expect(deltaCell('rps').className).toContain('text-emerald-600');
+    expect(absCell('rps').textContent).toBe('▲ +15.0 req/s');
+    expect(pctCell('rps').textContent).toBe('▲ +15.8%');
+    expect(pctCell('rps').className).toContain('text-emerald-600');
 
-    // p99 missing on the older run: values and delta are em-dashes, uncolored.
-    expect(deltaCell('p99').textContent).toBe('—');
-    expect(deltaCell('p99').className).not.toContain('text-red-600');
-    expect(deltaCell('p99').className).not.toContain('text-emerald-600');
+    // p99 missing on the older run: values and both deltas are em-dashes,
+    // uncolored and arrowless.
+    expect(absCell('p99').textContent).toBe('—');
+    expect(pctCell('p99').textContent).toBe('—');
+    expect(pctCell('p99').className).not.toContain('text-red-600');
+    expect(pctCell('p99').className).not.toContain('text-emerald-600');
   });
 
   // Phase 59: the delta card carries a summary verdict chip only when at
@@ -256,9 +297,9 @@ describe('RunCompare (mounted)', () => {
     await setSelect('select-run-b', '9');
     expect(container!.querySelector('[data-testid="compare-same-run"]')).toBeNull();
     expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
-    // p95 0.2 -> 0.18 is the improvement again.
-    const p95 = container!.querySelector('tr[data-metric="p95"] td:last-child')!;
-    expect(p95.textContent).toBe('-10.0%');
+    // p95 0.2 -> 0.18 is the improvement again, arrow down (the value fell).
+    const p95 = container!.querySelector('tr[data-metric="p95"] td[data-delta="pct"]')!;
+    expect(p95.textContent).toBe('▼ -10.0%');
   });
 
   it('overlays both runs\' p95 series on one chart', async () => {
@@ -353,22 +394,25 @@ describe('RunCompare multi-run (phase 61)', () => {
     const ths = Array.from(head.querySelectorAll('th'));
     // The regressed chip is part of run 10's header text ("Run #10" plus
     // the chip's own word) -- that is the per-column design, not noise.
+    // Phase 75: each candidate carries an abs and a pct delta column.
     expect(ths.map((th) => th.textContent!.trim())).toEqual([
-      'Metric', 'Run #9', 'Run #8', 'Δ vs #9', 'Run #10regressed', 'Δ vs #9',
+      'Metric', 'Run #9', 'Run #8', 'Δ abs vs #9', 'Δ % vs #9', 'Run #10regressed', 'Δ abs vs #9', 'Δ % vs #9',
     ]);
-    // Six data cells per row: the label, the baseline value, then a
-    // value/delta pair per candidate.
+    // Eight data cells per row: the label, the baseline value, then a
+    // value/abs/pct trio per candidate.
     const p50cells = Array.from(container!.querySelectorAll('tr[data-metric="p50"] td'));
-    expect(p50cells).toHaveLength(6);
+    expect(p50cells).toHaveLength(8);
     // Values read candidate-against-baseline off the compare payload's
     // request order: 8 is better (green, 0.035 vs 0.04 = -12.5%), 10 worse
     // (red, 0.06 vs 0.04 = +50%).
     expect(p50cells[2].textContent).toBe('35.0 ms');
-    expect(p50cells[3].textContent).toBe('-12.5%');
-    expect(p50cells[3].className).toContain('text-emerald-600');
-    expect(p50cells[4].textContent).toBe('60.0 ms');
-    expect(p50cells[5].textContent).toBe('+50.0%');
-    expect(p50cells[5].className).toContain('text-red-600');
+    expect(p50cells[3].textContent).toBe('▼ -5.0 ms');
+    expect(p50cells[4].textContent).toBe('▼ -12.5%');
+    expect(p50cells[4].className).toContain('text-emerald-600');
+    expect(p50cells[5].textContent).toBe('60.0 ms');
+    expect(p50cells[6].textContent).toBe('▲ +20.0 ms');
+    expect(p50cells[7].textContent).toBe('▲ +50.0%');
+    expect(p50cells[7].className).toContain('text-red-600');
   });
 
   it('chips only the candidate columns that regressed against the baseline', async () => {
@@ -394,8 +438,8 @@ describe('RunCompare multi-run (phase 61)', () => {
     // The batch endpoint's failure costs the page nothing: same three
     // columns, same deltas, computed from the already-loaded list.
     const p50cells = Array.from(container!.querySelectorAll('tr[data-metric="p50"] td'));
-    expect(p50cells).toHaveLength(6);
-    expect(p50cells[5].textContent).toBe('+50.0%');
+    expect(p50cells).toHaveLength(8);
+    expect(p50cells[7].textContent).toBe('▲ +50.0%');
     expect(container!.querySelector('[data-testid="compare-regression-chip"]')).not.toBeNull();
   });
 
@@ -439,8 +483,127 @@ describe('RunCompare multi-run (phase 61)', () => {
     const head = container!.querySelector('[data-testid="delta-table"] thead')!;
     expect(head.textContent).toContain('Run #9');
     expect(head.textContent).toContain('Run #8');
-    // One value/delta pair -- the long-standing four-column table.
-    expect(container!.querySelectorAll('tr[data-metric="p50"] td')).toHaveLength(4);
+    // One value/abs/pct trio -- five cells for the two-run comparison.
+    expect(container!.querySelectorAll('tr[data-metric="p50"] td')).toHaveLength(5);
+  });
+});
+
+// Phase 75: "vs baseline" mode -- an explicit radio'd baseline plus
+// checkbox'd comparison runs. The deltas stay client-side (same math as
+// slots mode); the batch fetch is told which run is the baseline via
+// baseline_run_id, which only orders the payload.
+describe('RunCompare vs-baseline mode (phase 75)', () => {
+  it('toggles to the run list and radios the baseline, carrying the selection over', async () => {
+    await renderCompare();
+
+    // Slots by default; the toggle swaps the pickers for the run list.
+    expect(container!.querySelector('[data-testid="select-run-a"]')).not.toBeNull();
+    const toggle = container!.querySelector('[data-testid="mode-vs-baseline"]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await act(async () => {
+      toggle.click();
+    });
+    expect(container!.querySelector('[data-testid="select-run-a"]')).toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    const list = container!.querySelector('[data-testid="baseline-run-list"]');
+    expect(list).not.toBeNull();
+
+    // The loaded state carried over: oldest run 8 radio'd, newest run 9
+    // checked -- mirroring the slots' A=8, B=9 default.
+    expect((list!.querySelector('[data-testid="baseline-radio-8"]') as HTMLInputElement).checked).toBe(true);
+    expect((list!.querySelector('[data-testid="compare-check-9"]') as HTMLInputElement).checked).toBe(true);
+    // The table stands on the carried-over selection.
+    expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
+
+    // Re-point the baseline at run 9: run 9's own checkbox goes disabled
+    // (and unchecked -- it cannot compare against itself), and after run 8
+    // is checked as the comparison the table re-reads 8 against 9.
+    const radio9 = list!.querySelector('[data-testid="baseline-radio-9"]') as HTMLInputElement;
+    await act(async () => {
+      radio9.click();
+    });
+    await act(async () => {});
+    expect((list!.querySelector('[data-testid="compare-check-9"]') as HTMLInputElement).disabled).toBe(true);
+    expect((list!.querySelector('[data-testid="compare-check-9"]') as HTMLInputElement).checked).toBe(false);
+    expect((list!.querySelector('[data-testid="compare-check-8"]') as HTMLInputElement).disabled).toBe(false);
+    // No comparison checked: the table stands down until one is.
+    expect(container!.querySelector('[data-testid="delta-table"]')).toBeNull();
+    await act(async () => {
+      (list!.querySelector('[data-testid="compare-check-8"]') as HTMLInputElement).click();
+    });
+    await act(async () => {});
+    const head = container!.querySelector('[data-testid="delta-table"] thead')!;
+    expect(head.textContent).toContain('Run #9');
+    expect(head.textContent).toContain('Run #8');
+  });
+
+  it('badges a regressed comparison and passes baseline_run_id to the batch fetch', async () => {
+    const runWorse: Report = {
+      ...runNewer,
+      run_id: 10,
+      started_at: '2026-09-05T10:00:00Z',
+      error_rate: 0.03,
+      latency: { '50': 0.06, '95': 0.25, '99': 0.4 },
+      achieved: { concurrency: 10, throughput: 90, samples: 5400, failed: 162 },
+    };
+    const seen: string[] = [];
+    // Most-recent-first: 10 (09-05), 9 (09-04), 8 (09-03) -- so the default
+    // selection is baseline 8 (oldest) with run 10 (newest) checked.
+    await renderCompare({
+      reports: [runWorse, runNewer, runOlder],
+      compare: () => json([runOlder, runNewer, runWorse]),
+      record: seen,
+    });
+
+    // Toggle to baseline mode: the carried selection stands (baseline 8,
+    // comparison 10) and the batch fetch re-fires naming the baseline.
+    await act(async () => {
+      (container!.querySelector('[data-testid="mode-vs-baseline"]') as HTMLButtonElement).click();
+    });
+    await act(async () => {});
+
+    // The batch fetch named the baseline: ordering only, ids unchanged.
+    const compareUrls = seen.filter((u) => u.includes('/api/runs/compare'));
+    expect(compareUrls[compareUrls.length - 1]).toBe(
+      '/api/runs/compare?run_ids[]=8&run_ids[]=10&baseline_run_id=8'
+    );
+
+    // The regressed candidate's column carries the phase-59 badge, named
+    // against the radio'd baseline.
+    const chip = container!.querySelector('[data-testid="compare-regression-chip"]') as HTMLElement;
+    expect(chip.getAttribute('data-run-id')).toBe('10');
+    expect(chip.getAttribute('title')).toContain('vs run #8');
+  });
+
+  it('lands in baseline mode from ?mode=vs-baseline and honors ?runs= baseline-first', async () => {
+    await renderCompare({ url: '/executions/5/compare?mode=vs-baseline' });
+    expect(container!.querySelector('[data-testid="baseline-run-list"]')).not.toBeNull();
+    // Default carry: oldest run 8 is the baseline, newest 9 the comparison.
+    expect((container!.querySelector('[data-testid="baseline-radio-8"]') as HTMLInputElement).checked).toBe(true);
+    expect((container!.querySelector('[data-testid="compare-check-9"]') as HTMLInputElement).checked).toBe(true);
+    expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
+
+    // ?runs=a,b keeps its long-standing meaning -- first id is the baseline
+    // -- in this mode too: 9 radios the baseline, 8 the comparison.
+    await renderCompare({
+      url: '/executions/5/compare?mode=vs-baseline&runs=9,8',
+      compare: () => json([runNewer, runOlder]),
+    });
+    expect((container!.querySelector('[data-testid="baseline-radio-9"]') as HTMLInputElement).checked).toBe(true);
+    expect((container!.querySelector('[data-testid="compare-check-8"]') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('toggling back to slots restores the baseline-first selection', async () => {
+    await renderCompare();
+    await act(async () => {
+      (container!.querySelector('[data-testid="mode-vs-baseline"]') as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      (container!.querySelector('[data-testid="mode-slots"]') as HTMLButtonElement).click();
+    });
+    expect(selectValue('select-run-a')).toBe('8');
+    expect(selectValue('select-run-b')).toBe('9');
+    expect(container!.querySelector('[data-testid="delta-table"]')).not.toBeNull();
   });
 });
 
