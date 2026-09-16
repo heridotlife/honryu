@@ -68,6 +68,9 @@ type authzEntry struct {
 	// form is an application/x-www-form-urlencoded body for mutations that
 	// parse their form before authorizing.
 	form url.Values
+	// json is a raw JSON body for the same purpose, on the routes that
+	// speak JSON (phase 72's threshold replace-all).
+	json []byte
 	// query appends to the probe path.
 	query url.Values
 	// multipart fields + file build a multipart body for the one route
@@ -157,6 +160,13 @@ var authzAuditTable = []authzEntry{
 	// the capacity-profile GET uses), not every execution it names.
 	{method: "GET", pattern: "/api/scenarios", decision: decisionScopedList},
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/executions", decision: "scenario:read"},
+
+	// Phase 72: the scenario's k6-style pass/fail bounds are scenario-
+	// scoped like every other per-scenario surface -- read to list,
+	// update to replace the set.
+	{method: "GET", pattern: "/api/scenarios/{scenario_id}/thresholds", decision: "scenario:read"},
+	{method: "PUT", pattern: "/api/scenarios/{scenario_id}/thresholds", decision: "scenario:update",
+		json: []byte(`{"thresholds":[{"metric":"http_p95_ms","comparison":"lt","value":300}]}`)},
 	// Phase 67a: triggering a calibration for a scenario is creating a job
 	// against it -- the same scenario:create the instantiate route demands,
 	// not the read the neighbouring capacity-profile GET uses.
@@ -564,7 +574,8 @@ func probeRequest(t *testing.T, f *rbacFixture, e authzEntry, path, tok string, 
 
 	var body string
 	var contentType string
-	if e.multipart != nil {
+	switch {
+	case e.multipart != nil:
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
 		for k, v := range e.multipart {
@@ -582,7 +593,7 @@ func probeRequest(t *testing.T, f *rbacFixture, e authzEntry, path, tok string, 
 		_ = mw.Close()
 		body = buf.String()
 		contentType = mw.FormDataContentType()
-	} else if e.form != nil {
+	case e.form != nil:
 		form := make(url.Values, len(e.form))
 		for k, vs := range e.form {
 			form[k] = make([]string, len(vs))
@@ -592,6 +603,9 @@ func probeRequest(t *testing.T, f *rbacFixture, e authzEntry, path, tok string, 
 		}
 		body = form.Encode()
 		contentType = "application/x-www-form-urlencoded"
+	case e.json != nil:
+		body = string(e.json)
+		contentType = "application/json"
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

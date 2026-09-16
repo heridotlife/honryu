@@ -313,6 +313,25 @@ export interface FailingCriterion {
   unparsed?: boolean;
 }
 
+export interface ScenarioThreshold {
+  id: number;
+  scenario_id: number;
+  metric: "http_p95_ms" | "http_p99_ms" | "error_rate" | "throughput_qps";
+  comparison: "lt" | "gt";
+  value: number;
+  created_time: string;
+}
+
+export interface ThresholdResult {
+  threshold_id: number;
+  metric: "http_p95_ms" | "http_p99_ms" | "error_rate" | "throughput_qps";
+  comparison: "lt" | "gt";
+  value: number;
+  observed_value: number | null;
+  satisfied: boolean | null;
+  reason?: string;
+}
+
 export interface ServiceVerdict {
   project_id?: number;
   execution_id?: number;
@@ -439,6 +458,7 @@ export interface Report {
   baggage?: string;
   criteria?: string[] | null;
   failing_criteria?: FailingCriterion[] | null;
+  threshold_results?: ThresholdResult[];
 }
 
 export interface Series {
@@ -561,6 +581,8 @@ export const paths = {
   postScenariosImport: () => `/scenarios/import`,
   postScenariosByScenarioIdInstantiate: (scenarioId: number | string) => `/scenarios/${scenarioId}/instantiate`,
   getScenariosByScenarioIdExecutions: (scenarioId: number | string) => `/scenarios/${scenarioId}/executions`,
+  getScenariosByScenarioIdThresholds: (scenarioId: number | string) => `/scenarios/${scenarioId}/thresholds`,
+  putScenariosByScenarioIdThresholds: (scenarioId: number | string) => `/scenarios/${scenarioId}/thresholds`,
   getScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   deleteScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   getScenariosByScenarioIdFiles: (scenarioId: number | string) => `/scenarios/${scenarioId}/files`,
@@ -800,6 +822,20 @@ export function postScenariosByScenarioIdInstantiate(scenarioId: number | string
 /** List a scenario's executions */
 export function getScenariosByScenarioIdExecutions(scenarioId: number | string): Promise<ExecutionSummary[]> {
   return apiClient.get<ExecutionSummary[]>(paths.getScenariosByScenarioIdExecutions(scenarioId));
+}
+
+/** List a scenario's pass/fail thresholds */
+export function getScenariosByScenarioIdThresholds(scenarioId: number | string): Promise<ScenarioThreshold[]> {
+  return apiClient.get<ScenarioThreshold[]>(paths.getScenariosByScenarioIdThresholds(scenarioId));
+}
+
+/** Replace a scenario's pass/fail thresholds */
+export function putScenariosByScenarioIdThresholds(scenarioId: number | string, body: { thresholds?: { metric: "http_p95_ms" | "http_p99_ms" | "error_rate" | "throughput_qps"; comparison: "lt" | "gt"; value: number }[] }): Promise<ScenarioThreshold[]> {
+  return apiClient.request<ScenarioThreshold[]>(paths.putScenariosByScenarioIdThresholds(scenarioId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 /** Get a scenario and its files */

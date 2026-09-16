@@ -51,6 +51,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
+	"github.com/heridotlife/honryu/internal/app/thresholdapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/config"
@@ -75,6 +76,7 @@ type repository interface {
 	ports.ShareStore
 	ports.WebhookStore
 	ports.SLOStore
+	ports.ThresholdStore
 	ports.ReportDigestStore
 	ports.DigestScheduleStore
 	// ports.ExecutionRepository in full: the digest aggregation lists a
@@ -148,6 +150,13 @@ func run(ctx context.Context, getenv func(string) string) error {
 	// (phase 68); the same repo serves the registry and the reports the
 	// budgets read.
 	slos := sloapp.NewService(repo)
+	// Scenario thresholds grade each finalised run's report against the
+	// owning scenario's bounds (phase 72); the same repo serves the
+	// definitions, the results, and the scenario read. WithThresholds wires
+	// the grader into the one shared finalisation exit, next to the
+	// completion notification.
+	thresholds := thresholdapp.NewService(repo)
+	collector = collector.WithThresholds(thresholds)
 	// Digests deliver through the same webhook machinery a run completion
 	// rides on -- one signing path, one set of delivery bounds (phase 42).
 	// WithSLOGrader adds the per-SLO budget lines to every payload (phase
@@ -228,6 +237,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Webhooks:         webhooks,
 		Digests:          digests,
 		SLOs:             slos,
+		Thresholds:       thresholds,
 		Events:           bus,
 		Store:            store,
 		Auth:             authapp.NewService(authProvider, repo, cfg.Auth.EnableRBAC),

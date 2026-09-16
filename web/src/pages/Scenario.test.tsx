@@ -57,6 +57,12 @@ const report7 = {
   outcome: 'failed',
 };
 
+// The scenario's stored thresholds (phase 72): one p95 ceiling. Overridable
+// per test via `overrides`.
+let thresholdsFixture: unknown = [
+  { id: 3, scenario_id: 42, metric: 'http_p95_ms', comparison: 'lt', value: 300, created_time: '2026-09-17T00:00:00Z' },
+];
+
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 // Every (method, url) the page asked for, in order.
@@ -107,6 +113,11 @@ function stubFetch() {
           status: 200,
           headers: { 'Content-Type': 'text/yaml' },
         });
+      }
+      // Phase 72: the editor tab's threshold rows (mounted even when the
+      // tab is inactive -- Tabs keeps panels in the DOM).
+      if (url.endsWith('/api/scenarios/42/thresholds')) {
+        return json(thresholdsFixture);
       }
       return json({ message: `no stub for ${url}` }, 500);
     }),

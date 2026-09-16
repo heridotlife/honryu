@@ -28,6 +28,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
+	"github.com/heridotlife/honryu/internal/app/thresholdapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
@@ -113,6 +114,11 @@ type Deps struct {
 	// their budgets against stored run reports (phase 68). Optional; nil
 	// disables the /api/projects/{project_id}/slos endpoints (404).
 	SLOs *sloapp.Service
+	// Thresholds administers the per-scenario pass/fail bounds (phase 72)
+	// and serves their per-run results onto the report overlay. Optional;
+	// nil disables the /api/scenarios/{scenario_id}/thresholds endpoints
+	// (404) and the report's threshold_results layer stays empty.
+	Thresholds *thresholdapp.Service
 	// Audit records administrative actions. Optional; nil disables auditing.
 	Audit ports.AuditLog
 	// DefaultOwners is the owner set used when RBAC is disabled (no-auth mode).
@@ -263,6 +269,13 @@ var routes = []Route{
 	{"POST", "/api/scenarios/{scenario_id}/requests/validate", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.validateScenarioRequests })},
 	{"PUT", "/api/scenarios/{scenario_id}/requests", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.setScenarioRequests })},
 	{"GET", "/api/scenarios/{scenario_id}/executions", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarioExecutions })},
+
+	// Phase 72: the scenario's k6-style pass/fail bounds -- GET lists them,
+	// PUT replaces the whole set (the editor-save semantics, idempotent by
+	// construction). Same optional-service gate contract as the SLO
+	// routes above.
+	{"GET", "/api/scenarios/{scenario_id}/thresholds", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarioThresholds })},
+	{"PUT", "/api/scenarios/{scenario_id}/thresholds", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.replaceScenarioThresholds })},
 
 	// Phase 65: templates are scenarios with a flag. The catalog is its own
 	// read surface (templates are global, so no project scopes it), and

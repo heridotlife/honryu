@@ -8,10 +8,12 @@
 import { ApiError } from './client';
 import {
   getScenariosByScenarioIdRequests,
+  getScenariosByScenarioIdThresholds,
   getTemplates,
   postScenariosByScenarioIdInstantiate,
   postScenariosByScenarioIdRequestsValidate,
   putScenariosByScenarioIdRequests,
+  putScenariosByScenarioIdThresholds,
 } from './generated';
 
 /** The fragment's YAML exactly as stored (no server-side normalization). */
@@ -106,4 +108,51 @@ export async function instantiateScenario(templateId: number, input: Instantiate
     overrides: input.targetUrl ? { target_url: input.targetUrl } : undefined,
   });
   return sc.id as number;
+}
+
+// --- Scenario thresholds (phase 72) ------------------------------------------
+
+/** One threshold definition as the editor edits it: metric, direction, and
+ * the bound in the metric's own unit. The generated enum types are narrowed
+ * to string on purpose here -- the editor validates the spelling against the
+ * same enum the page renders as options, and the wire carries what the user
+ * chose. */
+export interface ThresholdInput {
+  metric: string;
+  comparison: string;
+  value: number;
+}
+
+/** A stored threshold: the definition plus its server-assigned id and stamp
+ * (the editor syncs on ids, so an idempotent re-save is a no-op). */
+export interface StoredThreshold extends ThresholdInput {
+  id: number;
+}
+
+/** GET /api/scenarios/{id}/thresholds -- the scenario's bounds, definition
+ * order. Normalized to an array: empty when none are defined, never null. */
+export async function listThresholds(scenarioId: number): Promise<StoredThreshold[]> {
+  const got = await getScenariosByScenarioIdThresholds(scenarioId);
+  return (got ?? []).map((t) => ({
+    id: t.id,
+    metric: t.metric,
+    comparison: t.comparison,
+    value: t.value,
+  }));
+}
+
+/**
+ * PUT /api/scenarios/{id}/thresholds -- replace-all, the editor-save
+ * semantics: the given list is the whole truth; saving it twice is a no-op,
+ * an empty list clears. Responds with the stored set (ids assigned), which
+ * becomes the editor's new state.
+ */
+export async function saveThresholds(scenarioId: number, thresholds: ThresholdInput[]): Promise<StoredThreshold[]> {
+  return putScenariosByScenarioIdThresholds(scenarioId, {
+    thresholds: thresholds.map((t) => ({
+      metric: t.metric as 'http_p95_ms' | 'http_p99_ms' | 'error_rate' | 'throughput_qps',
+      comparison: t.comparison as 'lt' | 'gt',
+      value: t.value,
+    })),
+  });
 }

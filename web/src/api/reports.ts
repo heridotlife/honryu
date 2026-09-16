@@ -91,6 +91,24 @@ export interface Report {
   criteria?: string[] | null;
   /** Which configured criteria this run tripped (or could not parse). */
   failing_criteria?: FailingCriterion[] | null;
+  /** Phase 72: this run's report graded against its scenario's k6-style
+   * bounds. Always an array on the wire; the editor-side rows carry the
+   * definition snapshot plus observed/satisfied (null = unknown, with a
+   * reason). */
+  threshold_results?: ThresholdResult[] | null;
+}
+
+/** One scenario-threshold result on a run report (phase 72). observed and
+ * satisfied are null together when the report carried no figure for the
+ * metric -- unknown, never a fabricated fail -- and reason says why. */
+export interface ThresholdResult {
+  threshold_id: number;
+  metric: 'http_p95_ms' | 'http_p99_ms' | 'error_rate' | 'throughput_qps';
+  comparison: 'lt' | 'gt';
+  value: number;
+  observed_value: number | null;
+  satisfied: boolean | null;
+  reason?: string;
 }
 
 /**
