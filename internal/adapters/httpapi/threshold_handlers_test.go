@@ -280,3 +280,78 @@ func TestRunReport_NoThresholdsIsEmptyArray(t *testing.T) {
 		t.Errorf("threshold_results = %#v, want an empty array", got.ThresholdResults)
 	}
 }
+
+// --- phase-72 pins: replace-all semantics on the wire ------------------------
+
+// PUT is idempotent end to end: saving the same list twice leaves the same
+// state, down to the row ids -- a no-change editor save must not churn ids
+// (and so must not orphan the results already recorded against them).
+func TestThresholds_PutSameListTwiceIsTheSameState(t *testing.T) {
+	t.Parallel()
+	h, scenarioID := newThresholdsRouter(t)
+	body := `{"thresholds":[
+		{"metric":"http_p95_ms","comparison":"lt","value":300},
+		{"metric":"error_rate","comparison":"lt","value":0.01}]}`
+	if rec := putThresholds(t, h, scenarioID, body); rec.Code != http.StatusOK {
+		t.Fatalf("first PUT = %d (%s)", rec.Code, rec.Body.String())
+	}
+	first := decodeThresholdRows(t, do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/thresholds").Body.Bytes())
+	if rec := putThresholds(t, h, scenarioID, body); rec.Code != http.StatusOK {
+		t.Fatalf("second PUT = %d (%s)", rec.Code, rec.Body.String())
+	}
+	second := decodeThresholdRows(t, do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/thresholds").Body.Bytes())
+	if len(first) != len(second) {
+		t.Fatalf("state changed size: %d rows -> %d rows", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Errorf("row %d changed across the re-save: %+v -> %+v (ids and values must hold)", i, first[i], second[i])
+		}
+	}
+}
+
+// PUT with an empty list clears the scenario's set -- the replace-all
+// contract's clearing half. The response is the empty stored set.
+func TestThresholds_EmptyPutClears(t *testing.T) {
+	t.Parallel()
+	h, scenarioID := newThresholdsRouter(t)
+	if rec := putThresholds(t, h, scenarioID, `{"thresholds":[
+		{"metric":"http_p95_ms","comparison":"lt","value":300},
+		{"metric":"throughput_qps","comparison":"gt","value":50}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT = %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec := putThresholds(t, h, scenarioID, `{"thresholds":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clearing PUT = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rows := decodeThresholdRows(t, rec.Body.Bytes()); len(rows) != 0 {
+		t.Errorf("clearing PUT response = %+v, want empty", rows)
+	}
+	got := decodeThresholdRows(t, do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/thresholds").Body.Bytes())
+	if len(got) != 0 {
+		t.Errorf("GET after clearing PUT = %+v, want none", got)
+	}
+}
+
+// GET includes the threshold ids the editor syncs on and the results
+// correlate against: every PUT response row's id shows up on the GET.
+func TestThresholds_GetIncludesThresholdIds(t *testing.T) {
+	t.Parallel()
+	h, scenarioID := newThresholdsRouter(t)
+	stored := decodeThresholdRows(t, putThresholds(t, h, scenarioID, `{"thresholds":[
+		{"metric":"http_p95_ms","comparison":"lt","value":300},
+		{"metric":"http_p99_ms","comparison":"lt","value":500}]}`).Body.Bytes())
+	if len(stored) != 2 || stored[0].ID <= 0 || stored[1].ID <= 0 {
+		t.Fatalf("PUT response rows carry no usable ids: %+v", stored)
+	}
+	got := decodeThresholdRows(t, do(t, h, http.MethodGet, "/api/scenarios/"+itoa(scenarioID)+"/thresholds").Body.Bytes())
+	ids := make(map[int64]bool, len(got))
+	for _, row := range got {
+		ids[row.ID] = true
+	}
+	for _, want := range stored {
+		if !ids[want.ID] {
+			t.Errorf("GET is missing id %d from the stored set: %+v", want.ID, got)
+		}
+	}
+}
