@@ -164,6 +164,22 @@ func TestMySQLScenarioExecution_ErrorsWhenDBClosed(t *testing.T) {
 
 func truncateAll(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// threshold_results carries the schema's first real foreign keys (into
+	// execution, execution_report, scenario_thresholds), and MySQL refuses
+	// TRUNCATE on a referenced table outright. Relax the checks for the
+	// sweep -- pinned to one pooled connection, because the session
+	// variable dies with it.
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("acquire connection: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=0"); err != nil {
+		t.Fatalf("relax foreign key checks: %v", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1")
+	}()
 	for _, table := range []string{
 		"project", "scenario", "execution", "execution_scenario",
 		"scenario_data", "scenario_test_file", "scenario_requests", "execution_data",
@@ -172,6 +188,8 @@ func truncateAll(t *testing.T, db *sql.DB) {
 		"execution_launch", "execution_launch_history",
 		"tenant", "role_grant",
 		"execution_report", "report_error_signature",
+		"threshold_results",
+		"scenario_thresholds",
 		"execution_report_series",
 		"run_share",
 		"webhook",
@@ -184,8 +202,10 @@ func truncateAll(t *testing.T, db *sql.DB) {
 		"campaign", "campaign_service", "execution_criteria",
 		"calibration_job", "calibration_job_step", "capacity_profile",
 		"cluster_registry",
+		"scenario_thresholds",
+		"threshold_results",
 	} {
-		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
+		if _, err := conn.ExecContext(context.Background(), "TRUNCATE TABLE "+table); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
 		}
 	}

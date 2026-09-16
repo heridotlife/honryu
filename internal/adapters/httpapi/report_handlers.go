@@ -68,6 +68,13 @@ type runReportResponse struct {
 	report.Report
 	Criteria        []string                   `json:"criteria"`
 	FailingCriteria []failingCriterionResponse `json:"failing_criteria"`
+	// ThresholdResults is the phase-72 scenario-threshold layer: this run's
+	// report graded against its scenario's k6-style bounds at finalisation
+	// time. Strictly additive and always an array -- empty when the scenario
+	// defines no thresholds, the run predates the feature, or no threshold
+	// service is wired. The engine's own outcome is untouched: these are
+	// evidence a reader weighs, never the verdict.
+	ThresholdResults []thresholdResultResponse `json:"threshold_results"`
 	// ProjectID is the execution's project (phase 37): the fourth per-run
 	// value an APM link-out substitutes ({{project_id}}), served on the
 	// report so the page needs no second fetch. Zero = unknown (no execution
@@ -198,6 +205,10 @@ func (h *handlers) withCriteriaVerdict(r *http.Request, rep report.Report) runRe
 		Report:          rep,
 		Criteria:        crits,
 		FailingCriteria: make([]failingCriterionResponse, len(failing)),
+		// The phase-72 layer, same tolerance as the criteria and APM layers
+		// below: strictly additive, populated after the report existed and
+		// was authorized.
+		ThresholdResults: h.thresholdResultsForRun(r, rep.RunID),
 	}
 	for i, fc := range failing {
 		out.FailingCriteria[i] = failingCriterionResponse{Criterion: fc.Criterion, Unparsed: fc.Unparsed}

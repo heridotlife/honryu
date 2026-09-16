@@ -32,6 +32,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scheduleapp"
 	"github.com/heridotlife/honryu/internal/app/sloapp"
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
+	"github.com/heridotlife/honryu/internal/app/thresholdapp"
 	"github.com/heridotlife/honryu/internal/app/usageapp"
 	"github.com/heridotlife/honryu/internal/app/webhookapp"
 	"github.com/heridotlife/honryu/internal/domain/account"
@@ -105,6 +106,9 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		Calibrations: calibrations,
 		Webhooks:     webhookapp.NewService(store),
 		SLOs:         sloapp.NewService(store),
+		// Wired so the threshold probes reach the scenario:read/update gate
+		// rather than the optional-service 404 (phase 72).
+		Thresholds:   thresholdapp.NewService(store),
 		Digests:      digestapp.NewService(store),
 		Store:        obj,
 		Reports:      reports,

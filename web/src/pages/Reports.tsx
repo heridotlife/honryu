@@ -12,6 +12,7 @@ import Input from '../components/ui/Input';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
+import ThresholdResultsCard from '../components/ThresholdResultsCard';
 import ShareRunModal from '../components/ShareRunModal';
 import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
@@ -1306,6 +1307,12 @@ export function ReportWorkspace({
                 </CardContent>
               </Card>
 
+              {/* Phase 72: the scenario-threshold layer -- this run graded
+                  against its scenario's k6-style bounds. Hidden entirely
+                  when the scenario defines none; rows are icon + text,
+                  never colour alone. */}
+              <ThresholdResultsCard results={report.threshold_results ?? []} />
+
               {/* Phase 33: the run against a picked baseline from this
                   execution, straight under the verdict — regression context
                   before measurement detail. Hidden when no other run
@@ -1589,6 +1596,13 @@ function ReportDetail({ runId }: { runId: string }) {
           </p>
         </Card>
       )}
+
+      {/* Phase 72: while the run's report is still in flight (a run that
+          has not finalised one yet, mostly) the threshold block shows a
+          skeleton — the results do not exist until the report does. Once an
+          error settles it, the page's error card above is the message and
+          the block stands down. */}
+      {!report && !error && <ThresholdResultsCard results={[]} pending />}
 
       {report && (
         <ReportWorkspace
