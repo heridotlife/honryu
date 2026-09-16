@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -142,8 +143,20 @@ func parseCompareRunIDs(r *http.Request) ([]int64, error) {
 // its own execution, exactly as the single-run route authorizes it, and the
 // first failure (unknown run, unauthorized execution) fails the whole
 // request: a compare of N-1 runs answers a question nobody asked.
+//
+// Phase 75 adds the optional baseline_run_id: it only ORDERS the payload --
+// the named run's report moves to the front, making the wire's long-standing
+// "first element is the baseline" contract explicit no matter how the ids
+// were spelled. The delta math deliberately stays client-side (the page
+// computes deltas itself, including from its reports-list fallback where
+// server-side deltas would be absent), so the param carries no computation.
 func (h *handlers) runsCompare(w http.ResponseWriter, r *http.Request) {
 	ids, err := parseCompareRunIDs(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	baselineID, err := parseBaselineRunID(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -161,7 +174,35 @@ func (h *handlers) runsCompare(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, h.withCriteriaVerdict(r, rep))
 	}
+	if baselineID > 0 {
+		if !slices.Contains(ids, baselineID) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("baseline_run_id %d is not among the compared runs", baselineID))
+			return
+		}
+		baselineIdx := slices.Index(ids, baselineID)
+		ordered := make([]runReportResponse, 0, len(out))
+		ordered = append(ordered, out[baselineIdx])
+		ordered = append(ordered, out[:baselineIdx]...)
+		ordered = append(ordered, out[baselineIdx+1:]...)
+		out = ordered
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// parseBaselineRunID extracts the optional baseline_run_id query param
+// (phase 75): the run the caller wants first in the compare payload. Absent
+// or empty means "order as asked"; anything non-numeric or non-positive is a
+// bad request, same bar as the run ids themselves.
+func parseBaselineRunID(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("baseline_run_id"))
+	if raw == "" {
+		return 0, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid baseline_run_id %q", raw)
+	}
+	return id, nil
 }
 
 // runReport returns a run's stored report -- the durable record of what it

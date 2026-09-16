@@ -1081,7 +1081,7 @@ export function getExecutionsByExecutionIdErrorSignatures(executionId: number | 
 }
 
 /** Fetch several runs' reports in one response, request order preserved */
-export function getRunsCompare(opts?: { query?: { "run_ids[]"?: Array<number>; run_a?: number | string; run_b?: number | string } }): Promise<Report[]> {
+export function getRunsCompare(opts?: { query?: { "run_ids[]"?: Array<number>; run_a?: number | string; run_b?: number | string; baseline_run_id?: number | string } }): Promise<Report[]> {
   return apiClient.get<Report[]>(paths.getRunsCompare() + toQuery(opts?.query ?? {}));
 }
 

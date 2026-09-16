@@ -137,9 +137,15 @@ export async function getRunReport(runId: number): Promise<Report> {
  * ids go on the wire as repeated run_ids[] params — the backend's other
  * accepted spellings (comma-separated run_ids=, the run_a/run_b pair) are
  * for hand-built URLs, not for this client. */
-export async function compareRuns(runIds: number[]): Promise<Report[]> {
-  const query = runIds.map((id) => `run_ids[]=${id}`).join('&');
-  const got = await apiClient.get<Report[] | null>(`/runs/compare?${query}`);
+export async function compareRuns(runIds: number[], baselineRunId?: number): Promise<Report[]> {
+  const parts = runIds.map((id) => `run_ids[]=${id}`);
+  // Phase 75: in "vs baseline" mode the caller names its baseline so the
+  // server orders the payload baseline-first (ordering only -- the delta
+  // math stays here, exactly where it lives for the fallback path too).
+  if (baselineRunId !== undefined) {
+    parts.push(`baseline_run_id=${baselineRunId}`);
+  }
+  const got = await apiClient.get<Report[] | null>(`/runs/compare?${parts.join('&')}`);
   return (got ?? []).map(normalizeVerdicts);
 }
 
