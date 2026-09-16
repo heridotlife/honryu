@@ -3016,6 +3016,8 @@ paths:
         run_a/run_b pair. Each run is authorized through its own execution,
         exactly as the single-run route authorizes it, and the first failure
         (unknown run, unauthorized execution) fails the whole request.
+        Optional baseline_run_id only orders the payload -- the named run's
+        report moves to the front; delta computation stays client-side.
       parameters:
         - name: run_ids[]
           in: query
@@ -3035,6 +3037,15 @@ paths:
           in: query
           required: false
           description: The candidate run (two-run pair form; use with run_a).
+          schema: { type: integer, format: int64 }
+        - name: baseline_run_id
+          in: query
+          required: false
+          description: >-
+            Orders the payload so this run's report comes first -- the wire's
+            "first element is the baseline" contract, made explicit. Must be
+            one of the compared runs (else 400). Ordering only: the deltas
+            themselves are the client's computation.
           schema: { type: integer, format: int64 }
       responses:
         '200':

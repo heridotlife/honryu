@@ -14,7 +14,15 @@
 // Delta semantics: the first slot is the baseline, every later slot a
 // candidate, and every delta reads "candidate against baseline" — negative
 // latency is an improvement, positive error rate a regression, positive RPS
-// an improvement.
+// an improvement. Phase 75: a movement within ±5% reads neutral (the same
+// band colors the cells and badges the chips), each candidate carries an
+// absolute AND a percent delta cell, both marked with a direction arrow
+// (▲ value rose, ▼ it fell — direction, never judgment; color and sign
+// carry better/worse), and the "vs baseline" mode swaps the A/B/C slot
+// pickers for an explicit run list: one radio'd baseline, checkboxes for
+// every run compared against it. Deltas are computed HERE, client-side, in
+// both modes — the optional baseline_run_id param on the batch endpoint
+// only orders the payload baseline-first.
 import { Fragment, useEffect, useId, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import Breadcrumbs from '../components/Breadcrumbs';
@@ -41,15 +49,24 @@ export function pctDelta(a: number, b: number): number | null {
 export type DeltaKind = 'improvement' | 'regression' | 'neutral' | 'none';
 
 /**
+ * The neutral band, in percent (phase 75): a delta this size or smaller is
+ * "no real movement" — neither an improvement nor a regression. One band
+ * for the whole page, so cell coloring and the regression chips can never
+ * disagree about whether a ±4% wobble matters.
+ */
+export const NEUTRAL_BAND_PCT = 5;
+
+/**
  * Which way a delta reads: `lower` metrics (latency, error rate) improve
  * when the delta is negative, `higher` metrics (RPS) when it is positive.
- * A null delta (unmeasured on one side, or divide-by-zero) is 'none'.
+ * Within ±NEUTRAL_BAND_PCT the delta is 'neutral'; a null delta (unmeasured
+ * on one side, or divide-by-zero) is 'none'.
  */
 export function deltaKind(better: 'lower' | 'higher', delta: number | null): DeltaKind {
   if (delta === null) {
     return 'none';
   }
-  if (delta === 0) {
+  if (Math.abs(delta) <= NEUTRAL_BAND_PCT) {
     return 'neutral';
   }
   const bIsBetter = better === 'lower' ? delta < 0 : delta > 0;
@@ -74,6 +91,30 @@ export function formatDelta(delta: number | null): string {
     return '—';
   }
   return `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%`;
+}
+
+/**
+ * Signed absolute delta in the metric's own unit, e.g. +40.0 ms (phase 75:
+ * the abs half of each candidate's delta pair); em-dash for null.
+ */
+export function signedAbs(delta: number | null, format: (v: number) => string): string {
+  if (delta === null) {
+    return '—';
+  }
+  return `${delta > 0 ? '+' : ''}${format(delta)}`;
+}
+
+/**
+ * Direction glyph for a delta (phase 75): ▲ the raw value rose, ▼ it fell,
+ * '' it did not move (or the movement is unmeasurable). Direction, not
+ * judgment — the color and the sign carry better/worse, so a cell is never
+ * read by color alone.
+ */
+export function deltaArrow(delta: number | null): string {
+  if (delta === null || delta === 0) {
+    return '';
+  }
+  return delta > 0 ? '▲' : '▼';
 }
 
 function formatTime(iso: string): string {
@@ -220,12 +261,12 @@ function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Re
                 <th scope="col" className="px-3 py-2 font-medium">
                   Run #{baseline.run_id}
                 </th>
-                {/* One value/delta column pair per candidate, in slot order.
-                    The verdict chip rides the candidate's own column header
-                    (phase 61): per column, exactly where the numbers it
-                    summarizes sit. Only-when-regressed -- a clean comparison
-                    gets no chip, the row cells already color the individual
-                    movements. Real text, not a color-only cue. */}
+                {/* One value/abs-delta/pct-delta column trio per candidate,
+                    in slot order. The verdict chip rides the candidate's own
+                    column header (phase 61): per column, exactly where the
+                    numbers it summarizes sit. Only-when-regressed -- a clean
+                    comparison gets no chip, the row cells already color the
+                    individual movements. Real text, not a color-only cue. */}
                 {candidates.map((c) => {
                   const regressions = summarizeRegressions(baseline, c);
                   return (
@@ -245,9 +286,8 @@ function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Re
                           )}
                         </span>
                       </th>
-                      <th scope="col" className="px-3 py-2 font-medium">
-                        Δ vs #{baseline.run_id}
-                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium">Δ abs vs #{baseline.run_id}</th>
+                      <th scope="col" className="px-3 py-2 font-medium">Δ % vs #{baseline.run_id}</th>
                     </Fragment>
                   );
                 })}
@@ -262,13 +302,34 @@ function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Re
                     <td className="px-3 py-2 whitespace-nowrap">{vBase !== undefined ? m.format(vBase) : '—'}</td>
                     {candidates.map((c) => {
                       const vCand = m.value(c);
-                      const delta = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
-                      const kind = deltaKind(m.better, delta);
+                      const pct = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
+                      const abs = vBase !== undefined && vCand !== undefined ? vCand - vBase : null;
+                      // One classification per pair: the percent delta is
+                      // the band's unit, so it decides both cells' tone;
+                      // the abs cell repeats it only because the two always
+                      // share a sign (and when the percent is undefined --
+                      // a zero baseline -- the abs still shows, uncolored).
+                      const cls = deltaClass(deltaKind(m.better, pct));
+                      const pctArrow = deltaArrow(pct);
+                      const absArrow = deltaArrow(abs);
                       return (
                         <Fragment key={c.run_id}>
                           <td className="px-3 py-2 whitespace-nowrap">{vCand !== undefined ? m.format(vCand) : '—'}</td>
-                          <td className={`px-3 py-2 font-medium whitespace-nowrap ${deltaClass(kind)}`}>
-                            {formatDelta(delta)}
+                          <td data-delta="abs" data-run-id={c.run_id} className={`px-3 py-2 font-medium whitespace-nowrap ${cls}`}>
+                            {absArrow && (
+                              <span aria-hidden="true" className="mr-1">
+                                {absArrow}{' '}
+                              </span>
+                            )}
+                            {signedAbs(abs, m.format)}
+                          </td>
+                          <td data-delta="pct" data-run-id={c.run_id} className={`px-3 py-2 font-medium whitespace-nowrap ${cls}`}>
+                            {pctArrow && (
+                              <span aria-hidden="true" className="mr-1">
+                                {pctArrow}{' '}
+                              </span>
+                            )}
+                            {formatDelta(pct)}
                           </td>
                         </Fragment>
                       );
@@ -373,9 +434,22 @@ export default function RunCompare() {
 
   const [reports, setReports] = useState<Report[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The selection, in slot order: index 0 is the baseline, the rest are
-  // candidates. Two slots by default; "Add run" extends it.
+  // Phase 75: two selection modes. "slots" is the long-standing A/B/C pick
+  // list (index 0 is the baseline); "baseline" ("vs baseline") is an explicit
+  // run list -- one radio'd baseline run plus checkboxes for every run
+  // compared against it. The query's ?mode=vs-baseline lands in baseline
+  // mode; the toggle is otherwise local state.
+  const [mode, setMode] = useState<'slots' | 'baseline'>(() =>
+    searchParams.get('mode') === 'vs-baseline' ? 'baseline' : 'slots'
+  );
+  // The slots-mode selection, in slot order: index 0 is the baseline, the
+  // rest are candidates. Two slots by default; "Add run" extends it.
   const [selected, setSelected] = useState<number[]>([]);
+  // The baseline-mode selection: one baseline run plus the runs compared
+  // against it, in check order. Kept alongside `selected` so toggling modes
+  // carries the comparison across instead of losing it.
+  const [baselineId, setBaselineId] = useState<number | null>(null);
+  const [picked, setPicked] = useState<number[]>([]);
   // The selected runs' summaries off GET /api/runs/compare, request order.
   // Null while the fetch is in flight or after it failed -- the render then
   // falls back to the already-loaded reports list, same fields.
@@ -402,14 +476,19 @@ export default function RunCompare() {
         // execution (two is the smallest ask -- the long-standing
         // ?runs=a,b spelling); otherwise slot A = the oldest run (baseline)
         // and slot B = the newest (candidate) -- the list arrives
-        // most-recent-first.
+        // most-recent-first. Both representations are seeded (slots AND
+        // baseline/checkboxes) so the toggle works before any interaction;
+        // in every spelling the first id is the baseline.
         const ids = rows.map((r) => r.run_id);
         const wanted = (searchParams.get('runs') ?? '')
           .split(',')
           .map((part) => Number(part.trim()))
           .filter((n) => Number.isInteger(n) && n > 0);
         const fromQuery = wanted.length >= 2 && wanted.every((n) => ids.includes(n));
-        setSelected(fromQuery ? wanted : ids.length > 0 ? [ids[ids.length - 1], ids[0]] : []);
+        const sel = fromQuery ? wanted : ids.length > 0 ? [ids[ids.length - 1], ids[0]] : [];
+        setSelected(sel);
+        setBaselineId(sel.length > 0 ? sel[0] : null);
+        setPicked(sel.slice(1));
       })
       .catch((err: unknown) => {
         if (cancelled) {
@@ -422,10 +501,16 @@ export default function RunCompare() {
     };
   }, [executionId, validId, searchParams]);
 
+  // The selection this mode compares, in wire order: baseline first. The
+  // batch fetch, the fallback pool, the table and the chart all read it.
+  const effective = mode === 'slots' ? selected : baselineId !== null ? [baselineId, ...picked] : [];
+
   // Fetch the selection's summaries off the batch endpoint. Keyed on the
   // joined selection: the effect re-runs exactly when the runs compared
-  // change, never on the array's render-time identity.
-  const selectionKey = selected.join(',');
+  // change, never on the array's render-time identity. In baseline mode the
+  // radio'd run rides along as baseline_run_id so the server orders the
+  // payload baseline-first (ordering only -- the deltas are computed here).
+  const selectionKey = effective.join(',');
   useEffect(() => {
     const ids = selectionKey === '' ? [] : selectionKey.split(',').map(Number);
     if (ids.length < 2) {
@@ -433,7 +518,8 @@ export default function RunCompare() {
       return;
     }
     let cancelled = false;
-    compareRuns(ids)
+    const baseline = mode === 'baseline' && baselineId !== null ? baselineId : undefined;
+    compareRuns(ids, baseline)
       .then((rows) => {
         if (!cancelled) {
           setSummaries(rows);
@@ -447,15 +533,29 @@ export default function RunCompare() {
     return () => {
       cancelled = true;
     };
-  }, [selectionKey]);
+  }, [selectionKey, mode, baselineId]);
 
-  const sameRun = new Set(selected).size !== selected.length;
+  const sameRun = new Set(effective).size !== effective.length;
   const pool = summaries ?? reports;
   const byId = new Map((pool ?? []).map((r) => [r.run_id, r] as const));
-  const selectedReports = selected.map((sid) => byId.get(sid) ?? null);
+  const selectedReports = effective.map((sid) => byId.get(sid) ?? null);
   const ready = !sameRun && selectedReports.length >= 2 && selectedReports.every((r) => r !== null);
   const baseline = ready ? selectedReports[0] : null;
   const candidates = ready ? (selectedReports.slice(1) as Report[]) : [];
+
+  /** Mode toggle: carry the comparison across the two representations. */
+  const switchMode = (next: 'slots' | 'baseline') => {
+    if (next === mode) {
+      return;
+    }
+    setMode(next);
+    if (next === 'baseline') {
+      setBaselineId(selected[0] ?? null);
+      setPicked(selected.slice(1));
+    } else {
+      setSelected(baselineId !== null ? [baselineId, ...picked] : []);
+    }
+  };
 
   const addRun = () => {
     if (reports === null) {
@@ -513,41 +613,128 @@ export default function RunCompare() {
               <CardTitle>Runs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {selected.map((runId, i) => (
-                  <div key={i} className="flex items-end gap-2">
-                    <div className="min-w-0 grow">
-                      <RunSelect
-                        label={slotLabel(i)}
-                        testId={slotTestId(i)}
-                        value={runId}
-                        reports={reports}
-                        onChange={(rid) => setSelected((prev) => prev.map((v, j) => (j === i ? (rid ?? v) : v)))}
-                      />
-                    </div>
-                    {selected.length > 2 && (
-                      <button
-                        type="button"
-                        data-testid={`remove-run-${i}`}
-                        aria-label={`Remove slot ${slotLetter(i)}`}
-                        onClick={() => removeRun(i)}
-                        className="min-h-[44px] shrink-0 rounded-lg border border-slate-300 px-3 text-slate-500 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-              {reports.length > selected.length && (
+              {/* Phase 75: the two selection modes -- the long-standing slot
+                  pickers, or "vs baseline": an explicit radio'd baseline plus
+                  checkbox'd comparisons. aria-pressed, so the state is text,
+                  not color. */}
+              <div role="group" aria-label="Comparison mode" data-testid="compare-mode" className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  data-testid="add-run"
-                  onClick={addRun}
-                  className="min-h-[44px] rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  data-testid="mode-slots"
+                  aria-pressed={mode === 'slots'}
+                  onClick={() => switchMode('slots')}
+                  className={`min-h-[44px] rounded-lg px-3 text-sm font-medium transition-colors focus:ring-2 focus:ring-sky-500 focus:outline-none ${
+                    mode === 'slots'
+                      ? 'bg-sky-600 text-white'
+                      : 'border border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
                 >
-                  + Add run
+                  A/B/C slots
                 </button>
+                <button
+                  type="button"
+                  data-testid="mode-vs-baseline"
+                  aria-pressed={mode === 'baseline'}
+                  onClick={() => switchMode('baseline')}
+                  className={`min-h-[44px] rounded-lg px-3 text-sm font-medium transition-colors focus:ring-2 focus:ring-sky-500 focus:outline-none ${
+                    mode === 'baseline'
+                      ? 'bg-sky-600 text-white'
+                      : 'border border-slate-300 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  vs baseline
+                </button>
+              </div>
+              {mode === 'slots' && (
+                <>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {selected.map((runId, i) => (
+                      <div key={i} className="flex items-end gap-2">
+                        <div className="min-w-0 grow">
+                          <RunSelect
+                            label={slotLabel(i)}
+                            testId={slotTestId(i)}
+                            value={runId}
+                            reports={reports}
+                            onChange={(rid) => setSelected((prev) => prev.map((v, j) => (j === i ? (rid ?? v) : v)))}
+                          />
+                        </div>
+                        {selected.length > 2 && (
+                          <button
+                            type="button"
+                            data-testid={`remove-run-${i}`}
+                            aria-label={`Remove slot ${slotLetter(i)}`}
+                            onClick={() => removeRun(i)}
+                            className="min-h-[44px] shrink-0 rounded-lg border border-slate-300 px-3 text-slate-500 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {reports.length > selected.length && (
+                    <button
+                      type="button"
+                      data-testid="add-run"
+                      onClick={addRun}
+                      className="min-h-[44px] rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      + Add run
+                    </button>
+                  )}
+                </>
+              )}
+              {mode === 'baseline' && (
+                <div role="group" aria-label="Baseline and comparison runs" data-testid="baseline-run-list" className="space-y-2">
+                  <p className="text-body-sm text-slate-500 dark:text-slate-400">
+                    Pick the baseline with the radio, then tick every run to compare against it.
+                  </p>
+                  {reports.map((r) => {
+                    const isBaseline = r.run_id === baselineId;
+                    const isPicked = picked.includes(r.run_id);
+                    return (
+                      <div
+                        key={r.run_id}
+                        className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700"
+                      >
+                        <input
+                          type="radio"
+                          name="compare-baseline"
+                          data-testid={`baseline-radio-${r.run_id}`}
+                          aria-label={`Use run ${r.run_id} as the baseline`}
+                          checked={isBaseline}
+                          onChange={() => {
+                            setBaselineId(r.run_id);
+                            // The new baseline leaves the comparison set: its
+                            // checkbox disables, it can't compare against itself.
+                            setPicked((prev) => prev.filter((id) => id !== r.run_id));
+                          }}
+                          className="size-4 accent-sky-600"
+                        />
+                        <input
+                          type="checkbox"
+                          data-testid={`compare-check-${r.run_id}`}
+                          aria-label={`Compare run ${r.run_id} against the baseline`}
+                          checked={isPicked}
+                          disabled={isBaseline}
+                          onChange={() =>
+                            setPicked((prev) => (isPicked ? prev.filter((id) => id !== r.run_id) : [...prev, r.run_id]))
+                          }
+                          className="size-4 accent-sky-600"
+                        />
+                        <span className="text-body-sm text-slate-900 dark:text-white">
+                          Run #{r.run_id} · {formatTime(r.started_at)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {mode === 'baseline' && baselineId === null && (
+                <p className="text-body-sm text-amber-600 dark:text-amber-400" data-testid="baseline-hint">
+                  Pick a baseline run — the others are compared against it.
+                </p>
               )}
               {sameRun && (
                 <p className="text-body-sm text-amber-600 dark:text-amber-400" data-testid="compare-same-run">
@@ -559,7 +746,7 @@ export default function RunCompare() {
           {baseline !== null && (
             <>
               <DeltaTable baseline={baseline} candidates={candidates} />
-              <CompareChart runIds={selected.filter((sid) => byId.has(sid))} />
+              <CompareChart runIds={effective.filter((sid) => byId.has(sid))} />
             </>
           )}
         </>
