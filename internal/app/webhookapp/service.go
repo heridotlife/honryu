@@ -670,6 +670,12 @@ type digestView struct {
 	// ThresholdFailures is the number a reader scanning for regressions
 	// looks for first -- the Slack summary leads with it.
 	ThresholdFailures int `json:"threshold_failures"`
+	// Thresholds is the per-run threshold verdict section (phase 74); only
+	// the outcome is read here, enough to count the summary line. Nil/absent
+	// in payloads older than the section -- those render no threshold line.
+	Thresholds []struct {
+		Outcome string `json:"outcome"`
+	} `json:"thresholds"`
 }
 
 // slackDigestBody renders a stored digest payload as Slack's message shape:
@@ -686,13 +692,29 @@ func slackDigestBody(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	text := fmt.Sprintf(
-		"*honryu digest* -- %s window %s → %s\n%d runs · %d passed · %d failed · %d aborted · %d threshold failure%s\nDetails: /executions (project %d)",
+		"*honryu digest* -- %s window %s → %s\n%d runs · %d passed · %d failed · %d aborted · %d threshold failure%s",
 		v.Period,
 		v.WindowStart.Format("2006-01-02"), v.WindowEnd.Format("2006-01-02"),
 		v.RunsTotal, v.ByOutcome.Passed, v.ByOutcome.Failed, v.ByOutcome.Aborted,
 		v.ThresholdFailures, pluralSuffix(v.ThresholdFailures),
-		v.ProjectID,
 	)
+	// The threshold verdicts get their own line, but only when the window
+	// actually graded runs -- "Thresholds: 0 runs" over an ungraded window
+	// is noise, not news. Outcome spellings match digestapp's constants;
+	// this reader stays decoupled from that import on purpose.
+	if len(v.Thresholds) > 0 {
+		met, missed := 0, 0
+		for _, t := range v.Thresholds {
+			switch t.Outcome {
+			case "all_met":
+				met++
+			case "missed":
+				missed++
+			}
+		}
+		text += fmt.Sprintf("\nThresholds: %d runs · %d all-met · %d missed", len(v.Thresholds), met, missed)
+	}
+	text += fmt.Sprintf("\nDetails: /executions (project %d)", v.ProjectID)
 	msg, err := json.Marshal(struct {
 		Text string `json:"text"`
 	}{Text: text})
