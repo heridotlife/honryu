@@ -23,7 +23,7 @@ import (
 var goldenKeys = []string{
 	"by_outcome", "calibrations", "event", "executions", "period",
 	"project_id", "runs_total", "slo_budgets", "threshold_failures",
-	"window_end", "window_start",
+	"thresholds", "window_end", "window_start",
 }
 
 // keysOf sorts a decoded JSON object's keys.
@@ -57,7 +57,7 @@ func assertKeys(t *testing.T, what string, got, want []string) {
 
 // TestBuildDigestGoldenShape pins the digest payload's FULL wire shape --
 // every section (runs, outcomes, threshold failures, executions,
-// slo_budgets, calibrations) with explicit per-field assertions and exact
+// slo_budgets, calibrations, thresholds) with explicit per-field assertions and exact
 // key sets at every level. A future addition that drops or renames a
 // field, or lets an optional one silently vanish from the wire, fails
 // here instead of in a receiver's parser. (Additions are welcome -- but
