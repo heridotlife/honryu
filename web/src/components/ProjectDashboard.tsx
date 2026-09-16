@@ -7,8 +7,10 @@
 // is selected (the project-scoped view), above the webhook/digest admin
 // cards.
 import { useEffect, useState } from 'react';
+import { Rocket } from 'lucide-react';
 import Card from './ui/Card';
 import OutcomeBadge from './ui/OutcomeBadge';
+import EmptyState from './EmptyState';
 import SloPanel from './SloPanel';
 import Sparkline from './Sparkline';
 import { getProjectsByProjectIdSummary, type ProjectSummary } from '../api/generated';
@@ -109,17 +111,23 @@ export default function ProjectDashboard({ projectId }: ProjectDashboardProps) {
 
   if (summary.total_executions === 0) {
     return (
-      <Card data-testid="project-dashboard-empty">
-        <div className="space-y-4 p-6">
-          <p className="text-body-sm text-slate-500 dark:text-slate-400">
-            No executions yet. Create one to start this project&rsquo;s dashboard.
-          </p>
-          {/* SLO management stays available with no runs: objectives are
-              defined before the first run grades them, and the budget read
-              answers the honest no-data shape. */}
-          <SloPanel projectId={projectId} />
-        </div>
-      </Card>
+      <div data-testid="project-dashboard-empty" className="space-y-4">
+        {/* Phase 76: the empty branch, aligned with the shared EmptyState
+            (icon + title + one action) -- the action routes to the template
+            picker, the create flow this SPA has. SLO management stays
+            available with no runs: objectives are defined before the first
+            run grades them, and the budget read answers the honest no-data
+            shape. */}
+        <Card>
+          <EmptyState
+            icon={<Rocket className="size-6" />}
+            title="No executions yet"
+            description="Create one to start this project's dashboard."
+            action={{ label: 'New test', to: '/executions/new' }}
+          />
+        </Card>
+        <SloPanel projectId={projectId} />
+      </div>
     );
   }
 

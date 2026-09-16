@@ -1,6 +1,6 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Reservations, { groupByDay, reservationStatus } from './Reservations';
 import type { Reservation } from '../api/reservations';
 
@@ -68,6 +68,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   const r = root;
   if (r !== null && container !== null) {
     act(() => {
@@ -91,5 +92,43 @@ describe('Reservations landmarks (phase 51)', () => {
     const region = container!.querySelector('[role="region"]');
     expect(region).not.toBeNull();
     expect(region!.getAttribute('aria-label')).toBe('Reservations panel');
+  });
+});
+
+// Phase 76: an empty query result renders the shared EmptyState,
+// message-only -- reservations are created by the scheduler when runs
+// reserve engines; the SPA has no create flow, so a button here would be
+// dead. Loading (the submit button's disabled "Loading…") never blurs
+// into the empty copy: the empty state only mounts after the response.
+describe('Reservations empty state (phase 76)', () => {
+  it('renders message-only after a query that returns nothing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    );
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Reservations));
+    });
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const tenant = container!.querySelector('input[type="number"]') as HTMLInputElement;
+    await act(async () => {
+      setter.call(tenant, '7');
+      tenant.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      container!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await act(async () => {});
+
+    const empty = container!.querySelector('[data-testid="reservations-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="reservations-empty-title"]')?.textContent).toBe(
+      'No reservations for this tenant',
+    );
+    expect(empty.querySelector('button, a')).toBeNull();
   });
 });

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Megaphone } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { createCampaign, getCampaignVerdict, listTenantCampaigns } from '../api/campaigns';
@@ -401,7 +403,14 @@ export default function Campaigns() {
             placeholder="e.g. 1"
             fullWidth
           />
-          <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Supersale 11.11" fullWidth />
+          <Input
+            id="campaign-name"
+            label="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Supersale 11.11"
+            fullWidth
+          />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input
               label="Window start"
@@ -509,8 +518,20 @@ export default function Campaigns() {
 
       {campaigns && (
         <Card padding="none">
+          {/* Phase 76: the create flow EXISTS on this page (the card
+              above), so the one action focuses its first field -- a real
+              step, not a dead button. */}
           {campaigns.length === 0 ? (
-            <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No campaigns for this tenant.</p>
+            <EmptyState
+              testId="campaigns-empty"
+              icon={<Megaphone className="size-6" />}
+              title="No campaigns for this tenant"
+              description="Create one with the form above: a window, participating services, and a rolled-up go/no-go."
+              action={{
+                label: 'Create a campaign',
+                onClick: () => document.getElementById('campaign-name')?.focus(),
+              }}
+            />
           ) : (
             <ul className="divide-y divide-slate-200 dark:divide-slate-700">
               {campaigns.map((c) => (

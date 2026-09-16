@@ -25,8 +25,10 @@
 // only orders the payload baseline-first.
 import { Fragment, useEffect, useId, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { GitCompare } from 'lucide-react';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { ApiError } from '../api/client';
 import { compareRuns, listExecutionReports } from '../api/reports';
@@ -601,9 +603,18 @@ export default function RunCompare() {
       )}
 
       {validId && !error && reports !== null && reports.length === 0 && (
-        <p className="text-body-sm text-slate-500 dark:text-slate-400" data-testid="compare-no-runs">
-          No reports for this execution yet — runs appear here once they finalise.
-        </p>
+        <Card>
+          {/* Phase 76: a first-run empty, not a dead end -- the one action
+              routes to /scenarios, where a scenario gets run (never into
+              /executions/, which has no runs to show here by definition). */}
+          <EmptyState
+            testId="compare-no-runs"
+            icon={<GitCompare className="size-6" />}
+            title="No runs yet"
+            description="Runs appear here once they finalise."
+            action={{ label: 'Run a scenario first', to: '/scenarios' }}
+          />
+        </Card>
       )}
 
       {validId && !error && reports !== null && reports.length > 0 && (
@@ -748,6 +759,20 @@ export default function RunCompare() {
               <DeltaTable baseline={baseline} candidates={candidates} />
               <CompareChart runIds={effective.filter((sid) => byId.has(sid))} />
             </>
+          )}
+          {/* Phase 76: the results area is never blank while the selection
+              is incomplete (fewer than two distinct runs picked). No action
+              button here by design: the pickers in the Runs card above ARE
+              the action; the hint just points at them. */}
+          {!ready && (
+            <Card>
+              <EmptyState
+                testId="compare-pick-hint"
+                icon={<GitCompare className="size-6" />}
+                title="Pick runs to compare"
+                description="Choose a baseline and at least one other run above — the delta table appears once two different runs are picked."
+              />
+            </Card>
           )}
         </>
       )}

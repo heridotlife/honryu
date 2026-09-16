@@ -192,8 +192,26 @@ describe('Scenarios page (phase 67b)', () => {
     stubFetch([]);
     await renderScenarios();
 
-    expect(container!.querySelector('[data-testid="scenarios-empty"]')?.textContent).toContain('No scenarios yet');
+    // Phase 76: the shared EmptyState -- title + description + the ONE
+    // action (the template picker, i.e. NewTest).
+    const empty = container!.querySelector('[data-testid="scenarios-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.querySelector('[data-testid="scenarios-empty-title"]')?.textContent).toContain('No scenarios yet');
+    const action = empty.querySelector<HTMLAnchorElement>('[data-testid="scenarios-empty-action"]')!;
+    expect(action?.getAttribute('href')).toBe('/executions/new');
+    expect(action?.textContent).toBe('Create from template');
     expect(container!.querySelector('[data-testid="scenarios-table"]')).toBeNull();
+  });
+
+  it('keeps the project-scoped empty wording distinct from the all-projects one', async () => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, '2');
+    stubFetch([]);
+    await renderScenarios();
+
+    const empty = container!.querySelector('[data-testid="scenarios-empty"]')!;
+    expect(empty.querySelector('[data-testid="scenarios-empty-description"]')?.textContent).toContain(
+      'No scenarios in this project yet',
+    );
   });
 
   it('shows a loading skeleton while the fetch is in flight', async () => {

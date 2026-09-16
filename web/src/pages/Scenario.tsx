@@ -9,9 +9,11 @@
 // it (the template-instantiation flow lands there).
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Play } from 'lucide-react';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import EmptyState from '../components/EmptyState';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import TaurusEditor from '../components/TaurusEditor';
 import ThresholdEditor from '../components/ThresholdEditor';
@@ -256,11 +258,26 @@ export default function Scenario() {
             </div>
           ) : executions.length === 0 ? (
             <Card>
-              <CardContent>
-                <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="runs-empty">
-                  No runs yet — this scenario has not been bound to an execution.
-                </p>
-              </CardContent>
+              {/* Phase 76: the shared empty state. The one primary action
+                  triggers the existing per-scenario run flow (the 67a
+                  calibration trigger -- the same CTA as the Calibrate
+                  button above): it creates a real run bound to this
+                  scenario. It is a Button, deliberately not a Link into
+                  /executions/, so the e2e harness's run-row selector can
+                  never match it (pinned in Scenario.test). Hidden without
+                  the scenario:create grant, and once a job is queued (the
+                  pending banner takes over as the action surface). */}
+              <EmptyState
+                testId="runs-empty"
+                icon={<Play className="size-6" />}
+                title="No runs yet"
+                description="This scenario has not been bound to an execution. Start one and its history appears here."
+                action={
+                  mayCalibrate && job === null
+                    ? { label: calibrating ? 'Starting…' : 'Run this scenario', onClick: () => void triggerCalibration() }
+                    : undefined
+                }
+              />
             </Card>
           ) : (
             <Card padding="none">
