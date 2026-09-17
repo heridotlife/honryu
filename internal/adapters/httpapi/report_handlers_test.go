@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/heridotlife/honryu/internal/adapters/httpapi"
+	"github.com/heridotlife/honryu/internal/app/calibrationapp"
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/app/thresholdapp"
+	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
+	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -1405,5 +1408,208 @@ func TestRunRecommendations_CleanReportIsEmpty(t *testing.T) {
 	// A clean run renders [], never null -- the series endpoint's own rule.
 	if !strings.Contains(rec.Body.String(), `"recommendations":[]`) {
 		t.Errorf("body = %s, want an empty recommendations array", rec.Body.String())
+	}
+}
+
+// recsIDs decodes a recommendations payload into its fired rule ids, in
+// wire order -- the fixed rule order the tests pin.
+func recsIDs(t *testing.T, body string) []string {
+	t.Helper()
+	var got struct {
+		Recommendations []struct {
+			ID       string `json:"id"`
+			Severity string `json:"severity"`
+		} `json:"recommendations"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ids := make([]string, 0, len(got.Recommendations))
+	for _, r := range got.Recommendations {
+		ids = append(ids, r.ID+"/"+r.Severity)
+	}
+	return ids
+}
+
+// newCapacityRecsEnv wires the recommendations endpoint with the phase-84
+// capacity layer: an execution pinning the engine and pod size, a report for
+// a paced (fixed-rate) scenario, and a calibration service reading the fake
+// store's profiles. Returns the router, the report store, and the exact key
+// the run's evidence resolves to, so a test seeds (or does not seed) a
+// profile for it.
+func newCapacityRecsEnv(t *testing.T) (http.Handler, *fake.Store, *fake.ReportStore, capacityprofile.Key) {
+	t.Helper()
+	ctx := context.Background()
+	store := fake.NewStore()
+	reports := fake.NewReportStore()
+	obj := fake.NewObjectStore()
+	executions := executionapp.NewService(store, obj, 100)
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports:       reports,
+		Executions:    executions,
+		Calibrations:  calibrationapp.NewService(store),
+		Store:         obj,
+		DefaultOwners: []string{"honryu"},
+	})
+
+	executionID, err := store.CreateExecution(ctx, execution.Execution{
+		Name: "paced", ProjectID: 1, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi",
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution: %v", err)
+	}
+	// A clean, paced run: 100 req/s requested, 3000 samples over the 30s
+	// window, no failures, flat latency -- the capacity rules are the only
+	// ones with anything to say.
+	rep := report.Build(report.Input{
+		ExecutionID: executionID, ScenarioID: 2, RunID: 79,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomePassed,
+		Requested: report.Load{Concurrency: 10, Throughput: 100, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 3000, Succeeded: 3000,
+			Latency: metrics.Histogram{0.01: 2700, 0.02: 300},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	return h, store, reports, capacityprofile.Key{
+		ScenarioID: 2, Engine: taurus.ExecutorJMeter, CPU: "1", Memory: "512Mi",
+	}
+}
+
+// Phase 84: the capacity evidence layer. A paced run with no profile for
+// its exact pod size reads as unverified (info); seeding a profile for the
+// exact key the execution pins stands that down; the same profile calibrated
+// past the 30-day line turns into capacity-outdated instead; and a profile
+// for a DIFFERENT pod size never matches -- the key is the ask. Each case
+// gets its own environment because a profile, once seeded, cannot be
+// un-seeded.
+func TestRunRecommendations_CapacityEvidence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// No profile anywhere: the run's fixed-rate ask is unverified.
+	h, _, _, key := newCapacityRecsEnv(t)
+	rec := do(t, h, http.MethodGet, "/api/runs/79/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if ids := recsIDs(t, rec.Body.String()); len(ids) != 1 || ids[0] != "capacity-unverified/info" {
+		t.Fatalf("ids = %v, want exactly capacity-unverified/info", ids)
+	}
+
+	// A fresh profile for the exact key: nothing left to complain about.
+	h, store, _, key := newCapacityRecsEnv(t)
+	if err := store.UpsertCapacityProfile(ctx, capacityprofile.CapacityProfile{
+		Key: key, PerPodQPS: 120, CalibratedAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertCapacityProfile: %v", err)
+	}
+	rec = do(t, h, http.MethodGet, "/api/runs/79/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"recommendations":[]`) {
+		t.Errorf("body = %s, want [] once the exact key is calibrated", rec.Body.String())
+	}
+
+	// The same profile 31 days old: capacity-outdated replaces it.
+	h, store, _, key = newCapacityRecsEnv(t)
+	if err := store.UpsertCapacityProfile(ctx, capacityprofile.CapacityProfile{
+		Key: key, PerPodQPS: 120, CalibratedAt: time.Now().Add(-31 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertCapacityProfile: %v", err)
+	}
+	rec = do(t, h, http.MethodGet, "/api/runs/79/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if ids := recsIDs(t, rec.Body.String()); len(ids) != 1 || ids[0] != "capacity-outdated/info" {
+		t.Fatalf("ids = %v, want exactly capacity-outdated/info for a 31-day profile", ids)
+	}
+
+	// A profile for a different pod size is no profile for this run: the
+	// ask stays unverified, exactly as before anything was seeded.
+	h, store, _, key = newCapacityRecsEnv(t)
+	other := key
+	other.CPU = "2"
+	if err := store.UpsertCapacityProfile(ctx, capacityprofile.CapacityProfile{
+		Key: other, PerPodQPS: 240, CalibratedAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertCapacityProfile: %v", err)
+	}
+	rec = do(t, h, http.MethodGet, "/api/runs/79/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if ids := recsIDs(t, rec.Body.String()); len(ids) != 1 || ids[0] != "capacity-unverified/info" {
+		t.Fatalf("ids = %v, want capacity-unverified/info: another pod size's profile is no match", ids)
+	}
+}
+
+// The tolerance paths: capacity evidence that cannot be read is unknown, and
+// unknown reads as unverified for a paced run -- never as a failed request.
+// Both unwired services (the report-only deployment) and an unreadable
+// execution (the run's pod size cannot be pinned) degrade the same way.
+func TestRunRecommendations_CapacityUnknownIsNotAnError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// No calibration service wired at all: a paced run still answers, with
+	// the unverified advisory rather than a 500 or a silent gap.
+	reports := fake.NewReportStore()
+	h := httpapi.NewRouter(httpapi.Deps{Reports: reports, DefaultOwners: []string{"honryu"}})
+	rep := report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: 2, RunID: 80,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomePassed,
+		Requested: report.Load{Concurrency: 10, Throughput: 100, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 3000, Succeeded: 3000,
+			Latency: metrics.Histogram{0.01: 2700, 0.02: 300},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	got := do(t, h, http.MethodGet, "/api/runs/80/recommendations")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET recommendations (unwired) = %d (%s)", got.Code, got.Body.String())
+	}
+	if ids := recsIDs(t, got.Body.String()); len(ids) != 1 || ids[0] != "capacity-unverified/info" {
+		t.Errorf("ids = %v, want exactly capacity-unverified/info with the layer unwired", ids)
+	}
+
+	// Wired, but the report names an execution the store cannot read: the
+	// pod size cannot be pinned, the evidence stays unknown, and the read
+	// still succeeds with the same advisory.
+	full, _, fullReports, _ := newCapacityRecsEnv(t)
+	orphan := report.Build(report.Input{
+		ExecutionID: 999, ScenarioID: 2, RunID: 81,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomePassed,
+		Requested: report.Load{Concurrency: 10, Throughput: 100, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 3000, Succeeded: 3000,
+			Latency: metrics.Histogram{0.01: 2700, 0.02: 300},
+		}},
+	})
+	if err := fullReports.SaveReport(ctx, orphan); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	got = do(t, full, http.MethodGet, "/api/runs/81/recommendations")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET recommendations (unreadable execution) = %d (%s)", got.Code, got.Body.String())
+	}
+	if ids := recsIDs(t, got.Body.String()); len(ids) != 1 || ids[0] != "capacity-unverified/info" {
+		t.Errorf("ids = %v, want exactly capacity-unverified/info when the execution cannot be read", ids)
 	}
 }
