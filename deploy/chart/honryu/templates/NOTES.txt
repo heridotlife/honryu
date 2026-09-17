@@ -1,6 +1,7 @@
+Live:      https://honryu.pve.heri.life/
 奔流 (Honryu) is deployed as release "{{ .Release.Name }}" in namespace {{ .Release.Namespace }}.
 
-API (and the embedded operator SPA):
+Debug (port-forward):
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "honryu.fullname" . }}-api 8080:8080
   open http://127.0.0.1:8080/
 
