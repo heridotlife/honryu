@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, RUN_TABS_STORAGE_KEY, default as Reports } from './Reports';
+import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, RUN_TABS, RUN_TABS_STORAGE_KEY, default as Reports } from './Reports';
 import type { Recommendation, Report } from '../api/reports';
 import type { ApmLinkTemplate } from '../api/apm';
 import type { SeriesPoint } from '../api/series';
@@ -1382,5 +1382,18 @@ describe('ReportDetail recommendations tab (phase 78)', () => {
     const panel = container!.querySelector('#panel-recommendations')!;
     expect(panel.querySelector('[data-testid="recs-card"] [role="alert"]')?.textContent).toContain('recs exploded');
     expect(panel.querySelector('[data-testid="recs-retry"]')).not.toBeNull();
+  });
+});
+
+// Phase 78 regression pin: the Recommendations tab's place in the strip.
+// The exact full-strip order is pinned by the phase-73 strip test above;
+// this pin states the two relations a refactor could quietly invert without
+// touching any single panel's behaviour.
+describe('run tab order pins (phase 78)', () => {
+  it('Recommendations sits after Thresholds and before Raw, exactly once', () => {
+    const ids = RUN_TABS.map((t) => t.id);
+    expect(ids.filter((id) => id === 'recommendations')).toHaveLength(1);
+    expect(ids.indexOf('recommendations')).toBeGreaterThan(ids.indexOf('thresholds'));
+    expect(ids.indexOf('recommendations')).toBeLessThan(ids.indexOf('raw'));
   });
 });
