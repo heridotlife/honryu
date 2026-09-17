@@ -1,6 +1,7 @@
 package recsapp
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -377,6 +378,75 @@ func TestAnalyze_IndependentAndOrdered(t *testing.T) {
 	got = Analyze(in)
 	if len(got) != 2 || got[0].ID != IDLowThroughput || got[1].ID != IDNoThresholds {
 		t.Errorf("Analyze = %+v, want [low-throughput no-thresholds] in order", got)
+	}
+}
+
+// TestAnalyze_RuleOrderDrift pins the wire contract phase 84 freezes: the
+// full fixed rule order, exactly. One input cannot fire all eight rules at
+// once -- capacity-unverified and capacity-outdated are mutually exclusive
+// by construction, because a profile for the exact key either exists or
+// does not -- so two synthetic inputs jointly pin every position: one with
+// no profile, one with a profile past the freshness line. The stand-down
+// direction is pinned at the Analyze level too: every layer's evidence
+// healthy collapses to an empty, never nil, list, which is the nil-filter
+// itself.
+func TestAnalyze_RuleOrderDrift(t *testing.T) {
+	// Everything wrong at once: errors above the line, an 8x tail, a missed
+	// bound, 40% of the requested rate, an aborted outcome, and a scenario
+	// with no thresholds defined.
+	rep := cleanReport()
+	rep.ErrorRate = 0.05
+	rep.Attribution = report.Attribution{Target: 25, Engine: 3, Unknown: 4}
+	rep.Latency = report.Percentiles{50: 0.05, 99: 0.5}
+	rep.Achieved.Throughput = 40
+	rep.Outcome = taurus.OutcomeAborted
+
+	base := func() Input {
+		in := Input{Report: rep, ThresholdsKnown: true}
+		in.ThresholdResults = []threshold.Result{missedResult()}
+		return in
+	}
+
+	// No profile for the exact key: seven rules fire, in order.
+	got := Analyze(base())
+	assertRuleOrder(t, got, []string{
+		IDHighErrorRate, IDLatencySpread, IDThresholdMissed, IDLowThroughput,
+		IDAbortedRun, IDCapacityUnverified, IDNoThresholds,
+	})
+
+	// A profile past the freshness line: the same seven positions, with
+	// capacity-outdated in capacity-unverified's seat.
+	in := base()
+	qps, stale := 120.0, 31*24*time.Hour
+	in.CalibratedPerPodQPS, in.ProfileAge = &qps, &stale
+	got = Analyze(in)
+	assertRuleOrder(t, got, []string{
+		IDHighErrorRate, IDLatencySpread, IDThresholdMissed, IDLowThroughput,
+		IDAbortedRun, IDCapacityOutdated, IDNoThresholds,
+	})
+
+	// The stand-downs, through Analyze's own nil-filtering: every rule
+	// returned nil, and the output is empty and non-nil -- [] on the wire,
+	// never null and never a stale row surviving from the fired cases.
+	fresh := cleanInput(cleanReport())
+	fresh.ThresholdsKnown = true
+	fresh.ThresholdsDefined = []threshold.Threshold{{ID: 1, ScenarioID: 2,
+		Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 300}}
+	fresh.ThresholdResults = []threshold.Result{metResult()}
+	if got = Analyze(fresh); got == nil || len(got) != 0 {
+		t.Fatalf("Analyze = %#v, want empty non-nil: stand-down is the nil filter", got)
+	}
+}
+
+// assertRuleOrder fails unless got's ids equal want, in order and exactly.
+func assertRuleOrder(t *testing.T, got []Recommendation, want []string) {
+	t.Helper()
+	ids := make([]string, len(got))
+	for i, rec := range got {
+		ids[i] = rec.ID
+	}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("rule order drift: got %v, want %v", ids, want)
 	}
 }
 
