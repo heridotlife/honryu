@@ -1493,7 +1493,7 @@ func TestRunRecommendations_CapacityEvidence(t *testing.T) {
 	ctx := context.Background()
 
 	// No profile anywhere: the run's fixed-rate ask is unverified.
-	h, _, _, key := newCapacityRecsEnv(t) //nolint:ineffassign // first-case key; later cases reassign
+	h, _, _, _ := newCapacityRecsEnv(t) // key comes with later envs; first case needs none
 	rec := do(t, h, http.MethodGet, "/api/runs/79/recommendations")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
