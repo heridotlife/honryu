@@ -11,7 +11,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Button from './ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
+import ErrorSummary, { type ErrorSummaryEntry } from './ui/ErrorSummary';
 import Input from './ui/Input';
+import { useFieldValidation } from '../hooks/useFieldValidation';
 import { ApiError } from '../api/client';
 import {
   deleteProjectsByProjectIdSlosBySloId,
@@ -49,6 +51,30 @@ function formatRemaining(pct: number): string {
   const sign = rounded > 0 ? '+' : '';
   return `${sign}${rounded}%`;
 }
+
+/** The target fields' validators (phase 77 blur + submit), stating the
+ * same rules the API enforces (the domain's Validate): p95 must be ABOVE
+ * zero -- 0 ms is not a latency target, it is a typo -- while error rate
+ * and success ratio may legitimately be 0 (a zero error-rate target is
+ * "no errors allowed"). An empty field stays "not tracked". */
+function ratioError(value: string, label: string): string | null {
+  if (value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isNaN(n) || n < 0 || n > 1 ? `${label} target must be between 0 and 1` : null;
+}
+
+const TARGET_VALIDATORS = {
+  p95: (v: string): string | null => (v.trim() === '' || Number(v) > 0 ? null : 'p95 target must be a number above 0'),
+  errorRate: (v: string): string | null => ratioError(v, 'error rate'),
+  successRatio: (v: string): string | null => ratioError(v, 'success ratio'),
+};
+
+/** The target inputs' element ids -- the error summary links to them. */
+const TARGET_IDS = {
+  p95: 'slo-p95-input',
+  errorRate: 'slo-error-input',
+  successRatio: 'slo-ratio-input',
+} as const;
 
 /** One metric's compliance badge: icon + text, never colour alone. */
 function ComplianceBadge({ compliant }: { compliant: boolean }) {
@@ -126,6 +152,50 @@ export default function SloPanel({ projectId }: SloPanelProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<number | null>(null);
+  // Blur + submit validation (phase 77): each target's error shows once
+  // the field is blurred; a failed submit moves focus to the summary.
+  const fields = useFieldValidation();
+
+  /** Every target field's current verdict (null while legal). */
+  const targetErrors = {
+    p95: TARGET_VALIDATORS.p95(p95),
+    errorRate: TARGET_VALIDATORS.errorRate(errorRate),
+    successRatio: TARGET_VALIDATORS.successRatio(successRatio),
+  };
+  /** The validation failures, in field order, plus the at-least-one rule
+   * (linked to the first target field) when every field is legal but
+   * empty. Pure over the current values; visibility is decided by the
+   * hook's submitted flag at render time. */
+  const validationEntries = (): ErrorSummaryEntry[] => {
+    const fieldEntries = (Object.keys(TARGET_IDS) as Array<keyof typeof TARGET_IDS>)
+      .filter((f) => targetErrors[f] !== null)
+      .map((f) => ({ fieldId: TARGET_IDS[f], message: targetErrors[f]! }));
+    if (fieldEntries.length === 0 && p95.trim() === '' && errorRate.trim() === '' && successRatio.trim() === '') {
+      return [{ fieldId: TARGET_IDS.p95, message: 'set at least one target' }];
+    }
+    return fieldEntries;
+  };
+
+  // The armed delete confirm disarms on Escape or on a press outside its
+  // row (the shared Modal's tap-away convention, inline): a half-armed
+  // destructive action must not linger waiting for a stray second click.
+  useEffect(() => {
+    if (confirmId === null) return;
+    const disarm = (): void => setConfirmId(null);
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') disarm();
+    };
+    const handleMouseDown = (event: MouseEvent): void => {
+      const row = document.querySelector(`[data-testid="slo-row-${confirmId}"]`);
+      if (row !== null && event.target instanceof Node && !row.contains(event.target)) disarm();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [confirmId]);
 
   const loadBudgets = useCallback(
     (ids: number[], win: Window): void => {
@@ -196,33 +266,19 @@ export default function SloPanel({ projectId }: SloPanelProps) {
 
   async function create(e: React.FormEvent): Promise<void> {
     e.preventDefault();
+    fields.markSubmitted();
+    // The per-field guards fail at the field (blur already showed them);
+    // the summary renders at the form's top and takes focus instead of a
+    // single combined message. The rules themselves are unchanged.
+    if (validationEntries().length > 0) {
+      return;
+    }
     setFormError(null);
     const targets: Record<string, number> = {};
-    // Parsed-when-present, validated against the API's own rules (the
-    // domain's Validate): p95 must be ABOVE zero -- 0 ms is not a latency
-    // target, it is a typo -- while error rate and success ratio may
-    // legitimately be 0 (a zero error-rate target is "no errors allowed"
-    // and the API accepts it). An empty field stays "not tracked".
+    // Parsed-when-present: an empty field stays "not tracked".
     if (p95.trim() !== '') targets.target_p95_ms = Number(p95);
     if (errorRate.trim() !== '') targets.target_error_rate = Number(errorRate);
     if (successRatio.trim() !== '') targets.target_success_ratio = Number(successRatio);
-    if (targets.target_p95_ms !== undefined && !(targets.target_p95_ms > 0)) {
-      setFormError('p95 target must be a number above 0');
-      return;
-    }
-    for (const [field, value] of [
-      ['error rate', targets.target_error_rate],
-      ['success ratio', targets.target_success_ratio],
-    ] as const) {
-      if (value !== undefined && (Number.isNaN(value) || value < 0 || value > 1)) {
-        setFormError(`${field} target must be between 0 and 1`);
-        return;
-      }
-    }
-    if (Object.keys(targets).length === 0) {
-      setFormError('set at least one target');
-      return;
-    }
     setBusy(true);
     try {
       const created = await postProjectsByProjectIdSlos(projectId, { name: name.trim(), ...targets });
@@ -231,6 +287,7 @@ export default function SloPanel({ projectId }: SloPanelProps) {
       setP95('');
       setErrorRate('');
       setSuccessRatio('');
+      fields.reset();
       loadBudgets([created.id], window);
     } catch (err: unknown) {
       setFormError(err instanceof ApiError ? err.message : 'failed to create SLO');
@@ -377,9 +434,19 @@ export default function SloPanel({ projectId }: SloPanelProps) {
           className="flex flex-col gap-2 border-t border-slate-200 p-4 dark:border-slate-700 sm:px-6"
           data-testid="slo-create-form"
         >
+          {/* Submit-failure summary (the old slo-form-error line, now
+              focusable and field-linked); also carries API failures. */}
+          <ErrorSummary
+            entries={[
+              ...(fields.submitted ? validationEntries() : []),
+              ...(formError !== null ? [{ message: formError }] : []),
+            ]}
+            testId="slo-form-error"
+          />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
             <div className="flex-1">
               <Input
+                id="slo-name-input"
                 data-testid="slo-name-input"
                 type="text"
                 placeholder="Name (e.g. checkout p95)"
@@ -390,6 +457,7 @@ export default function SloPanel({ projectId }: SloPanelProps) {
             </div>
             <div className="flex-1">
               <Input
+                id={TARGET_IDS.p95}
                 data-testid="slo-p95-input"
                 type="number"
                 step="any"
@@ -397,11 +465,15 @@ export default function SloPanel({ projectId }: SloPanelProps) {
                 placeholder="p95 target (ms)"
                 value={p95}
                 onChange={e => setP95(e.target.value)}
+                onBlur={() => fields.blur('p95')}
+                error={fields.visibleError('p95', targetErrors.p95) ?? undefined}
+                aria-invalid={fields.visibleError('p95', targetErrors.p95) !== null}
                 aria-label="p95 target in milliseconds"
               />
             </div>
             <div className="flex-1">
               <Input
+                id={TARGET_IDS.errorRate}
                 data-testid="slo-error-input"
                 type="number"
                 step="any"
@@ -410,11 +482,15 @@ export default function SloPanel({ projectId }: SloPanelProps) {
                 placeholder="Error rate target (0-1)"
                 value={errorRate}
                 onChange={e => setErrorRate(e.target.value)}
+                onBlur={() => fields.blur('errorRate')}
+                error={fields.visibleError('errorRate', targetErrors.errorRate) ?? undefined}
+                aria-invalid={fields.visibleError('errorRate', targetErrors.errorRate) !== null}
                 aria-label="Error rate target"
               />
             </div>
             <div className="flex-1">
               <Input
+                id={TARGET_IDS.successRatio}
                 data-testid="slo-ratio-input"
                 type="number"
                 step="any"
@@ -423,6 +499,9 @@ export default function SloPanel({ projectId }: SloPanelProps) {
                 placeholder="Success ratio target (0-1)"
                 value={successRatio}
                 onChange={e => setSuccessRatio(e.target.value)}
+                onBlur={() => fields.blur('successRatio')}
+                error={fields.visibleError('successRatio', targetErrors.successRatio) ?? undefined}
+                aria-invalid={fields.visibleError('successRatio', targetErrors.successRatio) !== null}
                 aria-label="Success ratio target"
               />
             </div>
@@ -437,11 +516,6 @@ export default function SloPanel({ projectId }: SloPanelProps) {
             p95 target must be above 0&thinsp;ms. Error rate and success ratio may be 0–1; 0 is a legal
             target (no errors allowed). Leave a field empty to not track it.
           </p>
-          {formError && (
-            <p className="text-caption text-red-600 dark:text-red-400" role="alert" data-testid="slo-form-error">
-              {formError}
-            </p>
-          )}
         </form>
       </CardContent>
     </Card>

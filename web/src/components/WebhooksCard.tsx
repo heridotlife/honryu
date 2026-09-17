@@ -36,10 +36,30 @@ export default function WebhooksCard({ projectId }: WebhooksCardProps) {
   const [secret, setSecret] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // The delete confirm is two-step inline: the first click arms the button,
-  // the second (or a click anywhere else) disarms or deletes. No browser
-  // dialogs in the SPA, the same restraint the rest of the surface keeps.
+  // The delete confirm is two-step inline: the first click arms the
+  // button, the second deletes. Escape or a press outside the armed row
+  // disarms (the shared Modal's conventions, inline) -- a half-armed
+  // destructive action must not linger. No browser dialogs in the SPA,
+  // the same restraint the rest of the surface keeps.
   const [confirmId, setConfirmId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (confirmId === null) return;
+    const disarm = (): void => setConfirmId(null);
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') disarm();
+    };
+    const handleMouseDown = (event: MouseEvent): void => {
+      const row = document.querySelector(`[data-testid="webhook-row-${confirmId}"]`);
+      if (row !== null && event.target instanceof Node && !row.contains(event.target)) disarm();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [confirmId]);
 
   useEffect(() => {
     let alive = true;
@@ -173,6 +193,17 @@ export default function WebhooksCard({ projectId }: WebhooksCardProps) {
         )}
         <form
           onSubmit={e => void add(e)}
+          onKeyDown={e => {
+            // Escape while typing in the inline form resets it: the
+            // fields are a draft until Add, and a half-typed secret or a
+            // wrong URL should be dismissible without reaching for the
+            // mouse.
+            if (e.key === 'Escape') {
+              setUrl('');
+              setSecret('');
+              setFormError(null);
+            }
+          }}
           className="flex flex-col gap-2 border-t border-slate-200 p-4 dark:border-slate-700 sm:flex-row sm:items-start sm:px-6"
         >
           <div className="flex-1">
