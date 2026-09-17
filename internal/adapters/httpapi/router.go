@@ -311,6 +311,9 @@ var routes = []Route{
 	{"GET", "/api/executions/{execution_id}/error-signatures", "reports", hf(func(h *handlers) http.HandlerFunc { return h.executionErrorSignatureHistory })},
 	{"GET", "/api/runs/compare", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runsCompare })},
 	{"GET", "/api/runs/{run_id}/report", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runReport })},
+	// Phase 78: k6-style recommendations -- the report's own telemetry read
+	// by the recsapp rules, one actionable advisory per fired pattern.
+	{"GET", "/api/runs/{run_id}/recommendations", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runRecommendations })},
 	{"GET", "/api/runs/{run_id}/series", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runSeries })},
 	{"GET", "/api/runs/{run_id}/export", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runExport })},
 	{"GET", "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/log", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runShardLog })},
