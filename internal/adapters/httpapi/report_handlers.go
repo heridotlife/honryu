@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
+	"github.com/heridotlife/honryu/internal/app/recsapp"
 	"github.com/heridotlife/honryu/internal/app/reportapp"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/report"
@@ -226,6 +227,54 @@ func (h *handlers) runReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.withCriteriaVerdict(r, rep))
+}
+
+// runRecommendations serves GET /api/runs/{run_id}/recommendations: the
+// recsapp rules read over the run's stored report -- one actionable advisory
+// per fired pattern (phase 78). The unknown-run 404 and the authorization
+// gate are runReport's own: the stored report is what makes a run known, and
+// its ExecutionID is what the report-read gate checks against.
+//
+// The scenario-threshold evidence the rules read lives outside the report, so
+// it is gathered here with the overlay layers' own tolerance: no threshold
+// service wired, or a read that fails, leaves that evidence unknown -- the
+// missed rule simply has nothing to name and the no-thresholds rule stands
+// down (an unknown set is never reported as an empty one) -- never a failed
+// recommendation read: the report existed and was authorized first.
+func (h *handlers) runRecommendations(w http.ResponseWriter, r *http.Request) {
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	rep, err := h.deps.Reports.GetReport(r.Context(), runID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.authorizeReport(r, rep.ExecutionID); err != nil {
+		respondError(w, err)
+		return
+	}
+	in := recsapp.Input{Report: rep}
+	if h.deps.Thresholds != nil {
+		if defs, err := h.deps.Thresholds.List(r.Context(), rep.ScenarioID); err == nil {
+			in.ThresholdsKnown = true
+			in.ThresholdsDefined = defs
+		}
+		if results, err := h.deps.Thresholds.ResultsForRun(r.Context(), runID); err == nil {
+			in.ThresholdResults = results
+		}
+	}
+	writeJSON(w, http.StatusOK, recommendationsResponse{Recommendations: recsapp.Analyze(in)})
+}
+
+// recommendationsResponse is the wire shape of GET
+// /api/runs/{run_id}/recommendations: always an object with an always-array
+// recommendations field -- a clean run renders [] rather than null, the
+// series endpoint's own rule.
+type recommendationsResponse struct {
+	Recommendations []recsapp.Recommendation `json:"recommendations"`
 }
 
 // withCriteriaVerdict layers the Phase 29 verdict fields onto a stored

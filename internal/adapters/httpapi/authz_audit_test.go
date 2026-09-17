@@ -216,6 +216,7 @@ var authzAuditTable = []authzEntry{
 		// before authz, which would prove nothing about the gate.
 		query: url.Values{"run_ids[]": {"{run_id}"}}},
 	{method: "GET", pattern: "/api/runs/{run_id}/report", decision: "report:read"},
+	{method: "GET", pattern: "/api/runs/{run_id}/recommendations", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/series", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/export", decision: "report:read",
 		query: url.Values{"format": {"json"}}},

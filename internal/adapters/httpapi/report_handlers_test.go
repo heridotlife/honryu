@@ -1258,3 +1258,152 @@ func TestRunReport_CarriesChecksThresholdsAndLatency(t *testing.T) {
 		t.Errorf("latency[p95] = %v, want 0.7", got.Latency["95"])
 	}
 }
+
+// Phase 78: the recommendations endpoint. One synthetic report trips two
+// rules at once (a missed scenario threshold and a high error rate); a clean
+// report -- thresholds defined, met, and nothing wrong with the telemetry --
+// yields exactly []. Both cases read the same wire shape the SPA renders.
+func TestRunRecommendations_FireOnMissedThresholdAndHighErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := fake.NewStore()
+	reports := fake.NewReportStore()
+	svc := thresholdapp.NewService(store)
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports:       reports,
+		Thresholds:    svc,
+		DefaultOwners: []string{"honryu"},
+	})
+
+	sc, err := scenario.New("recs", 1)
+	if err != nil {
+		t.Fatalf("scenario.New: %v", err)
+	}
+	scenarioID, err := store.CreateScenario(ctx, sc)
+	if err != nil {
+		t.Fatalf("CreateScenario: %v", err)
+	}
+	// 30% of requests fail (well past the 1% line) with a flat latency
+	// profile, so exactly the error-rate and threshold rules have evidence:
+	// the observed 30% error rate misses the scenario's 5% ceiling, and the
+	// 2x latency spread stays inside the spread rule's 4x factor.
+	rep := report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: scenarioID, RunID: 77,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomeFailed,
+		Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 10, Failed: 3, Succeeded: 7,
+			Latency: metrics.Histogram{0.01: 7, 0.02: 3},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if _, err := svc.Replace(ctx, scenarioID, []threshold.Threshold{
+		{ScenarioID: scenarioID, Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.05},
+	}); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if err := svc.EvaluateRun(ctx, rep); err != nil {
+		t.Fatalf("EvaluateRun: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/77/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Recommendations []struct {
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			Detail   string `json:"detail"`
+			Severity string `json:"severity"`
+		} `json:"recommendations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Recommendations) != 2 {
+		t.Fatalf("recommendations = %+v, want exactly the two fired rules", got.Recommendations)
+	}
+	// Fixed rule order: the error-rate rule's output precedes the threshold
+	// rule's, independent of store or map ordering.
+	if got.Recommendations[0].ID != "high-error-rate" || got.Recommendations[1].ID != "threshold-missed" {
+		t.Errorf("ids = %q, %q; want high-error-rate then threshold-missed",
+			got.Recommendations[0].ID, got.Recommendations[1].ID)
+	}
+	for _, r := range got.Recommendations {
+		if r.Severity != "warning" {
+			t.Errorf("rec %q severity = %q, want warning", r.ID, r.Severity)
+		}
+		if r.Title == "" || r.Detail == "" {
+			t.Errorf("rec %q missing title or detail", r.ID)
+		}
+	}
+	// The threshold rule names the missed metric and its bound -- actionable,
+	// not just loud.
+	if detail := got.Recommendations[1].Detail; !strings.Contains(detail, "error_rate") || !strings.Contains(detail, "5.0%") {
+		t.Errorf("threshold detail = %q, want the metric and the bound named", detail)
+	}
+}
+
+func TestRunRecommendations_CleanReportIsEmpty(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := fake.NewStore()
+	reports := fake.NewReportStore()
+	svc := thresholdapp.NewService(store)
+	h := httpapi.NewRouter(httpapi.Deps{
+		Reports:       reports,
+		Thresholds:    svc,
+		DefaultOwners: []string{"honryu"},
+	})
+
+	sc, err := scenario.New("clean", 1)
+	if err != nil {
+		t.Fatalf("scenario.New: %v", err)
+	}
+	scenarioID, err := store.CreateScenario(ctx, sc)
+	if err != nil {
+		t.Fatalf("CreateScenario: %v", err)
+	}
+	// A clean run: no failures, flat latency, and a met threshold -- every
+	// rule's evidence absent, including no-thresholds (the set is defined).
+	if _, err := svc.Replace(ctx, scenarioID, []threshold.Threshold{
+		{ScenarioID: scenarioID, Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 300},
+	}); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	rep := report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: scenarioID, RunID: 78,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(1000, 0).UTC(),
+		EndedAt:   time.Unix(1030, 0).UTC(),
+		Outcome:   taurus.OutcomePassed,
+		Requested: report.Load{Concurrency: 10, DurationSeconds: 30},
+		Intervals: []metrics.Interval{{
+			Timestamp: 1000, Label: "checkout", Samples: 100, Failed: 0, Succeeded: 100,
+			Latency: metrics.Histogram{0.01: 90, 0.02: 10},
+		}},
+	})
+	if err := reports.SaveReport(ctx, rep); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if err := svc.EvaluateRun(ctx, rep); err != nil {
+		t.Fatalf("EvaluateRun: %v", err)
+	}
+
+	rec := do(t, h, http.MethodGet, "/api/runs/78/recommendations")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET recommendations = %d (%s)", rec.Code, rec.Body.String())
+	}
+	// A clean run renders [], never null -- the series endpoint's own rule.
+	if !strings.Contains(rec.Body.String(), `"recommendations":[]`) {
+		t.Errorf("body = %s, want an empty recommendations array", rec.Body.String())
+	}
+}

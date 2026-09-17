@@ -1,5 +1,45 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { compareRuns, fetchShared, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
+import { compareRuns, fetchShared, getRunRecommendations, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
+
+// Phase 78: the recommendations tab's fetch — the generated wrapper's path,
+// plus the null→[] normalization every list-shaped read here applies.
+describe('getRunRecommendations', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('GETs the run-scoped recommendations path and returns the payload', async () => {
+    let seenUrl = '';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return new Response(
+        JSON.stringify({
+          recommendations: [
+            { id: 'high-error-rate', title: 'High error rate', detail: 'd', severity: 'warning' },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const got = await getRunRecommendations(42);
+
+    expect(seenUrl).toBe('/api/runs/42/recommendations');
+    expect(got).toHaveLength(1);
+    expect(got[0].id).toBe('high-error-rate');
+    expect(got[0].severity).toBe('warning');
+  });
+
+  it('normalizes a null recommendations array to an empty one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ recommendations: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    );
+
+    expect(await getRunRecommendations(42)).toEqual([]);
+  });
+});
 
 describe('listExecutionReports', () => {
   afterEach(() => {

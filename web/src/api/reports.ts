@@ -6,7 +6,13 @@ import { apiClient } from './client';
 // client (web/src/api/generated.ts, typed from api/openapi.yaml) — this
 // wrapper stays as the page-facing seam so the null→[] normalization and the
 // hand-written Report type (the richer page contract) are unchanged.
-import { getExecutionsByExecutionIdReports } from './generated';
+import { getExecutionsByExecutionIdReports, getRunsByRunIdRecommendations } from './generated';
+import type { Recommendation } from './generated';
+
+/** Phase 78: one fired recommendation -- what to do, why, where; the SPA
+ * renders severity as icon + text, never colour alone. Re-exported from the
+ * generated client so this module stays the page-facing seam. */
+export type { Recommendation };
 
 export interface Load {
   concurrency: number;
@@ -129,6 +135,15 @@ export async function listExecutionReports(executionId: number, limit?: number):
  * a run with no criteria renders "none" rather than crashing on null. */
 export async function getRunReport(runId: number): Promise<Report> {
   return normalizeVerdicts(await apiClient.get<Report>(`/runs/${runId}/report`));
+}
+
+/** GET /api/runs/{run_id}/recommendations — the k6-style advisories the
+ * recsapp rules read off the run's report, fixed rule order. The payload's
+ * array is normalized null/absent → [], the listExecutionReports convention,
+ * so callers can iterate unconditionally. */
+export async function getRunRecommendations(runId: number): Promise<Recommendation[]> {
+  const got = await getRunsByRunIdRecommendations(runId);
+  return got?.recommendations ?? [];
 }
 
 /** GET /api/runs/compare — N runs' reports in one payload, request order
