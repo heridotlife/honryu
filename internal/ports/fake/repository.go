@@ -37,6 +37,10 @@ type Store struct {
 	// these rows.
 	*ThresholdStore
 
+	// versions is the embedded scenario-version store (phase 80): same
+	// promotion, same own-mutex reasoning as ThresholdStore.
+	*VersionStore
+
 	// namedLocks backs WithTenantLock/WithScheduleLock: a lock per key,
 	// distinct from mu, since fn typically calls back into other Store
 	// methods that themselves lock mu -- reusing mu here would self-deadlock.
@@ -147,6 +151,7 @@ func NewStore() *Store {
 	return &Store{
 		now:                  time.Now,
 		ThresholdStore:       NewThresholdStore(),
+		VersionStore:         NewVersionStore(),
 		namedLocks:           make(map[string]*sync.Mutex),
 		projects:             make(map[int64]project.Project),
 		scenarios:            make(map[int64]scenario.Scenario),
@@ -461,6 +466,35 @@ func (s *Store) ScenarioInUse(_ context.Context, scenarioID int64) (bool, error)
 		}
 	}
 	return false, nil
+}
+
+// UpdateScenario overwrites the row's mutable fields (name, kind, engine,
+// is_template, template_name) -- the restore path's apply step. Identity,
+// ownership, and provenance are deliberately not writable.
+func (s *Store) UpdateScenario(_ context.Context, p scenario.Scenario) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc, ok := s.scenarios[p.ID]
+	if !ok {
+		return ports.ErrNotFound
+	}
+	sc.Name = p.Name
+	sc.Kind = p.Kind
+	sc.Engine = p.Engine
+	sc.IsTemplate = p.IsTemplate
+	sc.TemplateName = p.TemplateName
+	s.scenarios[p.ID] = sc
+	return nil
+}
+
+// DeleteScenarioRequests removes the scenario's stored requests fragment
+// (a no-op when none is stored) -- the restore path's reverse of
+// SetScenarioRequests.
+func (s *Store) DeleteScenarioRequests(_ context.Context, scenarioID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.scenarioRequests, scenarioID)
+	return nil
 }
 
 // ListTemplates returns every scenario flagged as a template, in id order.

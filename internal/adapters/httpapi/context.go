@@ -6,19 +6,16 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/account"
 )
 
-// ctxKey is the private type for request-context keys.
-type ctxKey int
-
-const accountKey ctxKey = iota
-
-// withAccount returns a context carrying the authenticated account.
+// withAccount returns a context carrying the authenticated account. The
+// carrier itself lives in the account domain (account.WithContext) so the
+// use-case layer can read the principal for actor attribution (e.g. a
+// scenario version's created_by) without importing this adapter.
 func withAccount(ctx context.Context, acct account.Account) context.Context {
-	return context.WithValue(ctx, accountKey, acct)
+	return account.WithContext(ctx, acct)
 }
 
 // accountFrom returns the authenticated account stored by the auth middleware,
 // or the anonymous (zero) account when none is present.
 func accountFrom(ctx context.Context) account.Account {
-	acct, _ := ctx.Value(accountKey).(account.Account)
-	return acct
+	return account.FromContext(ctx)
 }
