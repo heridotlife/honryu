@@ -313,6 +313,13 @@ export interface FailingCriterion {
   unparsed?: boolean;
 }
 
+export interface Recommendation {
+  id: string;
+  title: string;
+  detail: string;
+  severity: "info" | "warning";
+}
+
 export interface ScenarioThreshold {
   id: number;
   scenario_id: number;
@@ -631,6 +638,7 @@ export const paths = {
   getExecutionsByExecutionIdErrorSignatures: (executionId: number | string) => `/executions/${executionId}/error-signatures`,
   getRunsCompare: () => `/runs/compare`,
   getRunsByRunIdReport: (runId: number | string) => `/runs/${runId}/report`,
+  getRunsByRunIdRecommendations: (runId: number | string) => `/runs/${runId}/recommendations`,
   getRunsByRunIdSeries: (runId: number | string) => `/runs/${runId}/series`,
   getRunsByRunIdExport: (runId: number | string) => `/runs/${runId}/export`,
   getRunsByRunIdScenariosByScenarioIdShardsByShardLog: (runId: number | string, scenarioId: number | string, shard: number | string) => `/runs/${runId}/scenarios/${scenarioId}/shards/${shard}/log`,
@@ -1088,6 +1096,11 @@ export function getRunsCompare(opts?: { query?: { "run_ids[]"?: Array<number>; r
 /** Fetch a run's stored report */
 export function getRunsByRunIdReport(runId: number | string): Promise<Report> {
   return apiClient.get<Report>(paths.getRunsByRunIdReport(runId));
+}
+
+/** Fetch a run's recommendations */
+export function getRunsByRunIdRecommendations(runId: number | string): Promise<{ recommendations: Recommendation[] }> {
+  return apiClient.get<{ recommendations: Recommendation[] }>(paths.getRunsByRunIdRecommendations(runId));
 }
 
 /** Fetch a run's per-second series */

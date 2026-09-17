@@ -797,6 +797,21 @@ components:
         unparsed:
           type: boolean
           description: True when the criterion could not be evaluated at all -- its outcome is unknown, not confirmed triggered.
+    Recommendation:
+      type: object
+      description: One actionable recommendation read off a run's report (phase 78). Detail always says what to do, why, and where to look; severity is never colour-only on the SPA (icon + text travel together).
+      required: [id, title, detail, severity]
+      properties:
+        id:
+          type: string
+          description: The rule that fired -- stable across runs (high-error-rate, latency-spread, threshold-missed, low-throughput, no-thresholds).
+        title: { type: string, description: The one-line headline.
+        }
+        detail: { type: string, description: 'What to do, why, and where: the actionable body.'
+        }
+        severity:
+          type: string
+          enum: [info, warning]
     ScenarioThreshold:
       type: object
       description: One scenario-scoped pass/fail bound (phase 72) -- a metric, a direction, and the bound in the metric's own unit.
@@ -3069,6 +3084,38 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Report' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/runs/{run_id}/recommendations:
+    get:
+      tags: [reports]
+      summary: Fetch a run's recommendations
+      description: >-
+        The run's stored report read by the recommendation rules (phase 78):
+        one actionable advisory per pattern the telemetry shows -- high error
+        rate, wide latency spread, a missed scenario threshold, throughput
+        under the requested rate, or a scenario with no thresholds at all.
+        Rules fire independently and the list order is fixed, so the same
+        report always yields the same list; a clean run yields an empty array,
+        never null. The scenario-threshold evidence is read with the report
+        overlay's own tolerance: a deployment with no threshold service (or a
+        failed read) simply produces no threshold rules -- never a failed
+        read. Authorization matches the run report route.
+      parameters: [{ $ref: '#/components/parameters/RunID' }]
+      responses:
+        '200':
+          description: Recommendations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recommendations]
+                properties:
+                  recommendations:
+                    type: array
+                    description: The fired recommendations, fixed rule order; empty when the run is clean.
+                    items: { $ref: '#/components/schemas/Recommendation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/runs/{run_id}/series:
