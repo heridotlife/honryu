@@ -329,6 +329,23 @@ export interface ScenarioThreshold {
   created_time: string;
 }
 
+export interface ScenarioVersionSummary {
+  id: number;
+  scenario_id: number;
+  version: number;
+  created_time: string;
+  created_by: string | null;
+}
+
+export interface ScenarioVersionDetail {
+  id: number;
+  scenario_id: number;
+  version: number;
+  created_time: string;
+  created_by: string | null;
+  snapshot: { id: number; name: string; project_id: number; kind: "portable" | "native"; engine: string; tenant_id: number | null; created_by: string; updated_by: string; created_time: string; is_template: boolean; template_name: string; test_file: string; data: string[]; requests: string };
+}
+
 export interface ThresholdResult {
   threshold_id: number;
   metric: "http_p95_ms" | "http_p99_ms" | "error_rate" | "throughput_qps";
@@ -590,6 +607,9 @@ export const paths = {
   getScenariosByScenarioIdExecutions: (scenarioId: number | string) => `/scenarios/${scenarioId}/executions`,
   getScenariosByScenarioIdThresholds: (scenarioId: number | string) => `/scenarios/${scenarioId}/thresholds`,
   putScenariosByScenarioIdThresholds: (scenarioId: number | string) => `/scenarios/${scenarioId}/thresholds`,
+  getScenariosByScenarioIdVersions: (scenarioId: number | string) => `/scenarios/${scenarioId}/versions`,
+  getScenariosByScenarioIdVersionsByVersion: (scenarioId: number | string, version: number | string) => `/scenarios/${scenarioId}/versions/${version}`,
+  postScenariosByScenarioIdVersionsByVersionRestore: (scenarioId: number | string, version: number | string) => `/scenarios/${scenarioId}/versions/${version}/restore`,
   getScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   deleteScenariosByScenarioId: (scenarioId: number | string) => `/scenarios/${scenarioId}`,
   getScenariosByScenarioIdFiles: (scenarioId: number | string) => `/scenarios/${scenarioId}/files`,
@@ -844,6 +864,21 @@ export function putScenariosByScenarioIdThresholds(scenarioId: number | string, 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/** List a scenario's edit history */
+export function getScenariosByScenarioIdVersions(scenarioId: number | string): Promise<ScenarioVersionSummary[]> {
+  return apiClient.get<ScenarioVersionSummary[]>(paths.getScenariosByScenarioIdVersions(scenarioId));
+}
+
+/** Read one version's full snapshot */
+export function getScenariosByScenarioIdVersionsByVersion(scenarioId: number | string, version: number | string): Promise<ScenarioVersionDetail> {
+  return apiClient.get<ScenarioVersionDetail>(paths.getScenariosByScenarioIdVersionsByVersion(scenarioId, version));
+}
+
+/** Restore the scenario to a version */
+export function postScenariosByScenarioIdVersionsByVersionRestore(scenarioId: number | string, version: number | string): Promise<{ message: string; restored_from: number; version: number }> {
+  return apiClient.request<{ message: string; restored_from: number; version: number }>(paths.postScenariosByScenarioIdVersionsByVersionRestore(scenarioId, version), { method: 'POST' });
 }
 
 /** Get a scenario and its files */

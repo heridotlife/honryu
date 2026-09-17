@@ -612,3 +612,125 @@ func TestGetCampaignVerdict_MissingCampaignReturnsNotFound(t *testing.T) {
 		t.Fatalf("get verdict (missing) = %d, want 404 (%s)", rec.Code, rec.Body.String())
 	}
 }
+func createCampaignForUpdate(t *testing.T, h http.Handler) (id, projectA, execA int64) {
+	t.Helper()
+	projectA, execA = seedProjectAndExecution(t, h, "upd-a", 7)
+	start := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	end := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	rec := postForm(t, h, "/api/tenants/7/campaigns", url.Values{
+		"name":                 {"Update Me"},
+		"window_start":         {start},
+		"window_end":           {end},
+		"service_project_id":   {itoa(projectA)},
+		"service_execution_id": {itoa(execA)},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create campaign = %d (%s)", rec.Code, rec.Body.String())
+	}
+	return decodeID(t, rec), projectA, execA
+}
+
+func TestUpdateCampaign_RoundTrips(t *testing.T) {
+	t.Parallel()
+	h, _ := newCampaignRouter(t)
+	id, projectA, execA := createCampaignForUpdate(t, h)
+
+	start := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	end := time.Now().Add(4 * time.Hour).UTC().Format(time.RFC3339)
+	rec := putForm(t, h, "/api/campaigns/"+itoa(id), url.Values{
+		"name":                 {"Updated Name"},
+		"window_start":         {start},
+		"window_end":           {end},
+		"service_project_id":   {itoa(projectA)},
+		"service_execution_id": {itoa(execA)},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update campaign = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got campaignRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if got.ID != id {
+		t.Errorf("update returned id %d, want %d", got.ID, id)
+	}
+}
+
+func TestUpdateCampaign_RejectsInvalidWindow(t *testing.T) {
+	t.Parallel()
+	h, _ := newCampaignRouter(t)
+	id, _, _ := createCampaignForUpdate(t, h)
+
+	rec := putForm(t, h, "/api/campaigns/"+itoa(id), url.Values{
+		"name":                 {"x"},
+		"window_start":         {"not-a-time"},
+		"window_end":           {"not-a-time"},
+		"service_project_id":   {},
+		"service_execution_id": {},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid window_start = %d (%s), want 400", rec.Code, rec.Body.String())
+	}
+
+	start := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	rec = putForm(t, h, "/api/campaigns/"+itoa(id), url.Values{
+		"name":                 {"x"},
+		"window_start":         {start},
+		"window_end":           {"not-a-time"},
+		"service_project_id":   {},
+		"service_execution_id": {},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid window_end = %d (%s), want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateCampaign_MissingReturns404(t *testing.T) {
+	t.Parallel()
+	h, _ := newCampaignRouter(t)
+	start := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	end := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	rec := putForm(t, h, "/api/campaigns/9999", url.Values{
+		"name":                 {"ghost"},
+		"window_start":         {start},
+		"window_end":           {end},
+		"service_project_id":   {},
+		"service_execution_id": {},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("update missing = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAbortCampaign_ClosesIt(t *testing.T) {
+	t.Parallel()
+	h, _ := newCampaignRouter(t)
+	id, _, _ := createCampaignForUpdate(t, h)
+
+	rec := do(t, h, http.MethodPost, "/api/campaigns/"+itoa(id)+"/abort")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abort = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var got campaignRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if got.Active {
+		t.Error("aborted campaign must not be active")
+	}
+
+	// Aborting again still returns the campaign (idempotent read-back).
+	rec = do(t, h, http.MethodPost, "/api/campaigns/"+itoa(id)+"/abort")
+	if rec.Code != http.StatusOK {
+		t.Errorf("second abort = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAbortCampaign_MissingReturns404(t *testing.T) {
+	t.Parallel()
+	h, _ := newCampaignRouter(t)
+	rec := do(t, h, http.MethodPost, "/api/campaigns/9999/abort")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("abort missing = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+}

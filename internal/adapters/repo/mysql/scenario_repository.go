@@ -217,6 +217,49 @@ func (r *Repository) GetScenarioRequests(ctx context.Context, scenarioID int64) 
 	return raw, nil
 }
 
+// UpdateScenario overwrites the row's mutable fields (name, kind, engine,
+// is_template, template_name) from p -- the restore path's apply step.
+// Identity (id), ownership (project_id, tenant_id), and provenance
+// (created_by, created_time) are deliberately not written. Returns
+// ports.ErrNotFound when the row is gone.
+func (r *Repository) UpdateScenario(ctx context.Context, p scenario.Scenario) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE scenario SET name = ?, kind = ?, engine = ?, is_template = ?, template_name = ? WHERE id = ?",
+		p.Name, string(p.Kind), string(p.Engine), p.IsTemplate, nullString(p.TemplateName), p.ID)
+	if err != nil {
+		return fmt.Errorf("mysql: update scenario: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mysql: update scenario rows: %w", err)
+	}
+	// RowsAffected 0 covers both a missing row and a no-op UPDATE (values
+	// already equal); SetScenarioKind documents why the DSN's
+	// CLIENT_FOUND_ROWS flag is not the answer. The restore path always
+	// reads the scenario first, so distinguishing here is cheap and exact.
+	if n == 0 {
+		var exists bool
+		if err := r.db.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM scenario WHERE id = ?)", p.ID).Scan(&exists); err != nil {
+			return fmt.Errorf("mysql: update scenario check: %w", err)
+		}
+		if !exists {
+			return ports.ErrNotFound
+		}
+	}
+	return nil
+}
+
+// DeleteScenarioRequests removes the scenario's stored requests fragment (a
+// no-op when none is stored) -- the restore path's reverse of
+// SetScenarioRequests.
+func (r *Repository) DeleteScenarioRequests(ctx context.Context, scenarioID int64) error {
+	if _, err := r.db.ExecContext(ctx, "DELETE FROM scenario_requests WHERE scenario_id = ?", scenarioID); err != nil {
+		return fmt.Errorf("mysql: delete scenario requests: %w", err)
+	}
+	return nil
+}
+
 // ScenarioInUse reports whether the scenario is referenced by any execution's
 // execution configuration.
 func (r *Repository) ScenarioInUse(ctx context.Context, scenarioID int64) (bool, error) {

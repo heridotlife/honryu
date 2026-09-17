@@ -183,6 +183,7 @@ func truncateAll(t *testing.T, db *sql.DB) {
 	for _, table := range []string{
 		"project", "scenario", "execution", "execution_scenario",
 		"scenario_data", "scenario_test_file", "scenario_requests", "execution_data",
+		"scenario_versions",
 		"execution_run", "execution_run_history", "running_scenario",
 		"execution_orphan_completion",
 		"execution_launch", "execution_launch_history",

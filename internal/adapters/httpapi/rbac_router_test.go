@@ -92,7 +92,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	lifecycle := lifecycleapp.NewService(store, sched, obj, lifecycleapp.StaticImage("honryu/jmeter:latest"))
 	quota := quotaapp.NewService(store)
 	campaigns := campaignapp.NewService(store, sched)
-	scenarios := scenarioapp.NewService(store, obj)
+	scenarios := scenarioapp.NewService(store, obj).WithVersions(store)
 	calibrations := calibrationapp.NewService(store).WithFingerprint(scenarios)
 	router := httpapi.NewRouter(httpapi.Deps{
 		Projects:     projectapp.NewService(store),
@@ -108,7 +108,9 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 		SLOs:         sloapp.NewService(store),
 		// Wired so the threshold probes reach the scenario:read/update gate
 		// rather than the optional-service 404 (phase 72).
-		Thresholds:   thresholdapp.NewService(store),
+		Thresholds: thresholdapp.NewService(store),
+		// Same for the scenario-version probes (phase 80): the audit asserts
+		// the RBAC gate, not the not-configured 404.
 		Digests:      digestapp.NewService(store),
 		Store:        obj,
 		Reports:      reports,

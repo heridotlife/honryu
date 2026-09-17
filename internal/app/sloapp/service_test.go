@@ -287,3 +287,57 @@ func TestBudget_EmptyWindowAndUnknownSLO(t *testing.T) {
 		t.Errorf("Budget(bad window) = %v, want ErrWindowInvalid", err)
 	}
 }
+func TestSLO_StringRendersNameFirst(t *testing.T) {
+	t.Parallel()
+	s := slo.SLO{Name: "checkout p95", ProjectID: 42}
+	if got := s.String(); got != "checkout p95 (project 42)" {
+		t.Errorf("String() = %q, want name-first rendering", got)
+	}
+}
+
+func TestProjectWindowBudgets_GradesEverySLO(t *testing.T) {
+	t.Parallel()
+	svc, store, reports := newService(t)
+	ctx := context.Background()
+	newProject(t, store)
+	newExecution(t, store, 1)
+
+	// Two SLOs on the same project; one healthy run inside the window.
+	if _, err := svc.Create(ctx, mkSLO(1)); err != nil {
+		t.Fatalf("Create alpha: %v", err)
+	}
+	second := mkSLO(1)
+	second.Name = "beta"
+	if _, err := svc.Create(ctx, second); err != nil {
+		t.Fatalf("Create beta: %v", err)
+	}
+	seedRun(t, reports, 1, 1, time.Now().Add(-time.Minute), taurus.OutcomePassed, 0.15, 0.001)
+
+	out, err := svc.ProjectWindowBudgets(ctx, 1, time.Now().Add(-time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("ProjectWindowBudgets: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (one per SLO)", len(out))
+	}
+	for _, o := range out {
+		if o.SLOID <= 0 {
+			t.Errorf("outcome %+v carries no SLO id", o)
+		}
+	}
+}
+
+func TestProjectWindowBudgets_EmptyProjectReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	svc, store, _ := newService(t)
+	ctx := context.Background()
+	newProject(t, store)
+
+	out, err := svc.ProjectWindowBudgets(ctx, 1, time.Now().Add(-time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("ProjectWindowBudgets: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("outcomes = %d, want 0 for project without SLOs", len(out))
+	}
+}

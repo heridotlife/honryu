@@ -277,6 +277,16 @@ var routes = []Route{
 	{"GET", "/api/scenarios/{scenario_id}/thresholds", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarioThresholds })},
 	{"PUT", "/api/scenarios/{scenario_id}/thresholds", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.replaceScenarioThresholds })},
 
+	// Phase 80: the scenario's edit history -- the append-only audit trail
+	// every write captures into. List is the newest-first index, the
+	// versioned GET is the as-of snapshot read, and restore rewinds the
+	// scenario to a version (recording the pre-restore state as a new
+	// version, so a restore is itself a version). Same optional-service
+	// gate contract as the thresholds routes above.
+	{"GET", "/api/scenarios/{scenario_id}/versions", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.listScenarioVersions })},
+	{"GET", "/api/scenarios/{scenario_id}/versions/{version}", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.getScenarioVersion })},
+	{"POST", "/api/scenarios/{scenario_id}/versions/{version}/restore", "scenarios", hf(func(h *handlers) http.HandlerFunc { return h.restoreScenarioVersion })},
+
 	// Phase 65: templates are scenarios with a flag. The catalog is its own
 	// read surface (templates are global, so no project scopes it), and
 	// instantiate clones one into an ordinary scenario.

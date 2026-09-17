@@ -17,6 +17,7 @@ import (
 
 	yaml "gopkg.in/yaml.v3"
 
+	"github.com/heridotlife/honryu/internal/domain/account"
 	"github.com/heridotlife/honryu/internal/domain/jmx"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -34,6 +35,11 @@ var (
 	// instantiate route addresses templates, and silently cloning a runnable
 	// scenario through it would hide a wrong-id mistake behind a success.
 	ErrScenarioNotTemplate = errors.New("scenarioapp: scenario is not a template")
+	// ErrVersioningUnavailable says the service was wired without a version
+	// store, so history cannot be served or restored to. Production wires
+	// one (WithVersions); the error exists so the HTTP layer can answer the
+	// version endpoints with its usual not-configured 404 instead of a 500.
+	ErrVersioningUnavailable = errors.New("scenarioapp: scenario versioning is not configured")
 )
 
 // Repo is the repository surface the scenario service needs.
@@ -56,6 +62,13 @@ type Repo interface {
 	// onto the scenario (Phase 20 tenant propagation).
 	GetProject(ctx context.Context, id int64) (project.Project, error)
 
+	// UpdateScenario and DeleteScenarioRequests are the restore path's
+	// apply steps: the row's mutable fields rewritten from the snapshot,
+	// and the reverse of SetScenarioRequests for rewinding to a version
+	// captured before any fragment existed.
+	UpdateScenario(ctx context.Context, p scenario.Scenario) error
+	DeleteScenarioRequests(ctx context.Context, scenarioID int64) error
+
 	// ListTemplates returns the template catalog (every scenario flagged as a
 	// template), in id order. Templates are global, so there is nothing to
 	// scope by.
@@ -66,11 +79,26 @@ type Repo interface {
 type Service struct {
 	repo  Repo
 	store ports.ObjectStore
+	// versions records the edit audit trail when wired (WithVersions).
+	// Production wires it; a service without one still serves every
+	// pre-versioning use-case, it just does not version (the legacy unit
+	// harnesses rely on that) -- and its version endpoints report
+	// ErrVersioningUnavailable.
+	versions ports.ScenarioVersionStore
 }
 
 // NewService wires a Service to a scenario repository and an object store.
 func NewService(repo Repo, store ports.ObjectStore) *Service {
 	return &Service{repo: repo, store: store}
+}
+
+// WithVersions wires the scenario-version store backing the edit audit
+// trail. Returns the receiver for chaining.
+func (s *Service) WithVersions(vs ports.ScenarioVersionStore) *Service {
+	if vs != nil {
+		s.versions = vs
+	}
+	return s
 }
 
 // FileRef describes a stored file and how to fetch it.
@@ -101,6 +129,22 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64) (sce
 		return scenario.Scenario{}, err
 	}
 	p.ID = id
+	// Phase 80: creation captures version 1 -- the starting point every
+	// later edit is measured from. The capture needs the stored row (the
+	// store assigns created_time); on failure the row is rolled back so a
+	// scenario is never left behind without its first version, the same
+	// stance ImportJMX and Instantiate take for their later steps.
+	if s.versions != nil {
+		stored, getErr := s.repo.GetScenario(ctx, id)
+		if getErr != nil {
+			_ = s.repo.DeleteScenario(ctx, id)
+			return scenario.Scenario{}, getErr
+		}
+		if _, captureErr := s.captureVersionOf(ctx, stored); captureErr != nil {
+			_ = s.repo.DeleteScenario(ctx, id)
+			return scenario.Scenario{}, captureErr
+		}
+	}
 	return p, nil
 }
 
@@ -339,6 +383,24 @@ func (s *Service) UploadFile(ctx context.Context, scenarioID int64, filename str
 		return err
 	}
 	isTest := isTestFile(filename)
+	// A duplicate is refused before anything is captured: a rejected upload
+	// changed nothing, and a version row for a no-op would be noise. (The
+	// store's own ErrFileExists below remains as the race backstop.)
+	pf, err := s.repo.ScenarioFilesFor(ctx, scenarioID)
+	if err != nil {
+		return err
+	}
+	if filePresent(pf, filename, isTest) {
+		return ports.ErrFileExists
+	}
+	// Phase 80: capture the file set BEFORE the new record lands, so the
+	// audit trail shows the state the upload changed. A failed capture
+	// fails the upload -- an audit trail that silently drops entries is a
+	// lie -- and the capture runs before any mutation, so nothing is
+	// half-done.
+	if err := s.captureVersion(ctx, scenarioID); err != nil {
+		return err
+	}
 	if err := s.repo.AddScenarioFile(ctx, scenarioID, filename, isTest); err != nil {
 		return err
 	}
@@ -375,10 +437,21 @@ func (s *Service) DeleteFile(ctx context.Context, scenarioID int64, filename str
 	if err := validateFilename(filename); err != nil {
 		return err
 	}
-	// The same classification the upload used: isTestFile, not isJMX -- a
-	// k6 script is a test file too, and classifying it as data deleted from
-	// the wrong table, leaving the record behind and 404ing the delete.
 	isTest := isTestFile(filename)
+	// A file that is not there is refused before anything is captured -- a
+	// no-op delete must not leave a version row behind (the same rule
+	// UploadFile applies to duplicates).
+	pf, err := s.repo.ScenarioFilesFor(ctx, scenarioID)
+	if err != nil {
+		return err
+	}
+	if !filePresent(pf, filename, isTest) {
+		return ports.ErrNotFound
+	}
+	// Phase 80: capture before the record goes -- same law as UploadFile.
+	if err := s.captureVersion(ctx, scenarioID); err != nil {
+		return err
+	}
 	if err := s.repo.DeleteScenarioFile(ctx, scenarioID, filename, isTest); err != nil {
 		return err
 	}
@@ -414,6 +487,11 @@ func (s *Service) SetRequests(ctx context.Context, scenarioID int64, raw []byte)
 	}
 	if diags := requestDiagnostics(raw); diags != nil {
 		return &InvalidRequestsError{Diagnostics: diags, Err: ErrRequestsInvalid}
+	}
+	// Phase 80: capture before the fragment is overwritten -- the edit the
+	// editor's Save triggers is exactly what the audit trail exists for.
+	if err := s.captureVersion(ctx, scenarioID); err != nil {
+		return err
 	}
 	return s.repo.SetScenarioRequests(ctx, scenarioID, raw)
 }
@@ -516,6 +594,251 @@ func (s *Service) ScenarioFingerprint(ctx context.Context, scenarioID int64) (st
 	h.Write(requests)
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Version history (phase 80). The audit trail lives behind the
+// ScenarioVersionStore: every write the service applies captures the
+// CURRENT state as version max+1 first, creation captures version 1, and
+// restore captures the pre-restore state as a new version -- history is
+// append-only, no path rewrites a stored row.
+
+// VersionsEnabled reports whether the service was wired with a version
+// store. The HTTP layer gates the version endpoints on it (not configured
+// 404s, the optional-service contract).
+func (s *Service) VersionsEnabled() bool { return s.versions != nil }
+
+// ListVersions returns the scenario's versions, newest first. Unknown
+// scenario is ports.ErrNotFound; an unwired store is
+// ErrVersioningUnavailable.
+func (s *Service) ListVersions(ctx context.Context, scenarioID int64) ([]ports.ScenarioVersionMeta, error) {
+	if _, err := s.repo.GetScenario(ctx, scenarioID); err != nil {
+		return nil, err
+	}
+	if s.versions == nil {
+		return nil, ErrVersioningUnavailable
+	}
+	return s.versions.ListScenarioVersions(ctx, scenarioID)
+}
+
+// ScenarioVersion returns one stored version, snapshot included. Unknown
+// scenario and unknown version map to their own sentinels so the HTTP
+// layer's 404 can name which one.
+func (s *Service) ScenarioVersion(ctx context.Context, scenarioID int64, version int) (ports.ScenarioVersion, error) {
+	if _, err := s.repo.GetScenario(ctx, scenarioID); err != nil {
+		return ports.ScenarioVersion{}, err
+	}
+	if s.versions == nil {
+		return ports.ScenarioVersion{}, ErrVersioningUnavailable
+	}
+	return s.versions.ScenarioVersion(ctx, scenarioID, version)
+}
+
+// RestoreResult says what a restore did: which version's snapshot was
+// applied, and which version now records the pre-restore state (the one
+// the restore itself created -- restore is itself a version).
+type RestoreResult struct {
+	// RestoredFrom is the version whose snapshot was applied.
+	RestoredFrom int
+	// Version is the freshly appended capture of the pre-restore state.
+	Version int
+}
+
+// Restore rewinds the scenario to version: that version's snapshot becomes
+// the live scenario, after the current state is captured as a new version
+// (append-only -- no stored row is ever rewritten or deleted).
+//
+// The snapshot records file NAMES, not blobs: restoring reconciles the
+// file records to the snapshot's set, so a record restored after its
+// object was deleted downloads as not-found until re-uploaded. Ownership
+// (project, tenant) and provenance (created_by, created_time) are never
+// restored -- a restore rewinds what the scenario IS, not what it belongs
+// to. Returns ErrVersioningUnavailable when unwired, ports.ErrNotFound for
+// an unknown scenario, ports.ErrScenarioVersionNotFound for an unknown
+// version.
+func (s *Service) Restore(ctx context.Context, scenarioID int64, version int) (RestoreResult, error) {
+	sc, err := s.repo.GetScenario(ctx, scenarioID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if s.versions == nil {
+		return RestoreResult{}, ErrVersioningUnavailable
+	}
+	stored, err := s.versions.ScenarioVersion(ctx, scenarioID, version)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+
+	// The append-only law, restore included: the pre-restore state becomes
+	// version max+1 BEFORE the snapshot is applied, so the operator can
+	// always undo a restore by restoring the version this call created.
+	preRestore, err := s.captureVersionOf(ctx, sc)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+
+	snap := stored.Snapshot
+	rewound := scenario.Scenario{
+		ID:   scenarioID,
+		Name: snap.Name,
+		// The snapshot's own project_id only satisfies the domain's
+		// validation; UpdateScenario never writes ownership columns.
+		ProjectID:    snap.ProjectID,
+		Kind:         scenario.Kind(snap.Kind),
+		Engine:       taurus.Executor(snap.Engine),
+		IsTemplate:   snap.IsTemplate,
+		TemplateName: snap.TemplateName,
+	}
+	if err := rewound.Validate(); err != nil {
+		return RestoreResult{}, fmt.Errorf("scenarioapp: restore scenario %d to version %d: %w", scenarioID, version, err)
+	}
+	if err := s.repo.UpdateScenario(ctx, rewound); err != nil {
+		return RestoreResult{}, err
+	}
+	if err := s.restoreFiles(ctx, scenarioID, snap); err != nil {
+		return RestoreResult{}, err
+	}
+	if snap.Requests == "" {
+		err = s.repo.DeleteScenarioRequests(ctx, scenarioID)
+	} else {
+		err = s.repo.SetScenarioRequests(ctx, scenarioID, []byte(snap.Requests))
+	}
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	return RestoreResult{RestoredFrom: version, Version: preRestore}, nil
+}
+
+// restoreFiles reconciles the scenario's file records to the snapshot's
+// set: gone records are re-added, records not in the snapshot are removed.
+// Stored objects are deliberately untouched -- the snapshot has names, not
+// contents, so this is a metadata rewind only.
+func (s *Service) restoreFiles(ctx context.Context, scenarioID int64, snap ports.ScenarioSnapshot) error {
+	current, err := s.repo.ScenarioFilesFor(ctx, scenarioID)
+	if err != nil {
+		return err
+	}
+	if current.TestFile != snap.TestFile {
+		if current.TestFile != "" {
+			if err := s.repo.DeleteScenarioFile(ctx, scenarioID, current.TestFile, true); err != nil {
+				return err
+			}
+		}
+		if snap.TestFile != "" {
+			if err := s.repo.AddScenarioFile(ctx, scenarioID, snap.TestFile, true); err != nil {
+				return err
+			}
+		}
+	}
+	wanted := make(map[string]bool, len(snap.Data))
+	for _, name := range snap.Data {
+		wanted[name] = true
+	}
+	for _, name := range current.Data {
+		if !wanted[name] {
+			if err := s.repo.DeleteScenarioFile(ctx, scenarioID, name, false); err != nil {
+				return err
+			}
+		}
+	}
+	have := make(map[string]bool, len(current.Data))
+	for _, name := range current.Data {
+		have[name] = true
+	}
+	for _, name := range snap.Data {
+		if !have[name] {
+			if err := s.repo.AddScenarioFile(ctx, scenarioID, name, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// captureVersion records the scenario's current state as its next version.
+// It reads the scenario first because the caller's copy may predate the
+// store's own stamps; a versioning failure fails the caller's write (see
+// captureVersionOf).
+func (s *Service) captureVersion(ctx context.Context, scenarioID int64) error {
+	if s.versions == nil {
+		return nil
+	}
+	sc, err := s.repo.GetScenario(ctx, scenarioID)
+	if err != nil {
+		return err
+	}
+	_, err = s.captureVersionOf(ctx, sc)
+	return err
+}
+
+// captureVersionOf appends sc's state as the scenario's next version and
+// returns the number assigned. A no-actor append (the request carried no
+// authenticated principal -- the legacy no-auth path) is stored NULL, the
+// honest "unknown", never a fabricated name.
+func (s *Service) captureVersionOf(ctx context.Context, sc scenario.Scenario) (int, error) {
+	snap, err := s.scenarioSnapshot(ctx, sc)
+	if err != nil {
+		return 0, fmt.Errorf("scenarioapp: snapshot scenario %d: %w", sc.ID, err)
+	}
+	version, err := s.versions.AppendScenarioVersion(ctx, sc.ID, snap, actorOf(ctx))
+	if err != nil {
+		return 0, fmt.Errorf("scenarioapp: capture scenario %d version: %w", sc.ID, err)
+	}
+	return version, nil
+}
+
+// scenarioSnapshot composes the full scenario shape from its row, its file
+// records, and its stored fragment (none when never uploaded -- the one
+// not-found this read tolerates).
+func (s *Service) scenarioSnapshot(ctx context.Context, sc scenario.Scenario) (ports.ScenarioSnapshot, error) {
+	files, err := s.repo.ScenarioFilesFor(ctx, sc.ID)
+	if err != nil {
+		return ports.ScenarioSnapshot{}, err
+	}
+	raw, err := s.repo.GetScenarioRequests(ctx, sc.ID)
+	if err != nil && !errors.Is(err, ports.ErrNotFound) {
+		return ports.ScenarioSnapshot{}, err
+	}
+	data := append([]string(nil), files.Data...)
+	if data == nil {
+		data = []string{}
+	}
+	return ports.ScenarioSnapshot{
+		ID:           sc.ID,
+		Name:         sc.Name,
+		ProjectID:    sc.ProjectID,
+		Kind:         string(sc.Kind),
+		Engine:       string(sc.Engine),
+		TenantID:     sc.TenantID,
+		CreatedBy:    sc.CreatedBy,
+		UpdatedBy:    sc.UpdatedBy,
+		CreatedTime:  sc.CreatedTime,
+		IsTemplate:   sc.IsTemplate,
+		TemplateName: sc.TemplateName,
+		TestFile:     files.TestFile,
+		Data:         data,
+		Requests:     string(raw),
+	}, nil
+}
+
+// actorOf names the authenticated principal the request carried, or ""
+// when none was reachable (no-auth mode stores NULL).
+func actorOf(ctx context.Context) string {
+	return account.FromContext(ctx).Subject
+}
+
+// filePresent reports whether filename is already one of pf's records in
+// the given slot -- the duplicate/missing pre-check that keeps rejected
+// uploads and no-op deletes from recording versions.
+func filePresent(pf ports.ScenarioFiles, filename string, isTest bool) bool {
+	if isTest {
+		return pf.TestFile == filename
+	}
+	for _, name := range pf.Data {
+		if name == filename {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveTenant returns the tenant a new scenario under projectID should be

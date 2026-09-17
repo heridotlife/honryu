@@ -104,6 +104,12 @@ components:
       in: path
       required: true
       schema: { type: integer, format: int64 }
+    ScenarioVersion:
+      name: version
+      in: path
+      required: true
+      schema: { type: integer }
+      description: The version number within the scenario's history (1 = creation).
     ExecutionID:
       name: execution_id
       in: path
@@ -828,6 +834,63 @@ components:
           description: lt = satisfied when the observed value is strictly below the bound; gt = strictly above.
         value: { type: number }
         created_time: { type: string, format: date-time }
+    ScenarioVersionSummary:
+      type: object
+      description: One entry of the scenario's append-only edit history (phase 80) -- identity and stamp; the as-of snapshot lives behind the per-version GET.
+      required: [id, scenario_id, version, created_time, created_by]
+      properties:
+        id: { type: integer, format: int64 }
+        scenario_id: { type: integer, format: int64 }
+        version:
+          type: integer
+          description: The version number within the scenario's history (1 = creation, max = the current state's capture).
+        created_time: { type: string, format: date-time }
+        created_by:
+          type: [string, 'null']
+          description: The principal that produced the change; null when none was reachable (the legacy no-auth path).
+    ScenarioVersionDetail:
+      type: object
+      description: One stored version's metadata plus the full scenario snapshot it captured (phase 80) -- the as-of read the history list points into. File records are names; blob contents are not versioned.
+      required: [id, scenario_id, version, created_time, created_by, snapshot]
+      properties:
+        id: { type: integer, format: int64 }
+        scenario_id: { type: integer, format: int64 }
+        version: { type: integer }
+        created_time: { type: string, format: date-time }
+        created_by:
+          type: [string, 'null']
+        snapshot:
+          type: object
+          description: The full scenario shape as captured.
+          required: [id, name, project_id, kind, engine, tenant_id, created_by, updated_by, created_time, is_template, template_name, test_file, data, requests]
+          properties:
+            id: { type: integer, format: int64 }
+            name: { type: string }
+            project_id: { type: integer, format: int64 }
+            kind:
+              type: string
+              enum: [portable, native]
+            engine:
+              type: string
+              description: The engine a native scenario is pinned to; empty for portable.
+            tenant_id:
+              type: [integer, 'null']
+              format: int64
+            created_by: { type: string }
+            updated_by: { type: string }
+            created_time: { type: string, format: date-time }
+            is_template: { type: boolean }
+            template_name: { type: string }
+            test_file:
+              type: string
+              description: The test-file record's name; empty when the scenario had none.
+            data:
+              type: array
+              items: { type: string }
+              description: The data-file record names.
+            requests:
+              type: string
+              description: The stored Taurus requests fragment, byte-for-byte; empty when none was ever uploaded.
     ThresholdResult:
       type: object
       description: One run's report graded against one threshold (phase 72). The definition rides along as evaluated; observed_value and satisfied are null when the report carried no figure for the metric -- unknown, never a fabricated fail -- and reason says why.
@@ -2020,6 +2083,92 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/scenarios/{scenario_id}/versions:
+    get:
+      tags: [scenarios]
+      summary: List a scenario's edit history
+      description: |
+        The scenario's append-only version history (phase 80), newest first:
+        one entry per captured write. Every scenario edit records the state
+        it CHANGES as a new version before applying it; creation recorded
+        version 1, and a restore records the pre-restore state as a new
+        version (a restore is itself a version). No stored version is ever
+        rewritten or removed. Entries carry identity and stamp only -- the
+        as-of snapshot lives behind the per-version GET.
+      parameters: [{ $ref: '#/components/parameters/ScenarioID' }]
+      responses:
+        '200':
+          description: The scenario's versions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ScenarioVersionSummary' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/scenarios/{scenario_id}/versions/{version}:
+    get:
+      tags: [scenarios]
+      summary: Read one version's full snapshot
+      description: |
+        What the scenario looked like at the named version: the full
+        scenario shape as captured -- the scenario row's own fields plus its
+        file records (test_file, data -- names, not blob contents) and its
+        stored requests fragment. created_by is null when no authenticated
+        principal was reachable at capture time (the legacy no-auth path).
+      parameters:
+        [{ $ref: '#/components/parameters/ScenarioID' }, { $ref: '#/components/parameters/ScenarioVersion' }]
+      responses:
+        '200':
+          description: The version's metadata and full snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScenarioVersionDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Unknown scenario or unknown version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/scenarios/{scenario_id}/versions/{version}/restore:
+    post:
+      tags: [scenarios]
+      summary: Restore the scenario to a version
+      description: |
+        Rewind the scenario to the named version: that version's snapshot
+        becomes the live scenario (mutable fields, file records, requests
+        fragment -- ownership and provenance stay as they are). History is
+        append-only, never a silent overwrite: the pre-restore state is
+        captured as a NEW version before the snapshot is applied, so a
+        restore is itself a version, and the response names both -- the
+        version applied and the one recording what was overwritten.
+      parameters:
+        [{ $ref: '#/components/parameters/ScenarioID' }, { $ref: '#/components/parameters/ScenarioVersion' }]
+      responses:
+        '200':
+          description: Restored; the pre-restore state was recorded as a new version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, restored_from, version]
+                properties:
+                  message: { type: string }
+                  restored_from:
+                    type: integer
+                    description: The version whose snapshot was applied.
+                  version:
+                    type: integer
+                    description: The newly appended version recording the pre-restore state.
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Unknown scenario or unknown version (or versioning not configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/scenarios/{scenario_id}:
     get:

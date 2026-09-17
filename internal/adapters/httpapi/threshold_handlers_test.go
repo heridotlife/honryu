@@ -355,3 +355,26 @@ func TestThresholds_GetIncludesThresholdIds(t *testing.T) {
 		}
 	}
 }
+func TestThresholds_GateWhenDisabled(t *testing.T) {
+	t.Helper()
+	store := fake.NewStore()
+	// Router WITHOUT Thresholds wired
+	h := httpapi.NewRouter(httpapi.Deps{
+		Projects:      projectapp.NewService(store),
+		Scenarios:     scenarioapp.NewService(store, fake.NewObjectStore()),
+		Thresholds:    nil, // <-- the gate is what we are testing
+		DefaultOwners: []string{"honryu"},
+	})
+	projectID := decodeID(t, postForm(t, h, "/api/projects", url.Values{"name": {"web"}, "owner": {"honryu"}}))
+	scenarioID := decodeID(t, postForm(t, h, "/api/scenarios", url.Values{"name": {"alpha"}, "project_id": {itoa(projectID)}}))
+
+	// Any threshold endpoint should return 404 "thresholds not configured"
+	rec := do(t, h, "GET", "/api/scenarios/"+itoa(scenarioID)+"/thresholds")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("get = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "PUT", "/api/scenarios/"+itoa(scenarioID)+"/thresholds")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("put = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+}

@@ -77,6 +77,7 @@ type repository interface {
 	ports.WebhookStore
 	ports.SLOStore
 	ports.ThresholdStore
+	ports.ScenarioVersionStore
 	ports.ReportDigestStore
 	ports.DigestScheduleStore
 	// ports.ExecutionRepository in full: the digest aggregation lists a
@@ -177,7 +178,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 	quota.WithStopper(lifecycle)
 	schedules := scheduleapp.NewService(repo, quota)
 	admin := adminapp.NewService(repo, sched, lifecycle).WithCampaigns(campaigns)
-	scenarios := scenarioapp.NewService(repo, store)
+	scenarios := scenarioapp.NewService(repo, store).WithVersions(repo)
 	// No WithRunner: cmd/api only serves HTTP (create/trigger/get/profile/
 	// fan-out) -- driving a step (AdvanceOne) is cmd/calibrator's and
 	// cmd/scheduler's own job, never a synchronous request here.

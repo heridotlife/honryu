@@ -15,6 +15,7 @@ import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
+import ScenarioVersionHistory from '../components/ScenarioVersionHistory';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import TaurusEditor from '../components/TaurusEditor';
 import ThresholdEditor from '../components/ThresholdEditor';
@@ -83,6 +84,9 @@ export default function Scenario() {
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when a version restore lands (phase 80) so the scenario refetch
+  // effect re-runs without changing the id.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
   const [executionsError, setExecutionsError] = useState<string | null>(null);
@@ -109,7 +113,7 @@ export default function Scenario() {
     return () => {
       alive = false;
     };
-  }, [scenarioId]);
+  }, [scenarioId, reloadKey]);
 
   // The run history (newest first is the 67a endpoint's contract, not this
   // page's job), then the bounded per-row probe: each execution's newest
@@ -377,6 +381,16 @@ export default function Scenario() {
           </CardHeader>
           <CardContent>
             <ThresholdEditor scenarioId={scenarioId} />
+          </CardContent>
+        </Card>
+        {/* Phase 80: the edit audit trail -- collapsed by default; restoring
+            rewinds the scenario, so the page refetches it on callback. */}
+        <Card>
+          <CardHeader>
+            <CardTitle>History</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScenarioVersionHistory scenarioId={scenarioId} onRestored={() => setReloadKey((k) => k + 1)} />
           </CardContent>
         </Card>
       </TabPanel>
