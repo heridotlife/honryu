@@ -94,6 +94,16 @@ async function renderScenarios() {
   await act(async () => {});
 }
 
+// Phase 79: force the below-sm card branch for the card-mode pins. The
+// query-aware shape mirrors CardTable's own test stub: min-width queries
+// answer `wide`, everything else false (the theme's prefers-color-scheme).
+function stubCardMode(wide: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query.includes('min-width') ? wide : false })),
+  );
+}
+
 beforeEach(() => {
   // The shared project selection lives in localStorage; a stale value from
   // another test would turn every fetch into ?project_id=N.
@@ -253,5 +263,38 @@ describe('Scenarios page (phase 67b)', () => {
     });
     expect(container!.querySelector('[data-testid="scenarios-loading"]')).toBeNull();
     expect(container!.querySelector('[data-testid="scenarios-table"]')).not.toBeNull();
+  });
+
+  // Phase 79: below sm the table becomes the shared CardTable's card list
+  // -- same data, same selectors. The e2e harness's row selectors key on
+  // the scenario-link-* anchors, so the card branch must carry them too
+  // (it runs at desktop width where the table branch mounts; this pin is
+  // the card branch's own contract).
+  it('renders scenario cards below sm with the same row selectors (phase 79)', async () => {
+    vi.stubEnv('TZ', 'UTC');
+    stubCardMode(false);
+    stubFetch(scenariosFixture);
+    await renderScenarios();
+
+    // The table is gone; the card list took its place.
+    expect(container!.querySelector('[data-testid="scenarios-table"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="scenarios-table-cards"]')).not.toBeNull();
+
+    // Row selectors: the same scenario-link-* anchors, one per card.
+    const links = Array.from(container!.querySelectorAll<HTMLAnchorElement>('a[data-testid^="scenario-link-"]'));
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/scenarios/11', '/scenarios/12']);
+
+    // The last-run verdict rides the card pair with the same cell testid:
+    // badge + word (never color-only) beside the short timestamp.
+    const cells = Array.from(container!.querySelectorAll('[data-testid="last-run-cell"]'));
+    expect(cells.length).toBe(2);
+    expect(cells[0].textContent).toContain('passed');
+    expect(cells[0].querySelector('svg')).not.toBeNull();
+    expect(cells[0].textContent).toContain('Sep 17, 14:05');
+    expect(cells[1].textContent).toBe('—');
+
+    // The label:value pairs use the table's own header strings.
+    const labels = Array.from(container!.querySelectorAll('dt')).map((dt) => dt.textContent);
+    expect(labels).toEqual(['Project', 'Kind', 'Last run', 'Project', 'Kind', 'Last run']);
   });
 });
