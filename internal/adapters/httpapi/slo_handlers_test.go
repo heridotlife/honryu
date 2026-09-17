@@ -279,3 +279,29 @@ func TestSLO_BudgetNoRunsIsVacuouslyCompliant(t *testing.T) {
 		}
 	}
 }
+func TestSLO_GateWhenDisabled(t *testing.T) {
+	t.Helper()
+	store := fake.NewStore()
+	reports := store.ReportStore
+	obj := fake.NewObjectStore()
+	// Router WITHOUT SLOs wired
+	h := httpapi.NewRouter(httpapi.Deps{
+		Projects:      projectapp.NewService(store).WithReports(reports),
+		Scenarios:     scenarioapp.NewService(store, obj),
+		Executions:    executionapp.NewService(store, obj, 100),
+		SLOs:          nil, // <-- the gate is what we are testing
+		Store:         obj,
+		DefaultOwners: []string{"honryu"},
+	})
+	projectID := createProjectForWebhooks(t, h, "slo-gate-disabled")
+
+	// Any SLO endpoint should return 404 "slos not configured"
+	rec := do(t, h, "GET", "/api/projects/"+itoa(projectID)+"/slos")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("list = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/api/projects/"+itoa(projectID)+"/slos")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("create = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+}
