@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseShard, requestedLine, defaultBaselineRun, deltaTone, COMPARE_BAND_PCT, RUN_TABS_STORAGE_KEY, default as Reports } from './Reports';
-import type { Report } from '../api/reports';
+import type { Recommendation, Report } from '../api/reports';
 import type { ApmLinkTemplate } from '../api/apm';
 import type { SeriesPoint } from '../api/series';
 import { SessionProvider } from '../hooks/useSession';
@@ -69,7 +69,8 @@ async function renderReportDetail(
   siblings: Report[] | null = null,
   baselineReports: Record<number, Report> = {},
   apmLinks: ApmLinkTemplate[] = [],
-  initialPath = '/reports/9'
+  initialPath = '/reports/9',
+  recommendationsBody: () => Response | Promise<Response> = () => json({ recommendations: [] as Recommendation[] })
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -83,6 +84,11 @@ async function renderReportDetail(
       }
       if (url.endsWith('/api/runs/9/series')) {
         return seriesBody();
+      }
+      // Phase 78: the recommendations tab's own fetch, empty by default so
+      // tests unrelated to it see no noise from the card.
+      if (url.endsWith('/api/runs/9/recommendations')) {
+        return recommendationsBody();
       }
       // The execution's runs (phase 33's compare card picks its baseline
       // from these); null keeps the old behaviour — endpoint fails, card
@@ -1020,6 +1026,7 @@ describe('ReportDetail result tabs (phase 73)', () => {
       'Percentiles',
       'Checks',
       'Thresholds',
+      'Recommendations',
       'Time series',
       'Labels',
       'Errors',
@@ -1266,5 +1273,114 @@ describe('run-detail result tab regression pins (phase 73)', () => {
     await click('checks');
     expect(container!.querySelector('#panel-checks [data-testid="checks-all-passed"]')).not.toBeNull();
     expect(container!.querySelector('#panel-checks [data-testid="check-fail-0"]')).toBeNull();
+  });
+});
+
+// Phase 78: the Recommendations tab -- the k6-style advisories the backend's
+// rule engine reads off the run's report. The card owns its fetch, so the
+// three wire states (loading / error / ready) are this tab's behaviour; the
+// ready state splits by payload: rules render with severity icon + text,
+// a clean run renders the shared EmptyState.
+describe('ReportDetail recommendations tab (phase 78)', () => {
+  afterEach(() => {
+    sessionStorage.removeItem(RUN_TABS_STORAGE_KEY);
+  });
+
+  const recsFixture: Recommendation[] = [
+    {
+      id: 'high-error-rate',
+      title: 'High error rate',
+      detail: '3.2% of this run\u2019s requests failed. Check the target\u2019s health, then read the failing criteria on the Checks tab.',
+      severity: 'warning',
+    },
+    {
+      id: 'no-thresholds',
+      title: 'No thresholds configured',
+      detail: 'This scenario defines no pass/fail bounds. Add k6-style thresholds in the scenario\u2019s threshold editor.',
+      severity: 'info',
+    },
+  ];
+
+  const click = async (id: string) => {
+    await act(async () => {
+      container!
+        .querySelector(`#tab-${id}`)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  };
+
+  it('renders one row per rule with severity icon + text, never colour alone', async () => {
+    await renderReportDetail(
+      () => json({ points: [] }),
+      [],
+      reportFixture,
+      null,
+      {},
+      [],
+      '/reports/9',
+      () => json({ recommendations: recsFixture })
+    );
+
+    await click('recommendations');
+    const panel = container!.querySelector('#panel-recommendations')!;
+    expect(panel.querySelector('[data-testid="recs-list"]')).not.toBeNull();
+    // Row 0: warning -- visible text label alongside the icon.
+    expect(panel.querySelector('[data-testid="rec-title-0"]')?.textContent).toBe('High error rate');
+    expect(panel.querySelector('[data-testid="rec-severity-0"]')?.textContent).toBe('Warning');
+    expect(panel.querySelector('[data-testid="rec-row-0"] svg')).not.toBeNull();
+    expect(panel.textContent).toContain('3.2% of this run\u2019s requests failed');
+    // Row 1: info -- its own label and icon, in the same fixed order.
+    expect(panel.querySelector('[data-testid="rec-title-1"]')?.textContent).toBe('No thresholds configured');
+    expect(panel.querySelector('[data-testid="rec-severity-1"]')?.textContent).toBe('Info');
+    expect(panel.querySelector('[data-testid="rec-row-1"] svg')).not.toBeNull();
+  });
+
+  it('shows the shared empty state for a clean run', async () => {
+    await renderReportDetail(); // default stub: { recommendations: [] }
+
+    await click('recommendations');
+    const panel = container!.querySelector('#panel-recommendations')!;
+    expect(panel.querySelector('[data-testid="recs-empty"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid="recs-empty-title"]')?.textContent).toContain(
+      'No recommendations — clean run'
+    );
+    expect(panel.querySelector('[data-testid="recs-list"]')).toBeNull();
+  });
+
+  it('shows a loading skeleton while the fetch is in flight', async () => {
+    await renderReportDetail(
+      () => json({ points: [] }),
+      [],
+      reportFixture,
+      null,
+      {},
+      [],
+      '/reports/9',
+      () => new Promise<Response>(() => {}) // never settles
+    );
+
+    // No clicking needed: the panel mounts fetching (inactive panels render
+    // behind `hidden`), so the skeleton is already up.
+    const panel = container!.querySelector('#panel-recommendations')!;
+    expect(panel.querySelector('[data-testid="recs-loading"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid="recs-empty"]')).toBeNull();
+    expect(panel.querySelector('[data-testid="recs-list"]')).toBeNull();
+  });
+
+  it('shows an error with retry when the fetch fails', async () => {
+    await renderReportDetail(
+      () => json({ points: [] }),
+      [],
+      reportFixture,
+      null,
+      {},
+      [],
+      '/reports/9',
+      () => json({ message: 'recs exploded' }, 500)
+    );
+
+    const panel = container!.querySelector('#panel-recommendations')!;
+    expect(panel.querySelector('[data-testid="recs-card"] [role="alert"]')?.textContent).toContain('recs exploded');
+    expect(panel.querySelector('[data-testid="recs-retry"]')).not.toBeNull();
   });
 });

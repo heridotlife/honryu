@@ -13,6 +13,7 @@ import Input from '../components/ui/Input';
 import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
+import RecommendationsCard from '../components/RecommendationsCard';
 import ThresholdResultsCard from '../components/ThresholdResultsCard';
 import Sparkline from '../components/Sparkline';
 import ShareRunModal from '../components/ShareRunModal';
@@ -1254,12 +1255,14 @@ function RawPanel({ report }: { report: Report }) {
 /** The run workspace's tabs, in strip order; each id names its panel and its ?tab= URL value.
  * Phase 73 grows the result tabs: Percentiles (latency distribution), Checks (the
  * engine's pass/fail criteria), Thresholds (the phase-72 scenario bounds), and Raw
- * (the report JSON) sit beside the phase-28 panels they did not replace. */
+ * (the report JSON) sit beside the phase-28 panels they did not replace. Phase 78
+ * inserts Recommendations (k6-style advisories) after Thresholds, before Raw. */
 export const RUN_TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'percentiles', label: 'Percentiles' },
   { id: 'checks', label: 'Checks' },
   { id: 'thresholds', label: 'Thresholds' },
+  { id: 'recommendations', label: 'Recommendations' },
   { id: 'timeseries', label: 'Time series' },
   { id: 'labels', label: 'Labels' },
   { id: 'errors', label: 'Errors' },
@@ -1678,6 +1681,15 @@ export function ReportWorkspace({
                   </CardContent>
                 </Card>
               )}
+            </TabPanel>
+
+            {/* Recommendations (phase 78): the k6-style advisories read off
+                this run's report by the backend's rule engine -- what to do,
+                why, and where, severity-labelled with icon + text. The card
+                owns its fetch and its loading/error/empty states, exactly
+                like the Time series section. */}
+            <TabPanel id="recommendations" active={tab}>
+              <RecommendationsCard runId={report.run_id} />
             </TabPanel>
 
             {/* Time series: the per-second shape, re-used exactly -- the
