@@ -293,3 +293,11 @@ func TestScenarioVersions_BadIDAndUnknownRestore(t *testing.T) {
 		t.Errorf("restore bad version = %d, want 400", rec.Code)
 	}
 }
+
+func TestScenarioVersions_BadScenarioInPath(t *testing.T) {
+	h, _ := newVersioningRouter(t)
+	// bad version segment on the GET detail path
+	if rec := getVersioning(t, h, "/api/scenarios/1/versions/notanumber"); rec.Code != http.StatusBadRequest {
+		t.Errorf("get bad version = %d, want 400", rec.Code)
+	}
+}
