@@ -1,5 +1,6 @@
 import { forwardRef, useId } from 'react';
 import type { InputHTMLAttributes } from 'react';
+import { CircleAlert } from 'lucide-react';
 
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
@@ -38,8 +39,10 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
         )}
         <input ref={ref} id={inputId} className={inputClasses} {...props} />
         {error && (
-          <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
-            {error}
+          // Icon + text: the message never rides on colour alone.
+          <p className="mt-2 flex items-start gap-1 text-sm text-red-600 dark:text-red-400" role="alert">
+            <CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{error}</span>
           </p>
         )}
         {helperText && !error && <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{helperText}</p>}

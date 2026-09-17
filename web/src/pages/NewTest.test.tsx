@@ -367,3 +367,45 @@ describe('NewTest from template (mounted flow)', () => {
     expect(container!.querySelector('[aria-label="template picker"]')).toBeNull();
   });
 });
+
+// Phase 77: the identity fields validate on blur (earlier feedback than
+// the submit guard, which stays as the backstop), and a failed submit
+// moves focus to a summary whose entries link to their fields.
+describe('NewTest blur validation + error summary (phase 77)', () => {
+  it('shows a field error when a required field is left empty and blurred; the untouched field stays quiet', async () => {
+    await renderNewTest();
+    const name = container!.querySelector('#newtest-name') as HTMLInputElement;
+    await type(name, 'x');
+    await type(name, ''); // leave it empty, then blur it
+    await act(async () => {
+      name.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(container!.querySelector('[data-testid="newtest-name-error"]')?.textContent).toContain(
+      'Test name is required.',
+    );
+    expect(name.getAttribute('aria-invalid')).toBe('true');
+    // The target URL was never touched: no error next to it yet.
+    expect(container!.querySelector('[data-testid="newtest-target-url-error"]')).toBeNull();
+  });
+
+  it('on a failed submit focus moves to the summary, whose links focus their fields', async () => {
+    await renderNewTest();
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    const summary = container!.querySelector('[data-testid="newtest-error-summary"]');
+    expect(summary).not.toBeNull();
+    expect(summary!.getAttribute('role')).toBe('alert');
+    // Focus moved to the summary, not left wherever the operator was.
+    expect(document.activeElement).toBe(summary);
+    // One entry per missing field, each a link to that field.
+    const links = Array.from(summary!.querySelectorAll('a'));
+    expect(links.map((l) => l.getAttribute('href'))).toEqual(['#newtest-name', '#newtest-target-url']);
+    expect(links[0].textContent).toContain('Test name is required.');
+    await act(async () => {
+      links[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(container!.querySelector('#newtest-name'));
+    // The failed submit never started the flow: no calls, no steps.
+    expect(puts).toHaveLength(0);
+    expect(container!.textContent).not.toContain('step:');
+  });
+});

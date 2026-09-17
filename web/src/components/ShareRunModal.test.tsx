@@ -181,4 +181,44 @@ describe('ShareRunModal (mounted via the run detail page)', () => {
     });
     expect(container!.querySelector('[data-testid="share-modal"]')).toBeNull();
   });
+
+  // Phase 77: the dialog moved onto the shared ui/Modal, whose trap keeps
+  // Tab cycles inside and hands focus back to the opener on close.
+  it('traps Tab inside the dialog, is labelled by its title, and restores focus to the Share button on close', async () => {
+    await renderShareDialog();
+    // The browser focuses a clicked button; jsdom does not, so the test
+    // does it explicitly -- the dialog remembers its opener from this.
+    const shareBtn = container!.querySelector('[data-testid="share-run-btn"]') as HTMLElement;
+    await act(async () => {
+      shareBtn.focus();
+    });
+    await act(async () => {
+      click('share-run-btn');
+    });
+    const d = container!.querySelector('[data-testid="share-modal"]') as HTMLElement;
+    expect(d.getAttribute('role')).toBe('dialog');
+    expect(d.getAttribute('aria-modal')).toBe('true');
+    // aria-labelledby resolves to the dialog's own visible title.
+    const labelledBy = d.getAttribute('aria-labelledby');
+    expect(labelledBy).not.toBeNull();
+    expect(d.contains(document.getElementById(labelledBy!))).toBe(true);
+    expect(document.getElementById(labelledBy!)?.textContent).toContain('Share run #9');
+    // Open focus sits on the dialog's first focusable: its close button.
+    expect(document.activeElement).toBe(container!.querySelector('[aria-label="Close share dialog"]'));
+    // Tab from the last focusable (the Revoke button) wraps back inside,
+    // to the close button -- not into the page behind the dialog.
+    await act(async () => {
+      (container!.querySelector(`[data-testid="revoke-share-${existingToken}"]`) as HTMLElement).focus();
+    });
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(container!.querySelector('[aria-label="Close share dialog"]'));
+    // Escape closes and hands focus back to the opener.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(container!.querySelector('[data-testid="share-modal"]')).toBeNull();
+    expect(document.activeElement).toBe(shareBtn);
+  });
 });

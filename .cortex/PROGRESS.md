@@ -90,3 +90,42 @@ accepts 0 for error_rate and success_ratio (0..1 range) -- the UI's
 real fix was refusing p95=0 client-side while letting rate 0 through.
 Ops: golangci-lint binary not installed locally; hard rules followed
 manually, CI runs the pinned v2.12.2. No push, no PR, no merge.
+
+## 2026-09-17 — phase 77 complete (a11y polish, 3 tasks)
+
+Branch feat/phase77-a11y-polish (even with develop@65dd9a0). Commits:
+ad94a86 (Modal trap), 89a901a (blur+summary), b1de1a1 (reduced motion).
+
+- Task 1: NEW shared base ui/Modal.tsx (the two dialogs shared zero code —
+  chrome extracted, not wrapped): useId-labelled title (aria-labelledby
+  replaces aria-label), focus-first-focusable on open, document-level
+  Tab/Shift+Tab trap (index-of-activeElement; -1 pulls stray focus back),
+  Escape, backdrop tap-away, opener captured at mount and restored on
+  unmount. Both modals migrated; their overlay/dialog testids unchanged,
+  their duplicated overlay/header/Escape code deleted. SloPanel +
+  WebhooksCard armed delete confirms disarm on Escape and outside-mousedown
+  (row-scoped via data-testid contains()); WebhooksCard's add form resets
+  on Escape scoped to the form. Note: WebhooksCard's comment CLAIMED a
+  click-outside disarm that never existed — now implemented.
+- Task 2: useFieldValidation (touched-per-field + submitted; components
+  keep values+validators), ui/ErrorSummary (role=alert, tabIndex -1,
+  self-focus on appear, anchor entries with preventDefault+focus),
+  ui/FieldError (icon+text; Input's error line gained the icon too).
+  Blur validation on NewTest name/targetUrl and SloPanel p95/errorRate/
+  successRatio; submit summaries on NewTest (newtest-error-summary),
+  SloPanel (pinned slo-form-error testid now names the summary), and
+  ThresholdEditor (save failures only — its row errors stay EAGER, tests
+  pin immediate display; eager is a superset of blur). Gotcha: create()
+  must call validationEntries() inline, not a render-derived array —
+  markSubmitted's re-render lands after the handler.
+- Task 3: globals.css ALREADY had the reduce clamp (4c79ae7) — review
+  text predated it. Added explicit .animate-pulse → animation:none under
+  reduce (static gray blocks); sparklines are static SVG, nothing to
+  disable; CSS-only. Content test pins the block (jsdom computes no
+  styles). Tailwind's vite plugin empties CSS ?raw/glob-raw reads, so the
+  test reads the file with node:fs via a 1-line ambient declaration in
+  vite-env.d.ts (no @types/node dependency added).
+Gates: go build/vet clean; go test 63 pkgs ok; gofmt+goimports empty;
+TestOpenAPIMatchesRoutes/RefsResolve/TagsMatchRouteGroups/SpecStructure
+all PASS (no routes touched); web tsc clean; vitest 73 files / 699 tests
+(679 baseline + 20). No push, no PR, no merge.
