@@ -171,6 +171,50 @@ describe('CalibrateScenarioModal', () => {
     expect(created).not.toHaveBeenCalled();
     expect(container!.textContent).toContain('pod CPU and memory are required');
   });
+
+  // Phase 77: the dialog moved onto the shared ui/Modal, whose trap keeps
+  // Tab cycles inside and hands focus back to the opener on close.
+  it('traps Tab inside the dialog, is labelled by its title, and restores focus on close', async () => {
+    // The opener: focused before mount, still mounted after close (the
+    // browser focuses a clicked button; jsdom does not, so the test does).
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    await act(async () => {
+      opener.focus();
+    });
+    await renderModal();
+    const d = container!.querySelector('[data-testid="calibrate-modal"]') as HTMLElement;
+    expect(d.getAttribute('role')).toBe('dialog');
+    expect(d.getAttribute('aria-modal')).toBe('true');
+    const labelledBy = d.getAttribute('aria-labelledby');
+    expect(labelledBy).not.toBeNull();
+    expect(d.contains(document.getElementById(labelledBy!))).toBe(true);
+    expect(document.getElementById(labelledBy!)?.textContent).toContain('Calibrate scenario 7');
+    // Open focus sits on the dialog's close button.
+    expect(document.activeElement).toBe(container!.querySelector('[aria-label="Close calibrate dialog"]'));
+    // Shift+Tab from the first focusable wraps to the LAST (the submit
+    // button, at the footer's end); Tab from there wraps back inside.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    });
+    expect(document.activeElement).toBe(container!.querySelector('[data-testid="calibrate-submit"]'));
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(container!.querySelector('[aria-label="Close calibrate dialog"]'));
+    // Escape asks the parent to close; unmounting returns focus to the
+    // element that opened the dialog.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(closed).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      root!.unmount();
+    });
+    root = null;
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
 });
 
 // Phase 42's hotfix: the criterion is validated client-side against the

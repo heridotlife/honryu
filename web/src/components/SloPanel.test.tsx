@@ -221,6 +221,30 @@ describe('SloPanel', () => {
     expect(container!.querySelector('[data-testid="slo-row-3"]')).toBeNull();
   });
 
+  // Phase 77: the armed confirm is dismissible without a second click --
+  // Escape or a press outside the armed row disarms it, no DELETE leaves.
+  it('disarms the armed delete confirm on Escape and on a press outside the row', async () => {
+    listSLOs = [checkoutSLO];
+    await renderPanel();
+    await click(tid('slo-delete-3'));
+    expect(tid('slo-delete-3').textContent).toContain('Delete “checkout p95”?');
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(tid('slo-delete-3').textContent).toBe('Delete');
+    expect(calls.methods).not.toContain('DELETE');
+
+    // Re-arm, then a press outside the armed row (the backdrop, another
+    // card, anywhere) disarms it too.
+    await click(tid('slo-delete-3'));
+    expect(tid('slo-delete-3').textContent).toContain('“checkout p95”?');
+    await act(async () => {
+      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(tid('slo-delete-3').textContent).toBe('Delete');
+    expect(calls.methods).not.toContain('DELETE');
+  });
+
   it('refetches budgets when the window changes', async () => {
     listSLOs = [checkoutSLO];
     await renderPanel();

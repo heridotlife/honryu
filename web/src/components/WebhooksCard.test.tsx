@@ -184,4 +184,29 @@ describe('WebhooksCard', () => {
     expect(delCall).toBeGreaterThanOrEqual(0);
     expect(container!.querySelector('[data-testid="webhook-row-3"]')).toBeNull();
   });
+
+  // Phase 77: the armed confirm dismisses on Escape, and the inline add
+  // form resets on Escape while typing -- no half-typed secret lingers.
+  it('disarms the armed delete confirm on Escape and resets the add form on Escape', async () => {
+    await renderCard();
+
+    await click(tid('webhook-delete-3'));
+    expect(tid('webhook-delete-3').textContent).toContain('Confirm delete?');
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(tid('webhook-delete-3').textContent).toBe('Delete');
+    expect(calls.urls).not.toContain('/api/projects/1/webhooks/3');
+
+    await type(tid('webhook-url-input') as HTMLInputElement, 'https://hooks.example.com/draft');
+    await type(tid('webhook-secret-input') as HTMLInputElement, 's3cret');
+    // Escape from inside the form (keydown bubbles off the input).
+    await act(async () => {
+      tid('webhook-url-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect((tid('webhook-url-input') as HTMLInputElement).value).toBe('');
+    expect((tid('webhook-secret-input') as HTMLInputElement).value).toBe('');
+    // The reset consumed only the draft: no POST left the browser.
+    expect(calls.methods).not.toContain('POST');
+  });
 });

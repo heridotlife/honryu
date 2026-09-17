@@ -127,6 +127,27 @@ export default function SloPanel({ projectId }: SloPanelProps) {
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<number | null>(null);
 
+  // The armed delete confirm disarms on Escape or on a press outside its
+  // row (the shared Modal's tap-away convention, inline): a half-armed
+  // destructive action must not linger waiting for a stray second click.
+  useEffect(() => {
+    if (confirmId === null) return;
+    const disarm = (): void => setConfirmId(null);
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') disarm();
+    };
+    const handleMouseDown = (event: MouseEvent): void => {
+      const row = document.querySelector(`[data-testid="slo-row-${confirmId}"]`);
+      if (row !== null && event.target instanceof Node && !row.contains(event.target)) disarm();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [confirmId]);
+
   const loadBudgets = useCallback(
     (ids: number[], win: Window): void => {
       const seq = ++budgetReq.current;

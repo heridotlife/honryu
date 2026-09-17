@@ -3,11 +3,12 @@
 // no session at all, so the dialog's job is to make the link's reach
 // legible: what it opens, when (if ever) it dies, and how to kill it.
 // Copy mechanics are CopyButton's copyText, reused rather than reimplemented;
-// the modal chrome follows the compare picker's overlay/tap-away/Escape
-// conventions (the SPA has no generic Modal -- this is its first dialog).
+// the modal chrome is the shared ui/Modal (phase 77): focus trap, Escape,
+// tap-away, and focus returned to the opener on close.
 import { useEffect, useState } from 'react';
-import { Check, Share2, TriangleAlert, X } from 'lucide-react';
+import { Check, Share2, TriangleAlert } from 'lucide-react';
 import Button from './ui/Button';
+import Modal from './ui/Modal';
 import { copyText } from './ui/CopyButton';
 import { ApiError } from '../api/client';
 import { listShares, revokeShare, shareLinkUrl, shareRun } from '../api/reports';
@@ -56,15 +57,6 @@ export default function ShareRunModal({ runId, onClose }: ShareRunModalProps) {
     void reload();
   }, [runId]);
 
-  // Escape closes, the compare picker's convention.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   const generate = async () => {
     const option = EXPIRY_OPTIONS.find((o) => o.value === expiry);
     setBusy(true);
@@ -100,40 +92,15 @@ export default function ShareRunModal({ runId, onClose }: ShareRunModalProps) {
   };
 
   return (
-    // The overlay is the tap-away target; only a tap on the backdrop itself
-    // (not the dialog) closes, so selecting the link text never does.
-    <div
-      data-testid="share-modal-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      title={`Share run #${runId}`}
+      subtitle={"Anyone with the link views this run's report — no sign-in needed."}
+      onClose={onClose}
+      closeLabel="Close share dialog"
+      overlayTestId="share-modal-overlay"
+      dialogTestId="share-modal"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Share run report"
-        data-testid="share-modal"
-        className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-900"
-      >
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-heading-md text-slate-900 dark:text-white">Share run #{runId}</h2>
-            <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-              Anyone with the link views this run&apos;s report — no sign-in needed.
-            </p>
-          </div>
-          <button
-            type="button"
-            aria-label="Close share dialog"
-            onClick={onClose}
-            className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-slate-400 dark:hover:bg-slate-800"
-          >
-            <X aria-hidden className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="space-y-4">
+      <div className="space-y-4">
           {/* Issue: expiry choice + generate. The generated link reads as an
               absolute URL -- what actually gets pasted to a customer. */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -243,8 +210,7 @@ export default function ShareRunModal({ runId, onClose }: ShareRunModalProps) {
             <TriangleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             A link is a credential: anyone holding it reads this report until it expires or is revoked.
           </p>
-        </div>
       </div>
-    </div>
+    </Modal>
   );
 }

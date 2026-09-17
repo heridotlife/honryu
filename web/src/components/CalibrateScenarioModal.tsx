@@ -6,12 +6,12 @@
 // bounds) and mints a fresh CalibrateEngine execution bound to that
 // scenario (phase 41: the POST carries scenario_id + source_execution_id,
 // so the created execution is runnable the moment it exists); the parent
-// then navigates to it. Modal chrome follows ShareRunModal's overlay/
-// tap-away/Escape conventions (the SPA still has no generic Modal).
-import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+// then navigates to it. Modal chrome is the shared ui/Modal (phase 77):
+// focus trap, Escape, tap-away, focus returned to the opener on close.
+import { useState } from 'react';
 import Button from './ui/Button';
 import Input from './ui/Input';
+import Modal from './ui/Modal';
 import { ApiError } from '../api/client';
 import { createCalibration } from '../api/calibration';
 
@@ -99,15 +99,6 @@ export default function CalibrateScenarioModal({
       setForm(f => ({ ...f, [field]: e.target.value }));
     };
 
-  // Escape closes, the share dialog's convention.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   const submit = () => {
     // Target QPS is the operator's stated aggregate goal -- the number a
     // calibrated profile later turns into an engine count via the fan-out
@@ -179,39 +170,14 @@ export default function CalibrateScenarioModal({
   };
 
   return (
-    // The overlay is the tap-away target; only a tap on the backdrop itself
-    // (not the dialog) closes, matching the share dialog.
-    <div
-      data-testid="calibrate-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
-      onMouseDown={e => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      title={`Calibrate scenario ${scenarioId}`}
+      subtitle={`Creates a fresh calibration execution bound to this scenario (${engine} engine) that searches its per-pod capacity.`}
+      onClose={onClose}
+      closeLabel="Close calibrate dialog"
+      overlayTestId="calibrate-overlay"
+      dialogTestId="calibrate-modal"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Calibrate scenario ${scenarioId}`}
-        data-testid="calibrate-modal"
-        className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-900"
-      >
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-heading-md text-slate-900 dark:text-white">Calibrate scenario {scenarioId}</h2>
-            <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-              Creates a fresh calibration execution bound to this scenario ({engine} engine) that searches its per-pod
-              capacity.
-            </p>
-          </div>
-          <button
-            type="button"
-            aria-label="Close calibrate dialog"
-            onClick={onClose}
-            className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-slate-400 dark:hover:bg-slate-800"
-          >
-            <X aria-hidden className="h-5 w-5" />
-          </button>
-        </div>
 
         {/* noValidate: the modal's own guard validates (target QPS is the
             one field without a sensible default), so the refusal is testable
@@ -308,7 +274,6 @@ export default function CalibrateScenarioModal({
             </Button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }
