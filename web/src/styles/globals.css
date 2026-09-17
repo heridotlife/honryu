@@ -44,7 +44,12 @@ body {
    near-instant UI. The SPA leans on transition-all duration-200 everywhere
    (buttons, chips, rows), so one global clamp covers every surface without
    touching components. 0.01ms rather than 0 keeps transitionend/
-   animationend events firing for any code that waits on them. */
+   animationend events firing for any code that waits on them.
+
+   The two things that actually ANIMATE are the loading skeletons'
+   animate-pulse bars (they must read as static gray blocks, not a faint
+   global seizure) and nothing else: the sparkline is a static SVG path
+   with no draw animation by design. CSS-only -- no JS media queries. */
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
@@ -53,5 +58,11 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Skeletons stop pulsing outright: a static gray block, the same shape
+     the pulse was decorating. Class-driven, no component changes. */
+  .animate-pulse {
+    animation: none !important;
   }
 }
