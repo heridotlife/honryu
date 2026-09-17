@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/rbac"
@@ -151,12 +152,12 @@ func (h *handlers) versionPath(w http.ResponseWriter, r *http.Request) (int64, i
 		writeError(w, http.StatusBadRequest, "invalid scenario id")
 		return 0, 0, false
 	}
-	version, ok := pathInt(r, "version")
-	if !ok {
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid version")
 		return 0, 0, false
 	}
-	return id, int(version), true // narrow: version numbers are small and bounded by ParseInt(path, 10, 64)
+	return id, version, true
 }
 
 // respondScenarioVersionError maps the version use-cases' sentinels onto
