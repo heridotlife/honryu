@@ -203,4 +203,35 @@ describe('ThresholdEditor', () => {
     expect(JSON.parse(put!.body)).toEqual({ thresholds: [] });
     expect(container!.querySelector('[data-testid="thresholds-empty"]')).not.toBeNull();
   });
+
+  // Phase 77: a FAILED save renders the focusable summary at the top and
+  // focus moves to it -- the failure is announced where the eye lands,
+  // not whispered in a coloured span by the buttons.
+  it('focuses the error summary when a save fails on the server', async () => {
+    stubFetch();
+    storedFixture = [{ id: 1, scenario_id: 9, metric: 'http_p95_ms', comparison: 'lt', value: 250 }];
+    await renderEditor();
+    await act(async () => {});
+    // Swap the stub: the PUT now fails.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = (init?.method as string) ?? 'GET';
+        const url = String(input);
+        calls.push({ method, url, body: String(init?.body ?? '') });
+        if (url.endsWith('/api/scenarios/9/thresholds') && method === 'GET') {
+          return json(storedFixture);
+        }
+        return json({ message: 'scenario 9 is read-only' }, 409);
+      }),
+    );
+    click('threshold-remove-0');
+    click('threshold-save');
+    await act(async () => {});
+    const summary = container!.querySelector('[data-testid="thresholds-save-error"]');
+    expect(summary).not.toBeNull();
+    expect(summary!.getAttribute('role')).toBe('alert');
+    expect(summary!.textContent).toContain('scenario 9 is read-only');
+    expect(document.activeElement).toBe(summary);
+  });
 });

@@ -7,6 +7,7 @@
 // rather than leaving zero-semantics to be guessed.
 import { useEffect, useState } from 'react';
 import Button from './ui/Button';
+import ErrorSummary from './ui/ErrorSummary';
 import { ApiError } from '../api/client';
 import { listThresholds, saveThresholds, type StoredThreshold, type ThresholdInput } from '../api/scenarios';
 
@@ -165,6 +166,13 @@ export default function ThresholdEditor({ scenarioId }: ThresholdEditorProps) {
 
   return (
     <div className="space-y-3" data-testid="threshold-editor">
+      {/* Save failures render as the editor's focusable summary (phase
+          77): focus moves here, not to a coloured span by the buttons.
+          Row errors stay eager -- a fresh row IS an unset row, and the
+          pinned behavior shows that before any blur. */}
+      {saveError !== null && (
+        <ErrorSummary entries={[{ message: saveError }]} testId="thresholds-save-error" />
+      )}
       {rows.length === 0 ? (
         <p className="text-body-sm text-slate-500 dark:text-slate-400" data-testid="thresholds-empty">
           No thresholds defined — runs are not graded until you add one. A threshold is a bound a
@@ -256,11 +264,6 @@ export default function ThresholdEditor({ scenarioId }: ThresholdEditorProps) {
         {saved && !dirty && (
           <span className="text-body-sm text-emerald-700 dark:text-emerald-400" data-testid="thresholds-saved" role="status">
             ✓ Saved
-          </span>
-        )}
-        {saveError !== null && (
-          <span className="text-sm text-red-600 dark:text-red-400" role="alert" data-testid="thresholds-save-error">
-            {saveError}
           </span>
         )}
       </div>

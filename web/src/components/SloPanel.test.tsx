@@ -223,6 +223,43 @@ describe('SloPanel', () => {
 
   // Phase 77: the armed confirm is dismissible without a second click --
   // Escape or a press outside the armed row disarms it, no DELETE leaves.
+  // Phase 77: targets validate on blur -- earlier feedback than the
+  // submit guard, which stays as the backstop. The summary carries the
+  // old slo-form-error testid, now focusable and field-linked.
+  it('shows a target error on blur, before any submit', async () => {
+    listSLOs = [];
+    await renderPanel();
+    await type(tid('slo-name-input') as HTMLInputElement, 'blur check');
+    await type(tid('slo-p95-input') as HTMLInputElement, '0');
+    await act(async () => {
+      tid('slo-p95-input').dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    // Inline, at the field, before any submit: no summary yet.
+    expect(container!.querySelector('[data-testid="slo-form-error"]')).toBeNull();
+    expect(container!.textContent).toContain('p95 target must be a number above 0');
+    expect(calls.methods).toEqual(['GET']);
+  });
+
+  it('on a failed submit the summary takes focus and its links focus their field', async () => {
+    listSLOs = [];
+    await renderPanel();
+    await type(tid('slo-name-input') as HTMLInputElement, 'summary check');
+    await type(tid('slo-p95-input') as HTMLInputElement, '0');
+    await click(tid('slo-add-btn'));
+    const summary = tid('slo-form-error');
+    expect(summary.getAttribute('role')).toBe('alert');
+    expect(document.activeElement).toBe(summary);
+    expect(summary.textContent).toContain('p95 target must be a number above 0');
+    expect(calls.methods).toEqual(['GET']);
+    // The entry links to its field: activating it focuses the p95 input.
+    const link = summary.querySelector('a');
+    expect(link).not.toBeNull();
+    await act(async () => {
+      link!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(tid('slo-p95-input'));
+  });
+
   it('disarms the armed delete confirm on Escape and on a press outside the row', async () => {
     listSLOs = [checkoutSLO];
     await renderPanel();

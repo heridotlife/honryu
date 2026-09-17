@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import ErrorSummary, { type ErrorSummaryEntry } from '../components/ui/ErrorSummary';
+import FieldError from '../components/ui/FieldError';
 import StageEditor, { type StageEditorState } from '../components/StageEditor';
+import { useFieldValidation } from '../hooks/useFieldValidation';
 import { apiClient, ApiError, errorDetails } from '../api/client';
 import { instantiateScenario, listTemplates, setScenarioRequests, type Template } from '../api/scenarios';
 import { useSession } from '../hooks/useSession';
@@ -23,6 +26,16 @@ interface ProjectRef {
 
 const inputCls =
   'rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+
+/** The identity fields' element ids -- the error summary links to them. */
+const FIELD_IDS = { name: 'newtest-name', targetUrl: 'newtest-target-url' } as const;
+
+/** The identity fields' blur/submit validators: the same two rules the
+ * submit guard always enforced, now stated per field. */
+const FIELD_VALIDATORS: Record<keyof typeof FIELD_IDS, (value: string) => string | null> = {
+  name: v => (v.trim() === '' ? 'Test name is required.' : null),
+  targetUrl: v => (v.trim() === '' ? 'Target URL is required.' : null),
+};
 
 /** The page's initial form. The load-shaping fields (concurrency, engines,
  *  rampup, duration) seed the stage editor's first row; there is no
@@ -76,6 +89,11 @@ export default function NewTest() {
   const [stagesValid, setStagesValid] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Blur + submit validation for the identity fields (phase 77): each
+  // field's error shows once it is blurred (earlier feedback than the
+  // submit guard, which stays as the backstop), and a failed submit moves
+  // focus to the summary at the card's top.
+  const fields = useFieldValidation();
   // The structured half of the last failure (phase 24): remediation hint /
   // numbers when the server's envelope carried them.
   const [errorDetail, setErrorDetail] = useState<Record<string, unknown> | null>(null);
@@ -180,9 +198,23 @@ export default function NewTest() {
   const setHeader = (i: number, hpatch: Partial<{ name: string; value: string }>) =>
     set({ headers: form.headers.map((h, j) => (j === i ? { ...h, ...hpatch } : h)) });
 
+  /** Every identity field's current verdict (null while legal). */
+  const fieldErrors = {
+    name: FIELD_VALIDATORS.name(form.name),
+    targetUrl: FIELD_VALIDATORS.targetUrl(form.targetUrl),
+  };
+  /** The submit-failure summary's entries, in field order. */
+  const summaryEntries: ErrorSummaryEntry[] = (
+    Object.keys(FIELD_IDS) as Array<keyof typeof FIELD_IDS>
+  )
+    .filter((f) => fieldErrors[f] !== null)
+    .map((f) => ({ fieldId: FIELD_IDS[f], message: fieldErrors[f]! }));
+
   const submit = () => {
-    if (!form.name.trim() || !form.targetUrl.trim()) {
-      setError('Name and target URL are required.');
+    fields.markSubmitted();
+    // The per-field guard: the summary renders (and takes focus) instead
+    // of a single combined message; the old guard's rule is unchanged.
+    if (summaryEntries.length > 0) {
       return;
     }
     setBusy(true);
@@ -299,10 +331,23 @@ export default function NewTest() {
           <CardTitle>Test definition</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Submit-failure summary: focusable, links to each field. */}
+          <ErrorSummary entries={summaryEntries} testId="newtest-error-summary" />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="text-caption text-slate-600 dark:text-slate-300">
               Test name
-              <input className={`${inputCls} mt-1 w-full`} value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="checkout-smoke" />
+              <input
+                id={FIELD_IDS.name}
+                className={`${inputCls} mt-1 w-full`}
+                value={form.name}
+                onChange={(e) => set({ name: e.target.value })}
+                onBlur={() => fields.blur('name')}
+                aria-invalid={fields.visibleError('name', fieldErrors.name) !== null}
+                placeholder="checkout-smoke"
+              />
+              {fields.visibleError('name', fieldErrors.name) !== null && (
+                <FieldError message={fieldErrors.name!} testId="newtest-name-error" />
+              )}
             </label>
             <label className="text-caption text-slate-600 dark:text-slate-300">
               Engine
@@ -315,7 +360,18 @@ export default function NewTest() {
           </div>
           <label className="block text-caption text-slate-600 dark:text-slate-300">
             Target URL
-            <input className={`${inputCls} mt-1 w-full`} value={form.targetUrl} onChange={(e) => set({ targetUrl: e.target.value })} placeholder="http://checkout.svc" />
+            <input
+              id={FIELD_IDS.targetUrl}
+              className={`${inputCls} mt-1 w-full`}
+              value={form.targetUrl}
+              onChange={(e) => set({ targetUrl: e.target.value })}
+              onBlur={() => fields.blur('targetUrl')}
+              aria-invalid={fields.visibleError('targetUrl', fieldErrors.targetUrl) !== null}
+              placeholder="http://checkout.svc"
+            />
+            {fields.visibleError('targetUrl', fieldErrors.targetUrl) !== null && (
+              <FieldError message={fieldErrors.targetUrl!} testId="newtest-target-url-error" />
+            )}
           </label>
           <div>
             <div className="flex items-center justify-between">
