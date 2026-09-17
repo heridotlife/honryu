@@ -1326,6 +1326,27 @@ describe('ReportDetail recommendations tab (phase 78)', () => {
       detail: '3.2% of this run\u2019s requests failed. Check the target\u2019s health, then read the failing criteria on the Checks tab.',
       severity: 'warning',
     },
+    // Phase 84: the three new rules, in the backend's fixed rule order
+    // (after low-throughput, before no-thresholds) and with the wire copy
+    // the engine emits -- one warning, two infos.
+    {
+      id: 'aborted-run',
+      title: 'Run aborted mid-flight',
+      detail: 'This run was aborted before it could finish, so its numbers cover a partial window. Read the per-second series to see where load stopped.',
+      severity: 'warning',
+    },
+    {
+      id: 'capacity-unverified',
+      title: 'No capacity profile for this pod size',
+      detail: 'This scenario requested a fixed rate, but no capacity profile exists for its exact pod size. Calibrate to know your ceiling.',
+      severity: 'info',
+    },
+    {
+      id: 'capacity-outdated',
+      title: 'Capacity profile outdated',
+      detail: 'The scenario may have changed since calibration; re-calibrate before trusting the per-pod ceiling.',
+      severity: 'info',
+    },
     {
       id: 'no-thresholds',
       title: 'No thresholds configured',
@@ -1362,10 +1383,21 @@ describe('ReportDetail recommendations tab (phase 78)', () => {
     expect(panel.querySelector('[data-testid="rec-severity-0"]')?.textContent).toBe('Warning');
     expect(panel.querySelector('[data-testid="rec-row-0"] svg')).not.toBeNull();
     expect(panel.textContent).toContain('3.2% of this run\u2019s requests failed');
-    // Row 1: info -- its own label and icon, in the same fixed order.
-    expect(panel.querySelector('[data-testid="rec-title-1"]')?.textContent).toBe('No thresholds configured');
-    expect(panel.querySelector('[data-testid="rec-severity-1"]')?.textContent).toBe('Info');
-    expect(panel.querySelector('[data-testid="rec-row-1"] svg')).not.toBeNull();
+    // Rows 1-3: the phase-84 rules render through the same generic card --
+    // one row per fired id, severity icon + text, no id-specific code.
+    expect(panel.querySelector('[data-testid="rec-title-1"]')?.textContent).toBe('Run aborted mid-flight');
+    expect(panel.querySelector('[data-testid="rec-severity-1"]')?.textContent).toBe('Warning');
+    expect(panel.textContent).toContain('numbers cover a partial window');
+    expect(panel.querySelector('[data-testid="rec-title-2"]')?.textContent).toBe('No capacity profile for this pod size');
+    expect(panel.querySelector('[data-testid="rec-severity-2"]')?.textContent).toBe('Info');
+    expect(panel.textContent).toContain('Calibrate to know your ceiling');
+    expect(panel.querySelector('[data-testid="rec-title-3"]')?.textContent).toBe('Capacity profile outdated');
+    expect(panel.querySelector('[data-testid="rec-severity-3"]')?.textContent).toBe('Info');
+    expect(panel.textContent).toContain('changed since calibration');
+    // Row 4: info -- its own label and icon, in the same fixed order.
+    expect(panel.querySelector('[data-testid="rec-title-4"]')?.textContent).toBe('No thresholds configured');
+    expect(panel.querySelector('[data-testid="rec-severity-4"]')?.textContent).toBe('Info');
+    expect(panel.querySelector('[data-testid="rec-row-4"] svg')).not.toBeNull();
   });
 
   it('shows the shared empty state for a clean run', async () => {
