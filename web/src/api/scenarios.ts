@@ -9,9 +9,12 @@ import { ApiError } from './client';
 import {
   getScenariosByScenarioIdRequests,
   getScenariosByScenarioIdThresholds,
+  getScenariosByScenarioIdVersions,
+  getScenariosByScenarioIdVersionsByVersion,
   getTemplates,
   postScenariosByScenarioIdInstantiate,
   postScenariosByScenarioIdRequestsValidate,
+  postScenariosByScenarioIdVersionsByVersionRestore,
   putScenariosByScenarioIdRequests,
   putScenariosByScenarioIdThresholds,
 } from './generated';
@@ -155,4 +158,73 @@ export async function saveThresholds(scenarioId: number, thresholds: ThresholdIn
       value: t.value,
     })),
   });
+}
+
+// --- Scenario version history (phase 80) -------------------------------------
+
+/** One row of the scenario's append-only edit history: identity and stamp
+ * only. createdBy is null when no principal was reachable at capture time
+ * (the legacy no-auth path) -- the page renders "unknown", never a
+ * fabricated name. */
+export interface ScenarioVersion {
+  id: number;
+  version: number;
+  createdTime: string;
+  createdBy: string | null;
+}
+
+/** What the scenario looked like at one version: the fields the history
+ * card's snapshot panel shows. Kept to display-relevant fields -- the wire
+ * carries the full shape. */
+export interface ScenarioSnapshot {
+  name: string;
+  kind: 'portable' | 'native';
+  engine: string;
+  isTemplate: boolean;
+  templateName: string;
+  testFile: string;
+  data: string[];
+  requests: string;
+}
+
+/** GET /api/scenarios/{id}/versions -- the history, newest first,
+ * normalized to an array. */
+export async function listScenarioVersions(scenarioId: number): Promise<ScenarioVersion[]> {
+  const got = await getScenariosByScenarioIdVersions(scenarioId);
+  return (got ?? []).map((v) => ({
+    id: v.id,
+    version: v.version,
+    createdTime: v.created_time,
+    createdBy: v.created_by,
+  }));
+}
+
+/** GET /api/scenarios/{id}/versions/{version} -- one version's as-of
+ * snapshot (the fields the history card expands to). */
+export async function getScenarioVersion(scenarioId: number, version: number): Promise<ScenarioSnapshot> {
+  const got = await getScenariosByScenarioIdVersionsByVersion(scenarioId, version);
+  const s = got.snapshot;
+  return {
+    name: s.name,
+    kind: s.kind,
+    engine: s.engine,
+    isTemplate: s.is_template,
+    templateName: s.template_name,
+    testFile: s.test_file,
+    data: s.data ?? [],
+    requests: s.requests,
+  };
+}
+
+/** POST /api/scenarios/{id}/versions/{version}/restore -- rewind the
+ * scenario to the named version. Append-only by contract: the server
+ * records the pre-restore state as a new version, and this answers with
+ * both numbers (restoredFrom = the version applied, version = the new
+ * capture). */
+export async function restoreScenarioVersion(
+  scenarioId: number,
+  version: number,
+): Promise<{ restoredFrom: number; version: number }> {
+  const got = await postScenariosByScenarioIdVersionsByVersionRestore(scenarioId, version);
+  return { restoredFrom: got.restored_from, version: got.version };
 }
