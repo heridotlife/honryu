@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ExternalLink, Download, Check, ChevronDown, Share2, FileText } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
 import ClusterBadge from '../components/ui/ClusterBadge';
 import CopyButton from '../components/ui/CopyButton';
@@ -1002,6 +1003,10 @@ function CompareCard({ current, siblings }: { current: Report; siblings: Report[
             Loading baseline…
           </p>
         )}
+        {/* Phase 79 decision: the baseline-comparison tables stay
+            overflow-x-auto below sm -- side-by-side comparison is desktop
+            tooling (the same call as RunCompare's delta table), and the
+            column-pair structure is the point; cards would flatten it. */}
         {baseline !== null && (
           <div className="overflow-x-auto" data-testid="compare-metrics">
             <table className="w-full text-left text-body-sm">
@@ -1108,6 +1113,33 @@ function CompareCard({ current, siblings }: { current: Report; siblings: Report[
  */
 function PercentilesPanel({ report }: { report: Report }) {
   const entries = sortedPercentiles(report.latency);
+  // Phase 79: the percentile table's column defs -- one source for the
+  // sm+ table and the below-sm card list (the percentile itself is the
+  // card title, the response time its pair; the percentile-row-*/
+  // percentile-value-* testids ride both branches).
+  const percentileColumns: CardTableColumn<[string, number]>[] = [
+    {
+      key: 'percentile',
+      header: 'Percentile',
+      primary: true,
+      thClassName: 'py-2 font-medium',
+      tdClassName: 'py-2 font-medium text-slate-900 dark:text-white',
+      render: ([p]) => `p${p}`,
+    },
+    {
+      key: 'response_time',
+      header: 'Response time',
+      cellTestId: ([p]) => `percentile-value-${p}`,
+      thClassName: 'py-2 font-medium',
+      tdClassName: 'py-2 text-slate-700 dark:text-slate-300',
+      render: ([, seconds]) => (
+        <>
+          {(seconds * 1000).toFixed(1)} ms
+          <span className="text-caption text-slate-500 dark:text-slate-400"> · {seconds.toFixed(3)}s</span>
+        </>
+      ),
+    },
+  ];
   return (
     <Card data-testid="percentiles-card">
       <CardHeader>
@@ -1120,25 +1152,19 @@ function PercentilesPanel({ report }: { report: Report }) {
           </p>
         ) : (
           <>
-            <table className="w-full text-left text-body-sm" data-testid="percentiles-table">
-              <thead>
-                <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                  <th scope="col" className="py-2 font-medium">Percentile</th>
-                  <th scope="col" className="py-2 font-medium">Response time</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {entries.map(([p, seconds]) => (
-                  <tr key={p} data-testid={`percentile-row-${p}`}>
-                    <td className="py-2 font-medium text-slate-900 dark:text-white">p{p}</td>
-                    <td className="py-2 text-slate-700 dark:text-slate-300" data-testid={`percentile-value-${p}`}>
-                      {(seconds * 1000).toFixed(1)} ms
-                      <span className="text-caption text-slate-500 dark:text-slate-400"> · {seconds.toFixed(3)}s</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {/* Phase 79: shared CardTable -- the sm+ markup is the table
+                this panel always had (percentiles-table, percentile-row-*,
+                percentile-value-*); below sm the same columns render as
+                cards, one per percentile. */}
+            <CardTable
+              tableTestId="percentiles-table"
+              columns={percentileColumns}
+              rows={entries}
+              rowKey={([p]) => p}
+              rowTestId={([p]) => `percentile-row-${p}`}
+              headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+              tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+            />
             <div className="flex items-center gap-3" data-testid="percentiles-dist">
               <span className="text-caption text-slate-500 dark:text-slate-400">
                 Distribution, p{entries[0][0]} → p{entries[entries.length - 1][0]}

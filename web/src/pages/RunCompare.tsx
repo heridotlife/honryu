@@ -253,6 +253,10 @@ function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Re
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {/* Phase 79 decision: the delta table stays overflow-x-auto below
+            sm -- side-by-side comparison is desktop tooling (the same call
+            as Reports' compare tables), and the per-metric baseline/delta
+            column pairing is the point; cards would flatten it. */}
         <div className="overflow-x-auto" data-testid="delta-table">
           <table className="w-full text-left text-body-sm">
             <thead>

@@ -13,6 +13,7 @@ import { Play } from 'lucide-react';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import TaurusEditor from '../components/TaurusEditor';
@@ -174,6 +175,65 @@ export default function Scenario() {
   // scenario:create for the scenario-scoped route -- the audit table's row).
   const mayCalibrate = can('scenario', 'create');
 
+  // Phase 79: the Runs tab's column defs -- one source for the sm+ table
+  // and the below-sm card list. The per-row status probe (runsInfo) closes
+  // over the renders: unknown = fetch in flight (…), null = the probe
+  // failed or the run never finalised (—), else the badge.
+  const runColumns: CardTableColumn<ExecutionSummary>[] = [
+    {
+      key: 'run',
+      header: 'Run',
+      primary: true,
+      thClassName: 'px-4 py-3',
+      tdClassName: 'px-4 py-3',
+      render: (e) => (
+        <Link
+          to={`/executions/${e.id}`}
+          data-testid={`run-link-${e.id}`}
+          className="font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
+        >
+          #{e.id} {e.name}
+        </Link>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cellTestId: (e) => (e.id !== undefined ? `run-status-${e.id}` : undefined),
+      thClassName: 'px-4 py-3',
+      tdClassName: 'px-4 py-3',
+      render: (e) => {
+        const known = e.id !== undefined && e.id in runsInfo;
+        if (!known) return <span className="text-slate-400 dark:text-slate-500">…</span>;
+        const info = runsInfo[e.id as number];
+        // In flight / unknown are honest placeholders; the badge itself is
+        // icon + text (never color-only).
+        if (info == null) return <span className="text-slate-400 dark:text-slate-500">—</span>;
+        return <RunStatusBadge outcome={info.outcome} />;
+      },
+    },
+    {
+      key: 'started',
+      header: 'Started',
+      thClassName: 'px-4 py-3',
+      tdClassName: 'px-4 py-3 text-slate-500 dark:text-slate-400',
+      render: (e) => {
+        const info = e.id === undefined ? undefined : runsInfo[e.id];
+        return info != null ? formatRowTime(info.startedAt) : '—';
+      },
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      thClassName: 'px-4 py-3',
+      tdClassName: 'px-4 py-3 text-slate-500 dark:text-slate-400',
+      render: (e) => {
+        const info = e.id === undefined ? undefined : runsInfo[e.id];
+        return info != null ? formatDuration(info.durationSeconds) : '—';
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
       {/* Phase 67b: the third level of depth -- Scenarios > {name} (and the
@@ -281,58 +341,19 @@ export default function Scenario() {
             </Card>
           ) : (
             <Card padding="none">
-              <table className="w-full text-body-sm" data-testid="runs-table">
-                <thead>
-                  <tr className="border-b border-slate-100 text-left text-caption font-medium text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                    <th scope="col" className="px-4 py-3">
-                      Run
-                    </th>
-                    <th scope="col" className="px-4 py-3">
-                      Status
-                    </th>
-                    <th scope="col" className="px-4 py-3">
-                      Started
-                    </th>
-                    <th scope="col" className="px-4 py-3">
-                      Duration
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {executions.map((e) => {
-                    const info = e.id === undefined ? null : runsInfo[e.id];
-                    const known = e.id !== undefined && e.id in runsInfo;
-                    return (
-                      <tr
-                        key={e.id !== undefined ? `run-${e.id}` : `run-${e.name}`}
-                        className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 dark:border-slate-800/50 dark:hover:bg-slate-800/50"
-                      >
-                        <td className="px-4 py-3">
-                          <Link
-                            to={`/executions/${e.id}`}
-                            data-testid={`run-link-${e.id}`}
-                            className="font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
-                          >
-                            #{e.id} {e.name}
-                          </Link>
-                        </td>
-                        <td className="px-4 py-3" data-testid={`run-status-${e.id}`}>
-                          {/* In flight / unknown are honest placeholders;
-                              the badge itself is icon + text (never
-                              color-only). */}
-                          {!known ? <span className="text-slate-400 dark:text-slate-500">…</span> : info == null ? <span className="text-slate-400 dark:text-slate-500">—</span> : <RunStatusBadge outcome={info.outcome} />}
-                        </td>
-                        <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                          {info != null ? formatRowTime(info.startedAt) : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                          {info != null ? formatDuration(info.durationSeconds) : '—'}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              {/* Phase 79: shared CardTable -- the sm+ table keeps the exact
+                  pre-phase markup and testids; below sm the same columns
+                  render as run cards (run link as title, status badge with
+                  its run-status-* testid in the value slot). */}
+              <CardTable
+                tableTestId="runs-table"
+                columns={runColumns}
+                rows={executions}
+                rowKey={(e) => (e.id !== undefined ? `run-${e.id}` : `run-${e.name}`)}
+                headerRowClassName="border-b border-slate-100 text-left text-caption font-medium text-slate-500 dark:border-slate-800 dark:text-slate-400"
+                tableClassName="w-full text-body-sm"
+                rowClassName={() => 'border-b border-slate-50 last:border-b-0 hover:bg-slate-50 dark:border-slate-800/50 dark:hover:bg-slate-800/50'}
+              />
             </Card>
           )}
         </div>

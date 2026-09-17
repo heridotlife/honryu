@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Card, { CardContent } from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
 import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
 import { listClusters } from '../api/clusters';
@@ -265,6 +266,109 @@ export default function Tenants() {
   const selected = tenants?.find((t) => t.id === selectedId) ?? null;
   const upcoming = reservations ? nextUpcoming(reservations, 3, new Date()) : [];
 
+  // Phase 79: the tenant roster's column defs -- one source for the sm+
+  // table and the below-sm card list (Name is the card title). The name's
+  // inner button stays for keyboard parity with the old markup: the row
+  // click is a convenience, the button is the focusable control.
+  const tenantColumns: CardTableColumn<Tenant>[] = [
+    {
+      key: 'id',
+      header: 'ID',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap text-slate-500 dark:text-slate-400',
+      render: (t) => t.id,
+    },
+    {
+      key: 'name',
+      header: 'Name',
+      primary: true,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
+      render: (t) => (
+        <button
+          type="button"
+          className="rounded focus:outline-none focus:ring-2 focus:ring-sky-500"
+          onClick={() => select(t.id)}
+        >
+          {t.name}
+        </button>
+      ),
+    },
+    {
+      key: 'display_name',
+      header: 'Display name',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (t) => t.display_name || '—',
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (t) => (
+        <span
+          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+            t.status === 'ACTIVE'
+              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
+              : 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+          }`}
+        >
+          {t.status}
+        </span>
+      ),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (t) => formatTenantTime(t.created_time),
+    },
+  ];
+
+  // The member roster's column defs: Subject becomes the card title below
+  // sm, and the Revoke action rides the right column at sm+ and the card
+  // footer below (same revoke-btn-* testid in both branches).
+  const memberColumns: CardTableColumn<TenantRoleGrant>[] = [
+    {
+      key: 'subject',
+      header: 'Subject',
+      primary: true,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
+      render: (g) => g.subject,
+    },
+    {
+      key: 'email',
+      header: 'Email',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (g) => g.email || '—',
+    },
+    {
+      key: 'role',
+      header: 'Role',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (g) => <code className="text-caption">{g.role}</code>,
+    },
+    {
+      key: 'granted_by',
+      header: 'Granted by',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (g) => g.granted_by || '—',
+    },
+    {
+      key: 'granted',
+      header: 'Granted',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (g) => formatTenantTime(g.granted_time),
+    },
+  ];
+
   return (
     <div className="space-y-6" data-testid="tenants-page">
       <div>
@@ -334,54 +438,33 @@ export default function Tenants() {
             </p>
           )}
 
+          {/* Phase 79: shared CardTable -- the sm+ markup is the table this
+              page always had (same tenant-row-* testids, same click-to-load
+              contract); below sm the same columns become cards, so phone
+              operators tap a tenant instead of scrolling sideways. */}
           {tenants && tenants.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-body-sm">
-                <thead>
-                  <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                    <th scope="col" className="px-3 py-2 font-medium">ID</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Name</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Display name</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Status</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Created</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {tenants.map((t) => (
-                    <tr
-                      key={t.id}
-                      data-testid={`tenant-row-${t.id}`}
-                      onClick={() => select(t.id)}
-                      className={`cursor-pointer transition-colors duration-150 ${
-                        t.id === selectedId
-                          ? 'bg-sky-50 dark:bg-sky-900/30'
-                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
-                      }`}
-                    >
-                      <td className="px-3 py-2 whitespace-nowrap text-slate-500 dark:text-slate-400">{t.id}</td>
-                      <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">
-                        <button type="button" className="focus:outline-none focus:ring-2 focus:ring-sky-500 rounded" onClick={() => select(t.id)}>
-                          {t.name}
-                        </button>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{t.display_name || '—'}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                            t.status === 'ACTIVE'
-                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
-                              : 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
-                          }`}
-                        >
-                          {t.status}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{formatTenantTime(t.created_time)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <CardTable
+              tableTestId="tenants-table"
+              columns={tenantColumns}
+              rows={tenants}
+              rowKey={(t) => String(t.id)}
+              rowTestId={(t) => `tenant-row-${t.id}`}
+              onRowClick={(t) => select(t.id)}
+              headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+              tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+              rowClassName={(t) =>
+                `cursor-pointer transition-colors duration-150 ${
+                  t.id === selectedId
+                    ? 'bg-sky-50 dark:bg-sky-900/30'
+                    : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                }`
+              }
+              cardClassName={(t) =>
+                `cursor-pointer transition-colors duration-150 ${
+                  t.id === selectedId ? 'bg-sky-50 dark:bg-sky-900/30' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                }`
+              }
+            />
           )}
         </CardContent>
       </Card>
@@ -456,53 +539,35 @@ export default function Tenants() {
 
               {/* The table is the members-table hook the tests (and future
                   tooling) key on, so it renders whenever the roster has
-                  loaded -- empty rosters included -- rather than vanishing. */}
+                  loaded -- empty rosters included -- rather than vanishing.
+                  Phase 79: shared CardTable, same contract; below sm the
+                  revoke action rides inline at each member card's bottom. */}
               {members !== null && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-body-sm" data-testid="members-table">
-                    <thead>
-                      <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                        <th scope="col" className="px-3 py-2 font-medium">Subject</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Email</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Role</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Granted by</th>
-                        <th scope="col" className="px-3 py-2 font-medium">Granted</th>
-                        <th scope="col" className="px-3 py-2 font-medium" />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {members.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="px-3 py-2 text-slate-500 dark:text-slate-400">
-                            No role grants in this tenant yet.
-                          </td>
-                        </tr>
-                      )}
-                      {members.map((g) => (
-                        <tr key={`${g.subject}-${g.role}`}>
-                          <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{g.subject}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{g.email || '—'}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            <code className="text-caption">{g.role}</code>
-                          </td>
-                          <td className="px-3 py-2 whitespace-nowrap">{g.granted_by || '—'}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{formatTenantTime(g.granted_time)}</td>
-                          <td className="px-3 py-2 text-right">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void revokeMember(g)}
-                              disabled={memberBusy}
-                              data-testid={`revoke-btn-${g.subject}`}
-                            >
-                              Revoke
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <CardTable
+                  tableTestId="members-table"
+                  columns={memberColumns}
+                  rows={members}
+                  rowKey={(g) => `${g.subject}-${g.role}`}
+                  actions={{
+                    thClassName: 'px-3 py-2 font-medium',
+                    tdClassName: 'px-3 py-2 text-right',
+                    render: (g) => (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void revokeMember(g)}
+                        disabled={memberBusy}
+                        data-testid={`revoke-btn-${g.subject}`}
+                      >
+                        Revoke
+                      </Button>
+                    ),
+                  }}
+                  emptyMessage="No role grants in this tenant yet."
+                  emptyTdClassName="px-3 py-2 text-slate-500 dark:text-slate-400"
+                  headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+                  tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+                />
               )}
 
               <form
