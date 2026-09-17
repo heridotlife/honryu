@@ -268,3 +268,28 @@ func TestScenarioVersions_UnwiredStoreIs404(t *testing.T) {
 		t.Errorf("GET versions unwired = %d, want 404", rec.Code)
 	}
 }
+func TestScenarioVersions_BadIDAndUnknownRestore(t *testing.T) {
+	h, _ := newVersioningRouter(t)
+
+	// Non-numeric scenario id -> 400, never a 500.
+	if rec := getVersioning(t, h, "/api/scenarios/notanumber/versions"); rec.Code != http.StatusBadRequest {
+		t.Errorf("list bad id = %d, want 400", rec.Code)
+	}
+	// Valid shape, nonexistent scenario -> the store's not-found mapping.
+	if rec := getVersioning(t, h, "/api/scenarios/999/versions"); rec.Code != http.StatusNotFound {
+		t.Errorf("list unknown scenario = %d, want 404", rec.Code)
+	}
+	if rec := getVersioning(t, h, "/api/scenarios/999/versions/1"); rec.Code != http.StatusNotFound {
+		t.Errorf("get unknown scenario = %d, want 404", rec.Code)
+	}
+
+	// Restore on a real scenario but unknown version -> 404.
+	sid := seedVersionedScenario(t, h)
+	if rec := postEmpty(t, h, "/api/scenarios/"+itoa(sid)+"/versions/99/restore"); rec.Code != http.StatusNotFound {
+		t.Errorf("restore unknown version = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+	// Non-numeric version segment -> 400.
+	if rec := postEmpty(t, h, "/api/scenarios/"+itoa(sid)+"/versions/x/restore"); rec.Code != http.StatusBadRequest {
+		t.Errorf("restore bad version = %d, want 400", rec.Code)
+	}
+}
