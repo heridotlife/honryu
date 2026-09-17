@@ -62,6 +62,16 @@ const json = (body: unknown, status = 200) =>
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+// Phase 79: force the below-sm card branch for the card-mode pins. The
+// query-aware shape mirrors CardTable's own test stub: min-width queries
+// answer `wide`, everything else false (the theme's prefers-color-scheme).
+function stubCardMode(wide: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query.includes('min-width') ? wide : false })),
+  );
+}
+
 async function renderReportDetail(
   seriesBody: () => Response = () => json({ points: seriesFixture }),
   calls: string[] = [],
@@ -1064,6 +1074,29 @@ describe('ReportDetail result tabs (phase 73)', () => {
     expect(panel.querySelector('[data-testid="percentile-row-95"]')).not.toBeNull();
     // The shape-across-percentiles sparkline rides the table.
     expect(panel.querySelector('[data-testid="percentiles-dist"] svg[role="img"]')).not.toBeNull();
+  });
+
+  // Phase 79: below sm the percentiles table becomes the shared CardTable's
+  // card list -- one card per percentile, the percentile itself as the card
+  // title, the figure as its pair. Same per-percentile testids in both
+  // branches (the harness runs at desktop width where the table mounts;
+  // this pin is the card branch's own contract).
+  it('renders percentile cards below sm with the same per-percentile testids (phase 79)', async () => {
+    stubCardMode(false);
+    await renderReportDetail(() => json({ points: [] }), [], failingReport);
+
+    await clickTab('percentiles');
+    const panel = container!.querySelector('#panel-percentiles')!;
+    expect(panel.querySelector('[data-testid="percentiles-table"]')).toBeNull();
+    expect(panel.querySelector('[data-testid="percentiles-table-cards"]')).not.toBeNull();
+
+    // Same figures, same order (50, 90, 95, 99), same value testids.
+    const figures = Array.from(panel.querySelectorAll('[data-testid^="percentile-value-"]')).map((v) => v.textContent);
+    expect(figures).toEqual(['50.0 ms · 0.050s', '100.0 ms · 0.100s', '200.0 ms · 0.200s', '400.0 ms · 0.400s']);
+    const card = panel.querySelector('[data-testid="percentile-row-95"]')!;
+    expect(card.tagName).toBe('LI');
+    expect(card.textContent).toContain('p95');
+    expect(card.textContent).toContain('200.0 ms · 0.200s');
   });
 
   it('says no latency data when the report carries an empty percentile map', async () => {

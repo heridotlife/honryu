@@ -27,6 +27,17 @@
  * so runRow can only ever match real run rows. Both properties are pinned
  * in vitest (Scenarios.test / Scenario.test, "e2e selector safety").
  *
+ * Phase 79 card-collapse audit: list tables (Scenarios, the scenario Runs
+ * tab, Tenants, Reports percentiles) render through the shared CardTable,
+ * which swaps to a card list below Tailwind's sm breakpoint. That branch
+ * is UNREACHABLE for every selector this harness uses: scenarios A-E run
+ * at Playwright's default desktop viewport, where only CardTable's table
+ * branch can ever mount (same markup, same testids as before). The one
+ * narrow-viewport scenario, F at 375px, only measures scrollWidth on /
+ * and /executions and clicks nothing -- card mode cannot break it, and
+ * can only shrink the measurement. (Branch choice is a real DOM switch,
+ * not CSS visibility, so no row testid ever exists twice.)
+ *
  * It is NOT wired into `bun run test` (it needs jsdom-free real browser
  * navigation), but since phase 64 CI runs it on every PR: the e2e lane in
  * .github/workflows/ci.yml boots the API with demo auth and the in-memory
