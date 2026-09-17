@@ -11,20 +11,22 @@
 // fixed rule order below, never map or store order; a clean report yields an
 // empty (never nil) list.
 //
-// Reachability note (phase 78): the scenario's capacity profile is NOT
-// reachable from a report -- a report carries no profile, and this package is
-// pure, holding no store dependency. What a report does carry is the
-// requested rate, which for a paced scenario is the calibration's product, so
-// the throughput rule keys on requested-vs-achieved and skips gracefully (no
-// data, no fire) when the scenario asked for no fixed rate.
+// The capacity layer (phase 84) closes phase 78's reachability gap the
+// same way the threshold layer did: the evidence lives outside the report,
+// so the handler gathers it tolerantly and passes it in -- nil means
+// unknown (no calibration service wired, no execution to pin the pod size,
+// or simply no profile for the scenario's exact key), and an unknown is
+// never fabricated into a figure.
 //
 // Pure: no I/O.
 package recsapp
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/report"
+	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/domain/threshold"
 )
 
@@ -55,6 +57,15 @@ const (
 	IDLowThroughput = "low-throughput"
 	// IDNoThresholds fires when the scenario defines no thresholds at all.
 	IDNoThresholds = "no-thresholds"
+	// IDAbortedRun fires when the run was aborted before it could finish --
+	// its measurements describe a partial window, not the run as designed.
+	IDAbortedRun = "aborted-run"
+	// IDCapacityUnverified fires when the run requested a fixed rate but no
+	// capacity profile exists for the scenario's exact engine and pod size.
+	IDCapacityUnverified = "capacity-unverified"
+	// IDCapacityOutdated fires when the profile that does exist was
+	// calibrated so long ago the scenario may have changed under it.
+	IDCapacityOutdated = "capacity-outdated"
 )
 
 // highErrorRateThreshold is the error rate above which a run stops reading as
@@ -65,6 +76,12 @@ const highErrorRateThreshold = 0.01
 // the spread itself is the story: p99 beyond 4x p50 means a small fraction of
 // requests owns the user-visible latency.
 const latencySpreadFactor = 4.0
+
+// capacityOutdatedAge is how old a calibration may be before its profile
+// reads as outdated: 30 days, the order of a scenario's drift under normal
+// development. Past the line the honest advice is a fresh calibration, not
+// arithmetic over a ceiling the scenario may no longer support.
+const capacityOutdatedAge = 30 * 24 * time.Hour
 
 // Recommendation is one actionable advisory: what to do, why, and where to
 // look. Detail is written to be acted on -- a bare observation ("errors are
@@ -96,19 +113,31 @@ type Input struct {
 	// ThresholdResults is the run's stored grading evidence, evaluation
 	// order.
 	ThresholdResults []threshold.Result
+	// CalibratedPerPodQPS is the scenario's calibrated per-pod ceiling for
+	// the exact engine and pod size this run executed. Nil means no profile
+	// exists for that exact key -- or the evidence could not be read -- and
+	// an unknown is never fabricated into a figure.
+	CalibratedPerPodQPS *float64
+	// ProfileAge is how long ago that profile was calibrated. Nil means
+	// unknown: no profile, or the evidence could not be read.
+	ProfileAge *time.Duration
 }
 
 // Analyze runs every rule over in and returns the fired recommendations in
 // the fixed rule order: high error rate, latency spread, threshold missed,
-// low throughput, no thresholds. Always non-nil; empty when the report is
-// clean. Deterministic: the same input always yields the same list.
+// low throughput, aborted run, capacity unverified, capacity outdated, no
+// thresholds. Always non-nil; empty when the report is clean.
+// Deterministic: the same input always yields the same list.
 func Analyze(in Input) []Recommendation {
-	out := make([]Recommendation, 0, 5)
+	out := make([]Recommendation, 0, 8)
 	for _, rec := range []*Recommendation{
 		highErrorRateRule(in.Report),
 		latencySpreadRule(in.Report),
 		thresholdMissedRule(in.ThresholdResults),
 		lowThroughputRule(in.Report),
+		abortedRunRule(in.Report),
+		capacityUnverifiedRule(in.Report, in.CalibratedPerPodQPS),
+		capacityOutdatedRule(in.CalibratedPerPodQPS, in.ProfileAge),
 		noThresholdsRule(in.ThresholdsKnown, in.ThresholdsDefined),
 	} {
 		if rec != nil {
@@ -197,7 +226,7 @@ func thresholdMissedRule(results []threshold.Result) *Recommendation {
 // its scenario requested -- the report's own requested-vs-achieved reading
 // (ShortOfRequest), which is the honest figure for a human reader. No
 // requested rate (an open-ended scenario), no fire: there is nothing to fall
-// short of, and no capacity-profile data is reachable from a report.
+// short of.
 func lowThroughputRule(rep report.Report) *Recommendation {
 	if rep.Requested.Throughput <= 0 || !rep.ShortOfRequest() {
 		return nil
@@ -211,6 +240,62 @@ func lowThroughputRule(rep report.Report) *Recommendation {
 			rep.Achieved.Throughput, rep.Requested.Throughput,
 		),
 		Severity: SeverityWarning,
+	}
+}
+
+// abortedRunRule fires when the run was interrupted before it could
+// finish: every figure it produced describes the prefix that ran, and a
+// reader who misses that draws confident conclusions from a run that never
+// happened as designed.
+func abortedRunRule(rep report.Report) *Recommendation {
+	if rep.Outcome != taurus.OutcomeAborted {
+		return nil
+	}
+	return &Recommendation{
+		ID:    IDAbortedRun,
+		Title: "Run aborted mid-flight",
+		Detail: "This run was aborted before it could finish, so its numbers cover a partial window: " +
+			"rates, percentiles, and error counts describe the prefix that ran, not the run as designed. " +
+			"Read the per-second series to see where load stopped, and re-run for a full window before drawing conclusions.",
+		Severity: SeverityWarning,
+	}
+}
+
+// capacityUnverifiedRule fires when the run asked for a fixed rate but no
+// capacity profile exists for the scenario's exact engine and pod size:
+// without a calibrated ceiling the ask is an unverified guess. Open-ended
+// scenarios (no requested rate) never fire -- there is no ask to verify.
+func capacityUnverifiedRule(rep report.Report, calibratedPerPodQPS *float64) *Recommendation {
+	if calibratedPerPodQPS != nil || rep.Requested.Throughput <= 0 {
+		return nil
+	}
+	return &Recommendation{
+		ID:    IDCapacityUnverified,
+		Title: "No capacity profile for this pod size",
+		Detail: "This scenario requested a fixed rate, but no capacity profile exists for its exact pod size, " +
+			"so there is no calibrated ceiling to judge the ask against. Calibrate to know your ceiling -- " +
+			"the profile also powers engine fan-out for future runs.",
+		Severity: SeverityInfo,
+	}
+}
+
+// capacityOutdatedRule fires when a profile exists but was calibrated past
+// the freshness line: the scenario may have changed since calibration, and
+// arithmetic over a stale ceiling is quietly wrong. An unknown age never
+// fires -- absence of evidence is not staleness.
+func capacityOutdatedRule(calibratedPerPodQPS *float64, age *time.Duration) *Recommendation {
+	if calibratedPerPodQPS == nil || age == nil || *age <= capacityOutdatedAge {
+		return nil
+	}
+	return &Recommendation{
+		ID:    IDCapacityOutdated,
+		Title: "Capacity profile outdated",
+		Detail: fmt.Sprintf(
+			"The capacity profile for this scenario's pod size was calibrated %.0f days ago -- past the 30-day freshness line. "+
+				"The scenario may have changed since calibration; re-calibrate before trusting the per-pod ceiling or fan-out math.",
+			age.Hours()/24,
+		),
+		Severity: SeverityInfo,
 	}
 }
 

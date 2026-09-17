@@ -20,6 +20,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/recsapp"
 	"github.com/heridotlife/honryu/internal/app/reportapp"
+	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/telemetry"
@@ -235,12 +236,14 @@ func (h *handlers) runReport(w http.ResponseWriter, r *http.Request) {
 // gate are runReport's own: the stored report is what makes a run known, and
 // its ExecutionID is what the report-read gate checks against.
 //
-// The scenario-threshold evidence the rules read lives outside the report, so
-// it is gathered here with the overlay layers' own tolerance: no threshold
-// service wired, or a read that fails, leaves that evidence unknown -- the
-// missed rule simply has nothing to name and the no-thresholds rule stands
-// down (an unknown set is never reported as an empty one) -- never a failed
-// recommendation read: the report existed and was authorized first.
+// The evidence the rules reads beyond the report itself -- the scenario's
+// threshold set (phase 78) and its capacity profile (phase 84) -- is gathered
+// here with the overlay layers' own tolerance: an unwired service or a read
+// that fails leaves that evidence unknown, never a failed recommendation
+// read -- the report existed and was authorized first. Unknown threshold
+// evidence stands the threshold rules down; unknown capacity evidence reads
+// as unverified, which is the honest answer for a scenario whose exact pod
+// size has never been calibrated.
 func (h *handlers) runRecommendations(w http.ResponseWriter, r *http.Request) {
 	runID, ok := pathInt(r, "run_id")
 	if !ok {
@@ -266,7 +269,40 @@ func (h *handlers) runRecommendations(w http.ResponseWriter, r *http.Request) {
 			in.ThresholdResults = results
 		}
 	}
+	h.gatherCapacityEvidence(r, rep, &in)
 	writeJSON(w, http.StatusOK, recommendationsResponse{Recommendations: recsapp.Analyze(in)})
+}
+
+// gatherCapacityEvidence resolves the run's capacity-profile evidence into
+// in (phase 84, closing phase 78's reachability gap): the report carries the
+// scenario, the execution pins the engine and pod size, and together they
+// form the profile Key. Tolerant exactly like the threshold gather: no
+// calibration service wired, no execution service to pin the pod size, an
+// unreadable execution, or simply no profile for the exact key (ProfileFor's
+// own ErrNotFound) all leave the fields nil -- unknown, never fabricated,
+// never a failed recommendation read. The age is measured from the profile's
+// own CalibratedAt, the same clock the calibration wrote.
+func (h *handlers) gatherCapacityEvidence(r *http.Request, rep report.Report, in *recsapp.Input) {
+	if h.deps.Calibrations == nil || h.deps.Executions == nil {
+		return
+	}
+	exe, err := h.deps.Executions.Get(r.Context(), rep.ExecutionID)
+	if err != nil {
+		return
+	}
+	profile, err := h.deps.Calibrations.ProfileFor(r.Context(), capacityprofile.Key{
+		ScenarioID: rep.ScenarioID,
+		Engine:     exe.Engine,
+		CPU:        exe.CPU,
+		Memory:     exe.Memory,
+	})
+	if err != nil {
+		return
+	}
+	qps := profile.PerPodQPS
+	in.CalibratedPerPodQPS = &qps
+	age := time.Since(profile.CalibratedAt)
+	in.ProfileAge = &age
 }
 
 // recommendationsResponse is the wire shape of GET
