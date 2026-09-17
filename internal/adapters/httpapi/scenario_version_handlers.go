@@ -156,7 +156,7 @@ func (h *handlers) versionPath(w http.ResponseWriter, r *http.Request) (int64, i
 		writeError(w, http.StatusBadRequest, "invalid version")
 		return 0, 0, false
 	}
-	return id, int(version), true
+	return id, int(version), true // narrow: version numbers are small and bounded by ParseInt(path, 10, 64)
 }
 
 // respondScenarioVersionError maps the version use-cases' sentinels onto
