@@ -53,4 +53,18 @@ type ScenarioRepository interface {
 	// Templates are global (no project, no tenant), so the catalog takes no
 	// scoping arguments.
 	ListTemplates(ctx context.Context) ([]scenario.Scenario, error)
+
+	// UpdateScenario overwrites the row's mutable fields (name, kind, engine,
+	// is_template, template_name) from p. It is the restore path's apply step:
+	// identity (id), ownership (project_id, tenant_id) and provenance
+	// (created_by, created_time) are deliberately not writable — a restore
+	// rewinds what the scenario IS, never what it belongs to or when it was
+	// born. ports.ErrNotFound when the row is gone.
+	UpdateScenario(ctx context.Context, p scenario.Scenario) error
+
+	// DeleteScenarioRequests removes a scenario's stored requests fragment
+	// (a no-op when none is stored). The restore path needs the reverse of
+	// SetScenarioRequests: rewinding to a version captured before any
+	// fragment existed must remove the current one, not leave it stale.
+	DeleteScenarioRequests(ctx context.Context, scenarioID int64) error
 }

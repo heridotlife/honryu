@@ -167,6 +167,14 @@ var authzAuditTable = []authzEntry{
 	{method: "GET", pattern: "/api/scenarios/{scenario_id}/thresholds", decision: "scenario:read"},
 	{method: "PUT", pattern: "/api/scenarios/{scenario_id}/thresholds", decision: "scenario:update",
 		json: []byte(`{"thresholds":[{"metric":"http_p95_ms","comparison":"lt","value":300}]}`)},
+
+	// Phase 80: the scenario's edit history reads with the scenario
+	// (scenario:read); rewinding it is an update. The restore probe below
+	// hits an unknown version, so it fails 404 past authorization -- the
+	// decision asserted is the gate the ungranted probe hits first.
+	{method: "GET", pattern: "/api/scenarios/{scenario_id}/versions", decision: "scenario:read"},
+	{method: "GET", pattern: "/api/scenarios/{scenario_id}/versions/{version}", decision: "scenario:read"},
+	{method: "POST", pattern: "/api/scenarios/{scenario_id}/versions/{version}/restore", decision: "scenario:update"},
 	// Phase 67a: triggering a calibration for a scenario is creating a job
 	// against it -- the same scenario:create the instantiate route demands,
 	// not the read the neighbouring capacity-profile GET uses.
@@ -418,6 +426,10 @@ func (s auditSeed) replace(v string) string {
 		"{job_id}", strconv.FormatInt(s.jobID, 10),
 		"{webhook_id}", strconv.FormatInt(s.webhookID, 10),
 		"{slo_id}", strconv.FormatInt(s.sloID, 10),
+		// The scenario-version routes (phase 80): the wired scenario service
+		// captures version 1 at creation, so "1" is always a real version of
+		// the seeded scenario.
+		"{version}", "1",
 		"{shard}", "0",
 		"{name}", "home",
 		"{kind}", "scenario",

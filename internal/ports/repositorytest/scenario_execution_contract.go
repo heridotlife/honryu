@@ -195,6 +195,67 @@ func RunScenarioRepositoryContract(t *testing.T, newRepo NewRepo) {
 		}
 	})
 
+	t.Run("UpdateScenarioRewritesMutableFieldsOnly", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+
+		id := mustCreateScenario(t, repo, "portable", 10)
+		before, err := repo.GetScenario(ctx, id)
+		if err != nil {
+			t.Fatalf("GetScenario: %v", err)
+		}
+
+		// The restore path's apply step: mutable fields rewritten, identity,
+		// ownership, and provenance untouched.
+		rewound := scenario.Scenario{
+			ID: id, Name: "rewound", ProjectID: before.ProjectID,
+			Kind: scenario.KindNative, Engine: taurus.ExecutorK6,
+		}
+		if err := repo.UpdateScenario(ctx, rewound); err != nil {
+			t.Fatalf("UpdateScenario: %v", err)
+		}
+		after, err := repo.GetScenario(ctx, id)
+		if err != nil {
+			t.Fatalf("GetScenario after update: %v", err)
+		}
+		if after.Name != "rewound" || after.Kind != scenario.KindNative || after.Engine != taurus.ExecutorK6 {
+			t.Errorf("after update = %q %q %q, want rewound/native/k6", after.Name, after.Kind, after.Engine)
+		}
+		if !after.CreatedTime.Equal(before.CreatedTime) {
+			t.Errorf("created_time moved from %v to %v; provenance is not restorable", before.CreatedTime, after.CreatedTime)
+		}
+
+		// A no-op update (same values) is a success -- RowsAffected 0 for a
+		// no-op UPDATE must not read as missing (SetScenarioKind's live bug,
+		// phase 36).
+		if err := repo.UpdateScenario(ctx, rewound); err != nil {
+			t.Errorf("UpdateScenario(unchanged values) = %v, want nil", err)
+		}
+		if err := repo.UpdateScenario(ctx, scenario.Scenario{ID: 999999, Name: "ghost", Kind: scenario.KindPortable}); err == nil {
+			t.Error("UpdateScenario on a missing scenario succeeded")
+		}
+	})
+
+	t.Run("DeleteScenarioRequestsRemovesTheFragment", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+
+		id := mustCreateScenario(t, repo, "portable", 10)
+		// Deleting what was never stored is a no-op, not an error.
+		if err := repo.DeleteScenarioRequests(ctx, id); err != nil {
+			t.Fatalf("DeleteScenarioRequests(none stored) = %v, want nil", err)
+		}
+		if err := repo.SetScenarioRequests(ctx, id, []byte("requests: []\n")); err != nil {
+			t.Fatalf("SetScenarioRequests: %v", err)
+		}
+		if err := repo.DeleteScenarioRequests(ctx, id); err != nil {
+			t.Fatalf("DeleteScenarioRequests: %v", err)
+		}
+		if _, err := repo.GetScenarioRequests(ctx, id); !errors.Is(err, ports.ErrNotFound) {
+			t.Errorf("GetScenarioRequests after delete = %v, want ErrNotFound", err)
+		}
+	})
+
 	t.Run("CreateGetListDelete", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
