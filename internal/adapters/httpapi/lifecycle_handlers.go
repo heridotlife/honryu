@@ -167,7 +167,13 @@ func (h *handlers) executionStatus(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
+	// An optional cluster query parameter narrows a fan-out execution's
+	// status to one target cluster (the detail page's per-cluster cards);
+	// absent keeps the cross-cluster aggregate every existing reader uses.
 	status, err := h.deps.Lifecycle.Status(r.Context(), id)
+	if cluster := r.URL.Query().Get("cluster"); cluster != "" {
+		status, err = h.deps.Lifecycle.ClusterStatus(r.Context(), id, cluster)
+	}
 	if err != nil {
 		respondError(w, err)
 		return

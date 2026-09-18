@@ -374,6 +374,40 @@ function stubCardMode(wide: boolean): void {
   );
 }
 
+// Phase 88: the fan-out-in-progress column, served by the registry list's
+// fanout_running enrichment. The three honest states are distinct in the
+// DOM: the absent field (no run lookup wired), the empty list (nothing
+// mid-flight), and the running names themselves.
+describe('Clusters fan-out in progress (phase 88, mounted)', () => {
+  it('names the mid-run fan-out executions under their cluster row', async () => {
+    await mountClusters([
+      registered,
+      { ...registered, name: 'eu-1', origin: 'byoc', fanout_running: [{ execution_id: 9, name: 'everywhere' }] },
+    ]);
+
+    const cell = container!.querySelector('[data-testid="fanout-running-eu-1"]')!;
+    expect(cell).not.toBeNull();
+    expect(cell.textContent).toContain('everywhere');
+    expect(cell.textContent).toContain('#9');
+    expect(cell.textContent).toContain('running');
+    // A cluster without a mid-flight fan-out run never grows the badge.
+    expect(container!.querySelector('[data-testid="fanout-running-honryu"]')).toBeNull();
+  });
+
+  it('renders the absent-field and empty-list states as the same honest dash', async () => {
+    await mountClusters([
+      registered, // field absent: deployment wired no run lookup
+      { ...registered, name: 'idle', fanout_running: [] }, // wired, nothing mid-flight
+    ]);
+
+    for (const name of ['honryu', 'idle']) {
+      const row = Array.from(container!.querySelectorAll('tbody tr')).find((tr) => tr.textContent!.includes(name))!;
+      const cell = row.querySelector('[data-testid^="fanout-running-"], td:nth-child(4)')!;
+      expect(cell.textContent!.trim()).toBe('—');
+    }
+  });
+});
+
 describe('Clusters card mode (phase 86)', () => {
   it('renders the registry as cards below sm: cluster name the title, origin hint and meter intact', async () => {
     stubCardMode(false);
@@ -394,6 +428,7 @@ describe('Clusters card mode (phase 86)', () => {
     expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual([
       'Origin',
       'Capacity',
+      'Fan-out in progress',
       'Engine namespace',
       'Sidecar image',
       'Ingest URL',

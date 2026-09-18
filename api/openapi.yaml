@@ -232,6 +232,17 @@ components:
         engines_ceiling:
           type: integer
           description: Aggregate engine ceiling across tenants (quota ledger). Absent when the deployment has no quota ledger wired.
+        fanout_running:
+          type: array
+          description: >-
+            The fan-out executions currently holding an active run on this
+            cluster (phase 88). Absent when the deployment wires no run
+            lookup; the list is empty when none are mid-flight.
+          items:
+            type: object
+            properties:
+              execution_id: { type: integer, format: int64 }
+              name: { type: string }
     MetricBatch:
       type: object
       description: One engine pod's measurements.
@@ -639,6 +650,13 @@ components:
           type: string
           enum: [load, calibrate_engine]
         cluster: { type: string }
+        fanout_targets:
+          type: array
+          items: { type: string }
+          description: >-
+            The registered clusters a fan-out execution runs its full load
+            profile on simultaneously. Absent on an ordinary single-cluster
+            execution.
         created_time: { type: string, format: date-time }
     Execution:
       type: object
@@ -655,6 +673,14 @@ components:
         cluster:
           type: string
           description: Preferred load origin; empty means the deployment default cluster.
+        fanout_targets:
+          type: array
+          items: { type: string }
+          description: >-
+            The registered clusters a fan-out execution runs its full load
+            profile on simultaneously (phase 88) -- N clusters x S shards =
+            N x S pods, the "run everywhere" primitive. Absent on an
+            ordinary single-cluster execution; ignored whenever present.
         csv_split: { type: boolean }
         created_time: { type: string, format: date-time }
         load_profile:
@@ -1093,6 +1119,21 @@ components:
         cluster:
           type: string
           description: The load origin -- the registered cluster this run generated load from. Empty means the deployment default.
+        cluster_results:
+          type: array
+          description: >-
+            The per-cluster breakdown of a fan-out run (phase 88): one row
+            per target cluster that pushed measurements, with its share of
+            the run's samples and failures and the run's own outcome.
+            Absent on single-cluster reports; the run-level fields remain
+            the run's whole truth either way.
+          items:
+            type: object
+            properties:
+              cluster: { type: string }
+              outcome: { type: string, enum: [passed, failed, aborted, error] }
+              samples: { type: integer, format: int64 }
+              failed: { type: integer, format: int64 }
         correlation_id:
           type: string
           description: The trace id the run's generated load carried in its W3C traceparent/baggage headers -- the id to deep-link into a customer's own APM for exactly this run, alongside started_at/ended_at. Empty for runs that predate it.
@@ -2377,6 +2418,14 @@ paths:
                     default. Must be an engine this deployment has an image for,
                     and one every scenario in the execution can run on.
                   enum: [jmeter, k6, gatling, locust, apiritif, ab, siege]
+                fanout_targets:
+                  type: string
+                  description: |
+                    A JSON array of registered cluster names (e.g.
+                    ["eu-1","us-1"]). Present and non-empty makes the execution
+                    a fan-out one: its full load profile runs on every named
+                    cluster simultaneously. Absent or blank stays an ordinary
+                    single-cluster execution.
       responses:
         '201':
           description: Created
@@ -2585,7 +2634,18 @@ paths:
     get:
       tags: [lifecycle]
       summary: Report phase and per-scenario engine readiness
-      parameters: [{ $ref: '#/components/parameters/ExecutionID' }]
+      description: >-
+        Cross-cluster aggregate by default. The optional cluster query
+        parameter narrows a fan-out execution's status to one target
+        cluster (phase 88's per-cluster cards); a cluster the execution
+        does not run on is a 404.
+      parameters:
+        - { $ref: '#/components/parameters/ExecutionID' }
+        - name: cluster
+          in: query
+          required: false
+          schema: { type: string }
+          description: A fan-out target cluster to scope the status to.
       responses:
         '200':
           description: Status
@@ -2617,9 +2677,18 @@ paths:
     get:
       tags: [lifecycle]
       summary: Fetch the logs of a scenario's first engine pod
+      description: >-
+        The optional cluster query parameter names which of a fan-out
+        execution's target clusters to read from (phase 88); absent means
+        the execution's own single cluster.
       parameters:
         - { $ref: '#/components/parameters/ExecutionID' }
         - { $ref: '#/components/parameters/ScenarioID' }
+        - name: cluster
+          in: query
+          required: false
+          schema: { type: string }
+          description: A fan-out target cluster to read the pod log from.
       responses:
         '200':
           description: Pod log

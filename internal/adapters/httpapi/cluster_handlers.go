@@ -43,6 +43,17 @@ type clusterResponse struct {
 	// renders its honest "no capacity reported" state off the fields' absence.
 	EnginesUsed    *int `json:"engines_used,omitempty"`
 	EnginesCeiling *int `json:"engines_ceiling,omitempty"`
+	// FanOutRunning names the fan-out executions currently holding an active
+	// run on this cluster (phase 88) -- the Clusters page's "fan-out in
+	// progress" view. Pointer + omitempty: a deployment without the repo
+	// wiring (or a failed read) omits it entirely, exactly like capacity.
+	FanOutRunning *[]fanOutRunningExecution `json:"fanout_running,omitempty"`
+}
+
+// fanOutRunningExecution is one fan-out execution mid-run on a cluster.
+type fanOutRunningExecution struct {
+	ExecutionID int64  `json:"execution_id"`
+	Name        string `json:"name"`
 }
 
 func toClusterResponse(c clusterregistry.Cluster) clusterResponse {
@@ -187,9 +198,35 @@ func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]clusterResponse, 0, len(clusters))
 	for _, c := range clusters {
-		out = append(out, h.withCapacity(toClusterResponse(c)))
+		out = append(out, h.withFanOutRunning(r, h.withCapacity(toClusterResponse(c))))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// withFanOutRunning enriches a cluster response with the fan-out
+// executions mid-run on it (phase 88). Mirrors withCapacity: an absent
+// wiring or a failed read degrades to omission, never to a failed cluster
+// list; and only fan-out executions appear -- a cluster's own
+// single-cluster runs are the execution list's business, not the
+// registry's.
+func (h *handlers) withFanOutRunning(r *http.Request, c clusterResponse) clusterResponse {
+	if h.deps.FanOutRuns == nil {
+		return c
+	}
+	ids, err := h.deps.FanOutRuns.ExecutionsWithActiveRunOnCluster(r.Context(), c.Name)
+	if err != nil {
+		return c
+	}
+	running := make([]fanOutRunningExecution, 0, len(ids))
+	for _, id := range ids {
+		exe, err := h.deps.FanOutRuns.GetExecution(r.Context(), id)
+		if err != nil || !exe.IsFanOut() {
+			continue
+		}
+		running = append(running, fanOutRunningExecution{ExecutionID: id, Name: exe.Name})
+	}
+	c.FanOutRunning = &running
+	return c
 }
 
 // getCluster returns one registered cluster by name.

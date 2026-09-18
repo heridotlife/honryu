@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1403,6 +1404,52 @@ func (s *Service) Status(ctx context.Context, executionID int64) (Status, error)
 		return Status{}, err
 	}
 
+	out := Status{Phase: run.DerivePhase(sched.PoolSize, running), PoolSize: sched.PoolSize}
+	for _, pr := range sched.Scenarios {
+		ps := ScenarioStatus{
+			ScenarioID:      pr.ScenarioID,
+			EnginesWanted:   pr.EnginesWanted,
+			EnginesDeployed: pr.EnginesDeployed,
+			Reachable:       pr.Reachable,
+		}
+		if started, ok := runningByScenario[pr.ScenarioID]; ok {
+			ps.InProgress = true
+			ps.StartedTime = started
+		}
+		out.Scenarios = append(out.Scenarios, ps)
+	}
+	return out, nil
+}
+
+// ClusterStatus is Status's per-cluster view: one target cluster's snapshot
+// of a fan-out execution's scenarios, for the detail page's per-cluster
+// cards. cluster must name a cluster the execution actually runs on (a
+// fan-out target, or its own cluster); anything else is ports.ErrNotFound --
+// an addressable mistake rather than a silently-elsewhere read.
+func (s *Service) ClusterStatus(ctx context.Context, executionID int64, cluster string) (Status, error) {
+	coll, err := s.repo.GetExecution(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	if !slices.Contains(coll.Clusters(), cluster) {
+		return Status{}, fmt.Errorf("%w: execution %d does not run on cluster %q", ports.ErrNotFound, executionID, cluster)
+	}
+	scenarios, err := s.repo.LoadProfileFor(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	sched, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(cluster), executionID, planRefs(scenarios))
+	if err != nil {
+		return Status{}, err
+	}
+	_, running, err := s.repo.CurrentRun(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	runningByScenario, err := s.runningByScenario(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
 	out := Status{Phase: run.DerivePhase(sched.PoolSize, running), PoolSize: sched.PoolSize}
 	for _, pr := range sched.Scenarios {
 		ps := ScenarioStatus{

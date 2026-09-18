@@ -96,6 +96,11 @@ type Deps struct {
 	// cluster responses (phase 25). Optional; nil keeps /api/clusters bodies
 	// byte-identical to before (no engines_used/engines_ceiling fields).
 	Quota *quotaapp.Service
+	// FanOutRuns reads the fan-out executions mid-run on a cluster, for the
+	// Clusters page's fan-out-in-progress view (phase 88). Optional; nil
+	// omits the fanout_running field. Both mysql.Repository and the fake
+	// Store satisfy it.
+	FanOutRuns FanOutRunLookup
 	// Tenants administers tenants and role grants. Required for the /api/tenants
 	// endpoints; nil disables them.
 	Tenants *tenantapp.Service
@@ -461,6 +466,14 @@ type IngestTokenResolver interface {
 // ExecutionClusterLoader names the cluster an execution is routed to -- the
 // one field ingest scoping needs from the execution.
 type ExecutionClusterLoader interface {
+	GetExecution(ctx context.Context, executionID int64) (execution.Execution, error)
+}
+
+// FanOutRunLookup reads the fan-out executions mid-run on a cluster (phase
+// 88) -- the two reads the Clusters page's fan-out-in-progress enrichment
+// needs. mysql.Repository and the fake Store both satisfy it.
+type FanOutRunLookup interface {
+	ExecutionsWithActiveRunOnCluster(ctx context.Context, cluster string) ([]int64, error)
 	GetExecution(ctx context.Context, executionID int64) (execution.Execution, error)
 }
 

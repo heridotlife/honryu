@@ -824,3 +824,128 @@ describe('Execution calibration spec (phase 62)', () => {
     expect(container!.querySelector('[data-testid="calibration-spec"]')).toBeNull();
   });
 });
+
+// Phase 88: a fan-out execution's own section -- the badge in the header,
+// one readiness card per target cluster (each read through the status
+// endpoint's cluster scoping, so a lagging cluster shows as ITS gap), and
+// the latest run's per-cluster results table. An ordinary execution mounts
+// none of it.
+describe('Execution fan-out section (phase 88, mounted)', () => {
+  /** Renders /executions/5 as a two-target fan-out execution: per-cluster
+   * status fixtures differ so the test can tell the two reads apart, and
+   * reports[0] carries a per-cluster breakdown. */
+  async function renderFanOutExecution(reports: unknown[] = []) {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    const fetched: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        fetched.push(url);
+        if (url.endsWith('/api/me')) {
+          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+        }
+        if (url.endsWith('/api/executions/5')) {
+          return json({
+            id: 5, name: 'everywhere', project_id: 1, csv_split: false,
+            created_time: '2026-09-05T10:00:00Z', load_profile: [], data: [],
+            engine: 'jmeter', kind: 'normal', fanout_targets: ['eu-1', 'us-1'],
+          });
+        }
+        // Per-cluster scoping: eu-1 fully up, us-1 still one pod short and
+        // unreachable -- the lagging cluster must stay visible as its own.
+        if (url.endsWith('/api/executions/5/status?cluster=eu-1')) {
+          return json({ phase: 'deployed', pool_size: 2, status: [
+            { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
+          ] });
+        }
+        if (url.endsWith('/api/executions/5/status?cluster=us-1')) {
+          return json({ phase: 'deployed', pool_size: 1, status: [
+            { scenario_id: 1, engines: 2, engines_deployed: 1, engines_reachable: false, in_progress: false },
+          ] });
+        }
+        if (url.endsWith('/api/executions/5/status')) {
+          return json(statusFixture('deployed'));
+        }
+        if (url.endsWith('/api/executions/5/reports')) {
+          return json(reports);
+        }
+        if (url.includes('/api/scenarios/1/capacity-profile/fanout')) {
+          return json({ status: 'no_profile' });
+        }
+        if (url.includes('/api/executions/5/trend')) {
+          return json({ execution_id: 5, points: [] });
+        }
+        if (url.includes('/api/executions/5/error-signatures')) {
+          return json({ execution_id: 5, grouped_by: 'label', groups: [] });
+        }
+        return json({ message: `no stub for ${url}` }, 500);
+      })
+    );
+    vi.stubGlobal('EventSource', FakeEventSource);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/executions/5']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/executions/:id" element={<Execution />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {});
+    return fetched;
+  }
+
+  it('renders the fan-out badge and one card per target, each via its own cluster-scoped status read', async () => {
+    const fetched = await renderFanOutExecution();
+
+    expect(container!.querySelector('[data-testid="fanout-badge"]')?.textContent).toContain('fan-out ×2');
+    const section = container!.querySelector('[data-testid="fanout-section"]');
+    expect(section).not.toBeNull();
+    expect(fetched).toContain('/api/executions/5/status?cluster=eu-1');
+    expect(fetched).toContain('/api/executions/5/status?cluster=us-1');
+
+    const eu = container!.querySelector('[data-testid="fanout-cluster-card-eu-1"]');
+    const us = container!.querySelector('[data-testid="fanout-cluster-card-us-1"]');
+    expect(eu).not.toBeNull();
+    expect(us).not.toBeNull();
+    // The two cards show their OWN clusters' readiness, not the aggregate.
+    expect(eu!.querySelector('[data-testid="fanout-cluster-eu-1-scenarios"]')!.textContent).toContain('2/2 deployed');
+    expect(us!.querySelector('[data-testid="fanout-cluster-us-1-scenarios"]')!.textContent).toContain('1/2 deployed');
+    expect(us!.textContent).toContain('unreachable');
+  });
+
+  it('renders the latest run per-cluster results when the report carries them, and nothing when it does not', async () => {
+    const report = {
+      run_id: 7, started_at: '2026-09-05T10:00:00Z', ended_at: '2026-09-05T10:05:00Z',
+      outcome: 'passed', samples: 150, failed: 30, avg_latency: 0.1, peak_rps: 100,
+      cluster_results: [
+        { cluster: 'eu-1', outcome: 'passed', samples: 100, failed: 10 },
+        { cluster: 'us-1', outcome: 'passed', samples: 50, failed: 20 },
+      ],
+    };
+    await renderFanOutExecution([report]);
+    const table = container!.querySelector('[data-testid="fanout-latest-cluster-results"]')!;
+    expect(table).not.toBeNull();
+    const rows = Array.from(table.querySelectorAll('tbody tr')).map((tr) => tr.textContent);
+    expect(rows[0]).toContain('eu-1');
+    expect(rows[0]).toContain('100');
+    expect(rows[1]).toContain('us-1');
+    expect(rows[1]).toContain('50');
+
+    // A report without the split (single-cluster, or a restart lost it)
+    // mounts no empty table -- honest absence.
+    await renderFanOutExecution([{ ...report, cluster_results: undefined }]);
+    expect(container!.querySelector('[data-testid="fanout-cluster-results"]')).toBeNull();
+  });
+
+  it('mounts no fan-out section on an ordinary single-cluster execution', async () => {
+    await renderExecution('deployed');
+    expect(container!.querySelector('[data-testid="fanout-section"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="fanout-badge"]')).toBeNull();
+  });
+});

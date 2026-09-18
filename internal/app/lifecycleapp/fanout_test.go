@@ -411,3 +411,37 @@ func TestFanOut_StatusSumsAcrossClusters(t *testing.T) {
 		t.Fatalf("pool = %d, want 4", st.PoolSize)
 	}
 }
+
+// ClusterStatus is the per-cluster card's read: one target cluster's own
+// snapshot, not the summed aggregate -- a cluster whose pods never came up
+// shows as its own gap. A cluster the execution does not run on is
+// ports.ErrNotFound, an addressable mistake rather than a silently-elsewhere
+// read.
+func TestFanOut_ClusterStatusScopedToOneTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, _, svc, _, _, executionID, _ := setupFanOut(t, 2)
+
+	if err := svc.Deploy(ctx, executionID); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	for _, cluster := range []string{"eu-1", "us-1"} {
+		st, err := svc.ClusterStatus(ctx, executionID, cluster)
+		if err != nil {
+			t.Fatalf("ClusterStatus(%s): %v", cluster, err)
+		}
+		// This cluster's shard set only -- the aggregate would say 4.
+		if st.PoolSize != 2 {
+			t.Fatalf("%s pool = %d, want 2 (this cluster's shards only)", cluster, st.PoolSize)
+		}
+		if len(st.Scenarios) != 1 || st.Scenarios[0].EnginesDeployed != 2 || !st.Scenarios[0].Reachable {
+			t.Fatalf("%s scenarios = %+v, want one ready scenario with 2 deployed engines", cluster, st.Scenarios)
+		}
+	}
+
+	// A cluster the execution does not run on is a 404-shaped refusal.
+	_, err := svc.ClusterStatus(ctx, executionID, "ap-1")
+	if !errors.Is(err, ports.ErrNotFound) {
+		t.Fatalf("ClusterStatus(unrouted cluster) err = %v, want ports.ErrNotFound", err)
+	}
+}

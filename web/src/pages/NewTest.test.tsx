@@ -29,6 +29,9 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 let puts: Array<{ url: string; body: string }> = [];
+/** Phase 88: the POST /api/executions form bodies -- where the
+ * fanout_targets field rides. */
+let execPosts: string[] = [];
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -92,6 +95,7 @@ afterEach(() => {
   container = null;
   root = null;
   puts = [];
+  execPosts = [];
 });
 
 /** Native value setter + input event (React's tracker ignores plain writes). */
@@ -407,5 +411,120 @@ describe('NewTest blur validation + error summary (phase 77)', () => {
     // The failed submit never started the flow: no calls, no steps.
     expect(puts).toHaveLength(0);
     expect(container!.textContent).not.toContain('step:');
+  });
+});
+
+// Phase 88: the fan-out target picker -- one checkbox per registered BYOC
+// cluster; any checked makes the created execution fan-out (the full shard
+// set runs on every checked cluster). The honest degraded states matter as
+// much as the happy one: no BYOC cluster registered, or the registry read
+// failing, disables the picker with the reason stated, never a broken form.
+describe('NewTest fan-out targets (phase 88, mounted)', () => {
+  /** renderNewTest's stub plus /api/clusters and a capture of the execution
+   * POST body -- the one request the fanout_targets field rides. */
+  async function renderNewTestWithClusters(clusters: unknown[] | null) {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    execPosts = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url.endsWith('/api/me')) {
+          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+        }
+        if (url.endsWith('/api/clusters')) {
+          return clusters === null ? json({ message: 'registry down' }, 500) : json(clusters);
+        }
+        if (method === 'GET' && url.endsWith('/api/projects')) {
+          return json([]);
+        }
+        if (method === 'POST' && url.endsWith('/api/projects')) {
+          return json({ id: 1, name: 'tests-checkout-smoke' });
+        }
+        if (method === 'POST' && url.endsWith('/api/scenarios')) {
+          return json({ id: 42 });
+        }
+        if (method === 'POST' && url.endsWith('/api/executions')) {
+          execPosts.push(String(init?.body));
+          return json({ id: 9 });
+        }
+        if (method === 'PUT' && url.endsWith('/api/scenarios/42/requests')) {
+          return json({});
+        }
+        if (method === 'PUT' && url.endsWith('/api/executions/9/config')) {
+          puts.push({ url, body: String(init?.body) });
+          return json({});
+        }
+        return json({ message: `no stub for ${method} ${url}` }, 500);
+      }),
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/executions/new']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/executions/new" element={<NewTest />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => {});
+  }
+
+  const operatorCluster = {
+    name: 'honryu', origin: 'operator', namespace: 'honryu', created_time: '2026-09-05T10:29:02Z',
+  };
+  const byoc = (name: string) => ({ ...operatorCluster, name, origin: 'byoc' });
+
+  it('offers only BYOC clusters as targets, and sends fanout_targets only when one is checked', async () => {
+    await renderNewTestWithClusters([operatorCluster, byoc('eu-1'), byoc('us-1')]);
+    const fieldset = container!.querySelector('[data-testid="fanout-targets"]')!;
+    expect(fieldset).not.toBeNull();
+    // The operator-managed default is not a fan-out target.
+    expect(container!.querySelector('[data-testid="fanout-target-honryu"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="fanout-target-eu-1"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="fanout-target-us-1"]')).not.toBeNull();
+
+    // Unchecked: the request every pre-fan-out client sends stays identical.
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    await act(async () => {});
+    expect(execPosts).toHaveLength(1);
+    expect(execPosts[0]).not.toContain('fanout_targets');
+  });
+
+  it('sends the checked targets as a JSON array on the execution form', async () => {
+    await renderNewTestWithClusters([byoc('eu-1'), byoc('us-1')]);
+    await click(container!.querySelector('[data-testid="fanout-target-us-1"]')!);
+    await click(container!.querySelector('[data-testid="fanout-target-eu-1"]')!);
+    expect(container!.querySelector('[data-testid="fanout-targets-selected"]')!.textContent).toContain('2 targets');
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    await act(async () => {});
+
+    expect(execPosts).toHaveLength(1);
+    const sent = new URLSearchParams(execPosts[0]);
+    // Sorted: the array is deterministic whatever the check order was.
+    expect(sent.get('fanout_targets')).toBe('["eu-1","us-1"]');
+  });
+
+  it('states the reason when no BYOC cluster is registered', async () => {
+    await renderNewTestWithClusters([operatorCluster]);
+    expect(container!.querySelector('[data-testid="fanout-targets-empty"]')?.textContent).toContain(
+      'No BYOC clusters registered',
+    );
+    expect(container!.querySelector('[data-testid="fanout-target-eu-1"]')).toBeNull();
+  });
+
+  it('degrades to the default-cluster note when the registry read fails, never a broken form', async () => {
+    await renderNewTestWithClusters(null);
+    const fieldset = container!.querySelector('[data-testid="fanout-targets"]')!;
+    expect(fieldset.textContent).toContain('Cluster registry unavailable');
   });
 });

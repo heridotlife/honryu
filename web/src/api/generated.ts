@@ -18,6 +18,7 @@ export interface Cluster {
   created_time: string;
   engines_used?: number;
   engines_ceiling?: number;
+  fanout_running?: { execution_id?: number; name?: string }[];
 }
 
 export interface MetricBatch {
@@ -211,6 +212,7 @@ export interface ExecutionSummary {
   engine?: string;
   kind?: "load" | "calibrate_engine";
   cluster?: string;
+  fanout_targets?: string[];
   created_time?: string;
 }
 
@@ -221,6 +223,7 @@ export interface Execution {
   engine?: string;
   kind?: "load" | "calibrate_engine";
   cluster?: string;
+  fanout_targets?: string[];
   csv_split?: boolean;
   created_time?: string;
   load_profile?: LoadProfileEntry[];
@@ -467,6 +470,7 @@ export interface Report {
   run_id: number;
   engine?: string;
   cluster?: string;
+  cluster_results?: { cluster?: string; outcome?: "passed" | "failed" | "aborted" | "error"; samples?: number; failed?: number }[];
   correlation_id?: string;
   started_at: string;
   ended_at: string;
@@ -935,7 +939,7 @@ export function getExecutions(): Promise<ExecutionSummary[]> {
 }
 
 /** Create an execution */
-export function postExecutions(body: { name: string; project_id: number; engine?: "jmeter" | "k6" | "gatling" | "locust" | "apiritif" | "ab" | "siege" }): Promise<Execution> {
+export function postExecutions(body: { name: string; project_id: number; engine?: "jmeter" | "k6" | "gatling" | "locust" | "apiritif" | "ab" | "siege"; fanout_targets?: string }): Promise<Execution> {
   return apiClient.post<Execution>(paths.postExecutions(), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
 }
 
@@ -999,8 +1003,8 @@ export function postExecutionsByExecutionIdPurge(executionId: number | string): 
 }
 
 /** Report phase and per-scenario engine readiness */
-export function getExecutionsByExecutionIdStatus(executionId: number | string): Promise<ExecutionStatus> {
-  return apiClient.get<ExecutionStatus>(paths.getExecutionsByExecutionIdStatus(executionId));
+export function getExecutionsByExecutionIdStatus(executionId: number | string, opts?: { query?: { cluster?: string } }): Promise<ExecutionStatus> {
+  return apiClient.get<ExecutionStatus>(paths.getExecutionsByExecutionIdStatus(executionId) + toQuery(opts?.query ?? {}));
 }
 
 /** List the execution's engine pods */
@@ -1009,8 +1013,8 @@ export function getExecutionsByExecutionIdEngines(executionId: number | string):
 }
 
 /** Fetch the logs of a scenario's first engine pod */
-export function getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId: number | string, scenarioId: number | string): Promise<string> {
-  return apiClient.text(paths.getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId, scenarioId));
+export function getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId: number | string, scenarioId: number | string, opts?: { query?: { cluster?: string } }): Promise<string> {
+  return apiClient.text(paths.getExecutionsByExecutionIdScenariosByScenarioIdLogs(executionId, scenarioId) + toQuery(opts?.query ?? {}));
 }
 
 /** Stream live run metrics as server-sent events */
