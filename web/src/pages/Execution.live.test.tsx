@@ -83,6 +83,7 @@ async function renderExecution(
   calls: string[] = [],
   infoOver: Record<string, unknown> = {},
   statusOver: Record<string, unknown> = {},
+  initialState: unknown = undefined
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -92,13 +93,28 @@ async function renderExecution(
       const url = String(input);
       calls.push(url);
       if (url.endsWith('/api/me')) {
-        return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+        return json({
+          subject: 'demo:a',
+          name: 'a',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { '*': ['*'] },
+          demo: true,
+        });
       }
       if (url.endsWith('/api/executions/5')) {
         return json({
-          id: 5, name: 'demo', project_id: 1, csv_split: false,
-          created_time: '2026-09-05T10:00:00Z', load_profile: [], data: [],
-          engine: 'jmeter', kind: 'normal', ...infoOver,
+          id: 5,
+          name: 'demo',
+          project_id: 1,
+          csv_split: false,
+          created_time: '2026-09-05T10:00:00Z',
+          load_profile: [],
+          data: [],
+          engine: 'jmeter',
+          kind: 'normal',
+          ...infoOver,
         });
       }
       if (url.endsWith('/api/executions/5/status')) {
@@ -123,7 +139,7 @@ async function renderExecution(
   root = createRoot(container);
   await act(async () => {
     root!.render(
-      <MemoryRouter initialEntries={['/executions/5']}>
+      <MemoryRouter initialEntries={[{ pathname: '/executions/5', state: initialState }]}>
         <SessionProvider>
           <Routes>
             <Route path="/executions/:id" element={<Execution />} />
@@ -307,11 +323,7 @@ describe('Execution trend strip (mounted)', () => {
 
     const pills = Array.from(strip!.querySelectorAll('a[data-testid^="trend-pill-"]'));
     // The endpoint's order is newest-first; the strip must not re-sort.
-    expect(pills.map((p) => p.getAttribute('data-testid'))).toEqual([
-      'trend-pill-12',
-      'trend-pill-11',
-      'trend-pill-10',
-    ]);
+    expect(pills.map(p => p.getAttribute('data-testid'))).toEqual(['trend-pill-12', 'trend-pill-11', 'trend-pill-10']);
     // Outcome colours: failed rose, passed emerald, aborted slate.
     expect(pills[0].className).toContain('rose');
     expect(pills[1].className).toContain('emerald');
@@ -396,14 +408,14 @@ describe('Execution failure history (mounted)', () => {
   it('switching the group-by axis refetches with by=code and re-collapses', async () => {
     const calls: string[] = [];
     await renderExecution('idle', [], signatureHistory(), calls);
-    expect(calls.some((u) => u.endsWith('/api/executions/5/error-signatures'))).toBe(true);
+    expect(calls.some(u => u.endsWith('/api/executions/5/error-signatures'))).toBe(true);
 
     const code = container!.querySelector('[data-testid="signature-group-by-code"]') as HTMLButtonElement;
     await act(async () => {
       code.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     // The non-default axis rides the query string (trends.ts contract).
-    expect(calls.some((u) => u.endsWith('/api/executions/5/error-signatures?by=code'))).toBe(true);
+    expect(calls.some(u => u.endsWith('/api/executions/5/error-signatures?by=code'))).toBe(true);
     expect(code.getAttribute('aria-pressed')).toBe('true');
   });
 
@@ -440,7 +452,7 @@ describe('Execution copy-link (mounted)', () => {
 // mount because runAction fetches at click time.
 describe('Execution action-error details (mounted)', () => {
   const clickTrigger = async () => {
-    const btn = Array.from(container!.querySelectorAll('button')).find((b) => b.textContent === 'Trigger');
+    const btn = Array.from(container!.querySelectorAll('button')).find(b => b.textContent === 'Trigger');
     expect(btn).toBeDefined();
     await act(async () => {
       btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -466,18 +478,16 @@ describe('Execution action-error details (mounted)', () => {
                 hint: 'PUT /api/tenants/{tenant_id}/quota ceiling=1',
               },
             },
-            429,
+            429
           );
         }
         return json({ message: 'no stub' }, 500);
-      }),
+      })
     );
 
     await clickTrigger();
 
-    expect(container!.querySelector('[role="alert"]')?.textContent).toContain(
-      'reservation would exceed tenant quota',
-    );
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('reservation would exceed tenant quota');
     const details = container!.querySelector('[data-testid="action-error-details"]');
     expect(details?.querySelector('code')?.textContent).toBe('PUT /api/tenants/{tenant_id}/quota ceiling=1');
     expect(details?.textContent).toContain('used 0 / ceiling 1 — requested 2');
@@ -497,18 +507,18 @@ describe('Execution action-error details (mounted)', () => {
                 hint: 'purge the execution and redeploy before triggering',
               },
             },
-            409,
+            409
           );
         }
         return json({ message: 'no stub' }, 500);
-      }),
+      })
     );
 
     await clickTrigger();
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('engines already finished');
     expect(container!.querySelector('[data-testid="action-error-details"] code')?.textContent).toBe(
-      'purge the execution and redeploy before triggering',
+      'purge the execution and redeploy before triggering'
     );
   });
 
@@ -521,7 +531,7 @@ describe('Execution action-error details (mounted)', () => {
           return json({ message: 'execution not found' }, 404);
         }
         return json({ message: 'no stub' }, 500);
-      }),
+      })
     );
 
     await clickTrigger();
@@ -536,8 +546,7 @@ describe('Execution action-error details (mounted)', () => {
 // Nothing is sent while armed; Escape, blur, six seconds, or any other
 // lifecycle action disarms. A disabled Purge can never arm.
 describe('Execution purge confirm (mounted)', () => {
-  const purgeBtn = () =>
-    container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
+  const purgeBtn = () => container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
 
   const label = () => purgeBtn().textContent ?? '';
 
@@ -565,11 +574,11 @@ describe('Execution purge confirm (mounted)', () => {
           return json(statusFixture('idle'));
         }
         return json({ message: 'no stub' }, 500);
-      }),
+      })
     );
   };
 
-  const purgeCalls = (calls: string[]) => calls.filter((u) => u.endsWith('/api/executions/5/purge'));
+  const purgeCalls = (calls: string[]) => calls.filter(u => u.endsWith('/api/executions/5/purge'));
 
   it('first click arms without sending anything; second click fires the purge', async () => {
     const calls: string[] = [];
@@ -645,7 +654,7 @@ describe('Execution purge confirm (mounted)', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         calls.push(String(input));
         return json({ message: 'no stub' }, 500);
-      }),
+      })
     );
 
     expect(purgeBtn().disabled).toBe(true);
@@ -655,7 +664,7 @@ describe('Execution purge confirm (mounted)', () => {
       purgeBtn().click();
     });
     expect(label()).toBe('Purge');
-    expect(calls.some((u) => u.endsWith('/api/executions/5/purge'))).toBe(false);
+    expect(calls.some(u => u.endsWith('/api/executions/5/purge'))).toBe(false);
   });
 });
 
@@ -704,22 +713,27 @@ describe('Execution heading outline (phase 52)', () => {
   it('renders the four sections as h2 and no h3 under the h1', async () => {
     // A running execution with one deployed scenario: every section card
     // renders (the scenario cards need status rows to exist).
-    await renderExecution('running', [], { execution_id: 5, grouped_by: 'label', groups: [] }, [], {}, {
-      status: [
-        { scenario_id: 1, engines: 1, engines_deployed: 1, engines_reachable: true, in_progress: false },
-      ],
-    });
+    await renderExecution(
+      'running',
+      [],
+      { execution_id: 5, grouped_by: 'label', groups: [] },
+      [],
+      {},
+      {
+        status: [{ scenario_id: 1, engines: 1, engines_deployed: 1, engines_reachable: true, in_progress: false }],
+      }
+    );
 
     const headings = Array.from(container!.querySelectorAll('h1, h2, h3'));
-    const h1s = headings.filter((h) => h.tagName === 'H1');
-    const h2s = headings.filter((h) => h.tagName === 'H2');
-    const h3s = headings.filter((h) => h.tagName === 'H3');
+    const h1s = headings.filter(h => h.tagName === 'H1');
+    const h2s = headings.filter(h => h.tagName === 'H2');
+    const h3s = headings.filter(h => h.tagName === 'H3');
 
     // Exactly one h1: the page title.
-    expect(h1s.map((h) => h.textContent)).toEqual(['Execution #5']);
+    expect(h1s.map(h => h.textContent)).toEqual(['Execution #5']);
     // Every section is an h2: at least the five named ones.
     expect(h2s.length).toBeGreaterThanOrEqual(5);
-    const h2Text = h2s.map((h) => h.textContent?.trim());
+    const h2Text = h2s.map(h => h.textContent?.trim());
     for (const label of ['Past runs', 'Failure history across runs', 'Scenario editor', 'Engine logs', 'Live']) {
       expect(h2Text, `missing h2 section "${label}"`).toContain(label);
     }
@@ -738,8 +752,8 @@ describe('Execution breadcrumbs (phase 52)', () => {
     const nav = container!.querySelector('nav[aria-label="breadcrumb"]');
     expect(nav).not.toBeNull();
     const items = Array.from(nav!.querySelectorAll('li'));
-    expect(items.map((li) => li.textContent?.trim())).toEqual(['Scenarios', '#5']);
-    const links = Array.from(nav!.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    expect(items.map(li => li.textContent?.trim())).toEqual(['Scenarios', '#5']);
+    const links = Array.from(nav!.querySelectorAll('a')).map(a => a.getAttribute('href'));
     expect(links).toEqual(['/scenarios']);
     const current = nav!.querySelector('[aria-current="page"]');
     expect(current?.textContent).toBe('#5');
@@ -760,11 +774,16 @@ describe('Execution capacity planner (phase 54)', () => {
 
   it('mounts collapsed for a bound normal execution', async () => {
     const calls: string[] = [];
-    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls, {}, {
-      status: [
-        { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
-      ],
-    });
+    await renderExecution(
+      'idle',
+      [],
+      { execution_id: 5, grouped_by: 'label', groups: [] },
+      calls,
+      {},
+      {
+        status: [{ scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false }],
+      }
+    );
 
     const region = container!.querySelector('[aria-label="Capacity planner"]');
     expect(region).not.toBeNull();
@@ -777,11 +796,16 @@ describe('Execution capacity planner (phase 54)', () => {
   });
 
   it('stays off calibrate_engine executions, which keep the calibration panel', async () => {
-    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, [], { kind: 'calibrate_engine' }, {
-      status: [
-        { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
-      ],
-    });
+    await renderExecution(
+      'idle',
+      [],
+      { execution_id: 5, grouped_by: 'label', groups: [] },
+      [],
+      { kind: 'calibrate_engine' },
+      {
+        status: [{ scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false }],
+      }
+    );
 
     expect(container!.querySelector('[aria-label="Capacity planner"]')).toBeNull();
     expect(container!.querySelector('[data-testid="capacity-panel"]')).not.toBeNull();
@@ -844,26 +868,45 @@ describe('Execution fan-out section (phase 88, mounted)', () => {
         const url = String(input);
         fetched.push(url);
         if (url.endsWith('/api/me')) {
-          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+          return json({
+            subject: 'demo:a',
+            name: 'a',
+            email: '',
+            global_roles: [],
+            tenants: {},
+            permissions: { '*': ['*'] },
+            demo: true,
+          });
         }
         if (url.endsWith('/api/executions/5')) {
           return json({
-            id: 5, name: 'everywhere', project_id: 1, csv_split: false,
-            created_time: '2026-09-05T10:00:00Z', load_profile: [], data: [],
-            engine: 'jmeter', kind: 'normal', fanout_targets: ['eu-1', 'us-1'],
+            id: 5,
+            name: 'everywhere',
+            project_id: 1,
+            csv_split: false,
+            created_time: '2026-09-05T10:00:00Z',
+            load_profile: [],
+            data: [],
+            engine: 'jmeter',
+            kind: 'normal',
+            fanout_targets: ['eu-1', 'us-1'],
           });
         }
         // Per-cluster scoping: eu-1 fully up, us-1 still one pod short and
         // unreachable -- the lagging cluster must stay visible as its own.
         if (url.endsWith('/api/executions/5/status?cluster=eu-1')) {
-          return json({ phase: 'deployed', pool_size: 2, status: [
-            { scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false },
-          ] });
+          return json({
+            phase: 'deployed',
+            pool_size: 2,
+            status: [{ scenario_id: 1, engines: 2, engines_deployed: 2, engines_reachable: true, in_progress: false }],
+          });
         }
         if (url.endsWith('/api/executions/5/status?cluster=us-1')) {
-          return json({ phase: 'deployed', pool_size: 1, status: [
-            { scenario_id: 1, engines: 2, engines_deployed: 1, engines_reachable: false, in_progress: false },
-          ] });
+          return json({
+            phase: 'deployed',
+            pool_size: 1,
+            status: [{ scenario_id: 1, engines: 2, engines_deployed: 1, engines_reachable: false, in_progress: false }],
+          });
         }
         if (url.endsWith('/api/executions/5/status')) {
           return json(statusFixture('deployed'));
@@ -893,7 +936,7 @@ describe('Execution fan-out section (phase 88, mounted)', () => {
               <Route path="/executions/:id" element={<Execution />} />
             </Routes>
           </SessionProvider>
-        </MemoryRouter>,
+        </MemoryRouter>
       );
     });
     await act(async () => {});
@@ -921,8 +964,14 @@ describe('Execution fan-out section (phase 88, mounted)', () => {
 
   it('renders the latest run per-cluster results when the report carries them, and nothing when it does not', async () => {
     const report = {
-      run_id: 7, started_at: '2026-09-05T10:00:00Z', ended_at: '2026-09-05T10:05:00Z',
-      outcome: 'passed', samples: 150, failed: 30, avg_latency: 0.1, peak_rps: 100,
+      run_id: 7,
+      started_at: '2026-09-05T10:00:00Z',
+      ended_at: '2026-09-05T10:05:00Z',
+      outcome: 'passed',
+      samples: 150,
+      failed: 30,
+      avg_latency: 0.1,
+      peak_rps: 100,
       cluster_results: [
         { cluster: 'eu-1', outcome: 'passed', samples: 100, failed: 10 },
         { cluster: 'us-1', outcome: 'passed', samples: 50, failed: 20 },
@@ -931,7 +980,7 @@ describe('Execution fan-out section (phase 88, mounted)', () => {
     await renderFanOutExecution([report]);
     const table = container!.querySelector('[data-testid="fanout-latest-cluster-results"]')!;
     expect(table).not.toBeNull();
-    const rows = Array.from(table.querySelectorAll('tbody tr')).map((tr) => tr.textContent);
+    const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr => tr.textContent);
     expect(rows[0]).toContain('eu-1');
     expect(rows[0]).toContain('100');
     expect(rows[1]).toContain('us-1');
@@ -947,5 +996,64 @@ describe('Execution fan-out section (phase 88, mounted)', () => {
     await renderExecution('deployed');
     expect(container!.querySelector('[data-testid="fanout-section"]')).toBeNull();
     expect(container!.querySelector('[data-testid="fanout-badge"]')).toBeNull();
+  });
+});
+
+// Phase 90: the execution page's mode surfaces -- the header chip stating
+// what was asked for, and the arrival banner a refused Simple submit
+// navigated here with (this page owns the Calibrate remediation).
+describe('Execution page mode surfaces (phase 90)', () => {
+  const modeEntry = {
+    name: 'checkout',
+    scenario_id: 1,
+    concurrency: 375,
+    rampup: 0,
+    engines: 4,
+    throughput: 500,
+    duration: 600,
+    mode: 'burst',
+  };
+
+  it('shows the mode chip on the header for a mode-derived execution', async () => {
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, [], {
+      load_profile: [modeEntry],
+    });
+    const chip = container!.querySelector('[data-testid="mode-chip"]');
+    expect(chip?.textContent).toBe('burst · 500 rps · 10m');
+  });
+
+  it('shows no chip for an advanced execution', async () => {
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] });
+    expect(container!.querySelector('[data-testid="mode-chip"]')).toBeNull();
+  });
+
+  it('renders the carried-over config refusal once, with its structured details', async () => {
+    await renderExecution(
+      'idle',
+      [],
+      { execution_id: 5, grouped_by: 'label', groups: [] },
+      [],
+      {},
+      {},
+      {
+        configError:
+          'Step "save load config" failed: executionapp: mode config refused: capacity profile status "no_profile"',
+        configErrorDetail: {
+          fanout_status: 'no_profile',
+          hint: 'calibrate this scenario first (Execution page → Calibrate scenario), or configure it in Advanced mode',
+        },
+      }
+    );
+    const banner = container!.querySelector('[data-testid="config-error-banner"]');
+    expect(banner?.querySelector('[role="alert"]')?.textContent).toContain('no_profile');
+    expect(banner?.querySelector('[data-testid="action-error-details"]')?.textContent).toContain(
+      'calibrate this scenario first'
+    );
+    expect(banner?.textContent).toContain('The test was created, but its load configuration was not saved.');
+  });
+
+  it('renders no banner for an arrival without config state', async () => {
+    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] });
+    expect(container!.querySelector('[data-testid="config-error-banner"]')).toBeNull();
   });
 });

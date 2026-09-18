@@ -73,6 +73,9 @@ export interface LoadProfileEntry {
   rampup: number;
   engines: number;
   throughput?: number;
+  duration: number;
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"); absent = advanced. */
+  mode?: string;
 }
 
 /** A data file the execution references, as a served URL (executionapp.FileRef). */

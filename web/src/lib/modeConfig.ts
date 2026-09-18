@@ -1,0 +1,184 @@
+// Phase 90's simple-mode pure model: the ModeForm's value shape, its
+// validation, the wire test it produces, and the display strings the
+// Execution page's mode summary renders. No client-side derivation of
+// concurrency/engines/ramp-up ever happens here -- the server is the only
+// resolver; these helpers only shape what the operator stated and explain
+// what came back.
+
+/** The three simplified modes, mirroring internal/domain/loadmode. */
+export type LoadMode = 'burst' | 'ramp' | 'soak';
+
+export const LOAD_MODES: LoadMode[] = ['burst', 'ramp', 'soak'];
+
+/** Each mode's one-line statement of what it is for (select helper copy). */
+export const MODE_PURPOSE: Record<LoadMode, string> = {
+  burst: 'full rate from the first second — cold start is the subject',
+  ramp: 'rise over a fifth of the window (60–600s) and observe',
+  soak: 'a steady rate for a long window — leak and degradation hunting',
+};
+
+/** Duration units the form offers; seconds is the wire's currency. */
+export type DurationUnit = 'm' | 'h';
+
+/** The Simple form's whole value. */
+export interface ModeFormValue {
+  mode: LoadMode;
+  /** Target req/s. Must be > 0: a mode entry is rate-defined. */
+  qps: number;
+  /** The number in the duration box, in unit. */
+  duration: number;
+  unit: DurationUnit;
+}
+
+export const initialModeForm: ModeFormValue = {
+  mode: 'burst',
+  qps: 100,
+  duration: 10,
+  unit: 'm',
+};
+
+/** The form's duration in seconds (the wire's unit). */
+export function durationSeconds(v: ModeFormValue): number {
+  return v.unit === 'h' ? v.duration * 3600 : v.duration * 60;
+}
+
+/**
+ * Client-side validation mirroring the server's input rules (qps > 0,
+ * duration > 0); the resolved fields' rules (engines, concurrency) are the
+ * server's to enforce, never guessed here. Collects all offenders for
+ * inline display.
+ */
+export interface ModeFormErrors {
+  qps?: string;
+  duration?: string;
+}
+
+export function validateModeForm(v: ModeFormValue): ModeFormErrors {
+  const e: ModeFormErrors = {};
+  if (!(v.qps > 0)) {
+    e.qps = 'target req/s must be positive';
+  }
+  if (!(v.duration > 0)) {
+    e.duration = 'duration must be positive';
+  }
+  return e;
+}
+
+export function modeFormValid(v: ModeFormValue): boolean {
+  return Object.keys(validateModeForm(v)).length === 0;
+}
+
+/**
+ * Soak's soft guidance (non-blocking): the mode means hours-long steady
+ * state; under half an hour is probably not what a soak is for. Returns
+ * null for other modes or long-enough soaks.
+ */
+export function soakTooShortWarning(v: ModeFormValue): string | null {
+  if (v.mode !== 'soak') {
+    return null;
+  }
+  if (durationSeconds(v) < 30 * 60) {
+    return 'soaks usually run an hour or more — under 30 minutes reads as a short steady test, not a soak';
+  }
+  return null;
+}
+
+/**
+ * The tests[] entry a Simple submit PUTs: mode + the target rate + the
+ * duration, nothing else -- concurrency/engines/ramp-up are the server's
+ * to derive. The shape is StageTestJSON so the existing config plumbing
+ * carries it; mode sits last, matching Go's marshal order.
+ */
+export function buildModeTest(
+  name: string,
+  scenarioId: number,
+  v: ModeFormValue
+): {
+  name: string;
+  scenario_id: number;
+  concurrency: number;
+  rampup: number;
+  engines: number;
+  throughput: number;
+  duration: number;
+  mode: LoadMode;
+} {
+  return {
+    name,
+    scenario_id: scenarioId,
+    concurrency: 0,
+    rampup: 0,
+    engines: 0,
+    throughput: v.qps,
+    duration: durationSeconds(v),
+    mode: v.mode,
+  };
+}
+
+/** Whole-second compact duration: 600 -> "10m", 5400 -> "1h 30m", 45 -> "45s". */
+export function formatModeDuration(seconds: number): string {
+  if (seconds <= 0) {
+    return `${seconds}s`;
+  }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  if (h === 0 && seconds % 60 !== 0 && seconds < 60) {
+    return `${seconds}s`;
+  }
+  if (h === 0) {
+    return `${m}m`;
+  }
+  if (m === 0) {
+    return `${h}h`;
+  }
+  return `${h}h ${m}m`;
+}
+
+/** The entry fields the chip and derivation note read -- structural so the
+ * wire types (StageTestJSON, ConfigTest, LoadProfileEntry) all satisfy it. */
+export interface ModeEntryView {
+  mode?: string;
+  throughput?: number;
+  duration: number;
+  concurrency: number;
+  engines: number;
+  rampup: number;
+}
+
+/** The mode chip's compact statement: "burst · 500 rps · 10m". */
+export function modeChipLabel(t: ModeEntryView): string {
+  const mode = t.mode ?? '';
+  const rate = t.throughput != null ? `${t.throughput} rps` : 'unlimited';
+  return `${mode} · ${rate} · ${formatModeDuration(t.duration)}`;
+}
+
+/**
+ * The derivation note under a mode entry's resolved numbers (Q8): one line
+ * per derived field, phrased from what the page can actually know. The
+ * implied p95 is concurrency / (3 x rate) -- the Little's-Law inverse --
+ * rendered approximate because the engine-count floor can raise
+ * concurrency above the law's own count. perPodQps, when the capacity
+ * profile fetch succeeded, names the per-pod rate the engines came from.
+ */
+export function modeDerivationLines(t: ModeEntryView, perPodQps?: number): string[] {
+  const lines: string[] = [];
+  const qps = t.throughput ?? 0;
+  if (qps > 0) {
+    const p95ms = Math.round((t.concurrency / (3 * qps)) * 1000);
+    lines.push(`concurrency ${t.concurrency} ← Little's Law (${qps} rps × p95 ≈ ${p95ms}ms × 3.0 headroom)`);
+  } else {
+    lines.push(`concurrency ${t.concurrency} ← resolved by the server`);
+  }
+  if (perPodQps != null && perPodQps > 0) {
+    lines.push(`engines ${t.engines} ← capacity profile ${perPodQps} rps/pod at ${qps} rps`);
+  } else {
+    lines.push(`engines ${t.engines} ← capacity profile fan-out`);
+  }
+  const why: Record<LoadMode, string> = {
+    burst: 'cold start is the subject',
+    ramp: `ramp policy: duration/5, clamped to 60–600s (${t.duration}s → ${t.rampup}s)`,
+    soak: 'soak policy: fixed 60s warmup before the hold',
+  };
+  lines.push(`ramp-up ${t.rampup}s ← ${why[(t.mode ?? '') as LoadMode] ?? 'mode policy'}`);
+  return lines;
+}

@@ -15,6 +15,8 @@ export interface ConfigTest {
   /** Target QPS; undefined = unlimited (omitted on the wire). */
   throughput?: number;
   csv_split?: boolean;
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"); undefined = advanced. */
+  mode?: string;
 }
 
 /** The bare loadprofile.Profile the JSON PUT decodes (GET wraps it in
@@ -33,17 +35,11 @@ export interface ExecutionConfig {
 
 /** GET /api/executions/{id}/config — unwraps the multi-test envelope. */
 export async function getExecutionConfig(executionId: number): Promise<ExecutionConfig> {
-  const wrapped = await apiClient.get<{ 'multi-test': ExecutionConfig }>(
-    `/executions/${executionId}/config`,
-  );
+  const wrapped = await apiClient.get<{ 'multi-test': ExecutionConfig }>(`/executions/${executionId}/config`);
   return wrapped['multi-test'];
 }
 
 /** PUT /api/executions/{id}/config — bare profile, not the wrapper. */
 export async function putExecutionConfig(executionId: number, cfg: ExecutionConfig): Promise<void> {
-  await apiClient.putRaw(
-    `/executions/${executionId}/config`,
-    'application/json',
-    JSON.stringify(cfg),
-  );
+  await apiClient.putRaw(`/executions/${executionId}/config`, 'application/json', JSON.stringify(cfg));
 }

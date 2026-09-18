@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -16,6 +16,8 @@ import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { deployExecution, purgeExecution, stopExecution, triggerExecution } from '../api/lifecycle';
 import { useSession } from '../hooks/useSession';
 import ExecutionConfigCard from '../components/ExecutionConfigCard';
+import ModeConfigCard from '../components/ModeConfigCard';
+import { modeChipLabel } from '../lib/modeConfig';
 import { useLiveSeries } from '../hooks/useLiveSeries';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import ClusterBadge from '../components/ui/ClusterBadge';
@@ -65,7 +67,10 @@ function StatCard({ label, value, caption }: { label: string; value: string; cap
  * when deployed (and engines reachable), stop while running, purge whenever
  * something is deployed or running. Disabled buttons say WHY.
  */
-export function phaseControls(phase: Phase | null, enginesReachable: boolean): Array<{ action: 'deploy' | 'trigger' | 'stop' | 'purge'; enabled: boolean }> {
+export function phaseControls(
+  phase: Phase | null,
+  enginesReachable: boolean
+): Array<{ action: 'deploy' | 'trigger' | 'stop' | 'purge'; enabled: boolean }> {
   switch (phase) {
     case 'idle':
       return [
@@ -135,7 +140,7 @@ function FanOutClusterCard({ executionId, cluster }: { executionId: number; clus
   useEffect(() => {
     let alive = true;
     getExecutionStatus(executionId, cluster)
-      .then((s) => {
+      .then(s => {
         if (alive) setClusterStatus(s);
       })
       .catch((err: unknown) => {
@@ -153,14 +158,14 @@ function FanOutClusterCard({ executionId, cluster }: { executionId: number; clus
       primary: true,
       thClassName: 'px-3 py-2 font-medium',
       tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
-      render: (sc) => `Scenario ${sc.scenario_id}`,
+      render: sc => `Scenario ${sc.scenario_id}`,
     },
     {
       key: 'engines',
       header: 'Engines',
       thClassName: 'px-3 py-2 font-medium',
       tdClassName: 'px-3 py-2 whitespace-nowrap',
-      render: (sc) =>
+      render: sc =>
         `${sc.engines_deployed}/${sc.engines} deployed${engineShortfall(sc) > 0 ? ` · ${engineShortfall(sc)} pending` : ''}`,
     },
     {
@@ -168,7 +173,7 @@ function FanOutClusterCard({ executionId, cluster }: { executionId: number; clus
       header: 'Reachable',
       thClassName: 'px-3 py-2 font-medium',
       tdClassName: 'px-3 py-2 whitespace-nowrap',
-      render: (sc) =>
+      render: sc =>
         sc.engines_reachable ? (
           <span className="text-emerald-600 dark:text-emerald-400">yes</span>
         ) : (
@@ -199,7 +204,7 @@ function FanOutClusterCard({ executionId, cluster }: { executionId: number; clus
             tableTestId={`fanout-cluster-${cluster}-scenarios`}
             columns={columns}
             rows={clusterStatus.status}
-            rowKey={(sc) => String(sc.scenario_id)}
+            rowKey={sc => String(sc.scenario_id)}
             headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
             tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
             emptyMessage="No scenarios deployed on this cluster yet."
@@ -221,14 +226,14 @@ const clusterResultColumns: CardTableColumn<ClusterResult>[] = [
     primary: true,
     thClassName: 'px-3 py-2 font-medium',
     tdClassName: 'px-3 py-2 font-medium whitespace-nowrap',
-    render: (r) => <ClusterBadge cluster={r.cluster || ''} />,
+    render: r => <ClusterBadge cluster={r.cluster || ''} />,
   },
   {
     key: 'outcome',
     header: 'Outcome',
     thClassName: 'px-3 py-2 font-medium',
     tdClassName: 'px-3 py-2',
-    render: (r) => (
+    render: r => (
       <span
         className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeBadge((r.outcome ?? 'error') as Report['outcome'])}`}
       >
@@ -241,20 +246,28 @@ const clusterResultColumns: CardTableColumn<ClusterResult>[] = [
     header: 'Samples',
     thClassName: 'px-3 py-2 font-medium',
     tdClassName: 'px-3 py-2 whitespace-nowrap',
-    render: (r) => (r.samples ?? 0).toLocaleString(),
+    render: r => (r.samples ?? 0).toLocaleString(),
   },
   {
     key: 'failed',
     header: 'Failed',
     thClassName: 'px-3 py-2 font-medium',
     tdClassName: 'px-3 py-2 whitespace-nowrap',
-    render: (r) => (r.failed ?? 0).toLocaleString(),
+    render: r => (r.failed ?? 0).toLocaleString(),
   },
 ];
 
 /** Phase 88: a fan-out execution's own section -- one card per target
  * cluster plus the latest run's per-cluster results. */
-function FanOutSection({ executionId, targets, latest }: { executionId: number; targets: string[]; latest: Report | null | undefined }) {
+function FanOutSection({
+  executionId,
+  targets,
+  latest,
+}: {
+  executionId: number;
+  targets: string[];
+  latest: Report | null | undefined;
+}) {
   return (
     <section aria-labelledby="fanout-heading" data-testid="fanout-section">
       <h2 id="fanout-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
@@ -264,7 +277,7 @@ function FanOutSection({ executionId, targets, latest }: { executionId: number; 
         The full shard set runs on every target cluster — {targets.length} × the configured engines.
       </p>
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {targets.map((cluster) => (
+        {targets.map(cluster => (
           <FanOutClusterCard key={cluster} executionId={executionId} cluster={cluster} />
         ))}
       </div>
@@ -278,7 +291,7 @@ function FanOutSection({ executionId, targets, latest }: { executionId: number; 
               tableTestId="fanout-latest-cluster-results"
               columns={clusterResultColumns}
               rows={latest.cluster_results}
-              rowKey={(r) => r.cluster ?? ''}
+              rowKey={r => r.cluster ?? ''}
               headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
               tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
             />
@@ -367,7 +380,7 @@ function TrendStrip({ executionId }: { executionId: number }) {
     let cancelled = false;
     setPoints(null);
     getExecutionTrend(executionId, 10)
-      .then((t) => {
+      .then(t => {
         // regressed is omitempty on the wire: absent simply means false.
         if (!cancelled && t.points.length > 0) {
           setPoints(t.points);
@@ -387,7 +400,7 @@ function TrendStrip({ executionId }: { executionId: number }) {
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="trend-strip">
       <span className="text-caption font-medium text-slate-500 dark:text-slate-400">Recent runs</span>
-      {points.map((p) => (
+      {points.map(p => (
         <Link
           key={p.run_id}
           to={`/reports/${p.run_id}`}
@@ -442,7 +455,7 @@ function FailureHistoryCard({ executionId }: { executionId: number }) {
     setHistory(null);
     setError(null);
     getErrorSignatures(executionId, by)
-      .then((h) => {
+      .then(h => {
         if (!cancelled) setHistory(h);
       })
       .catch((err: unknown) => {
@@ -461,7 +474,7 @@ function FailureHistoryCard({ executionId }: { executionId: number }) {
 
   const groups = history ? sortSignatureGroups(history.groups) : [];
   const toggle = (key: string) => {
-    setExpanded((prev) => {
+    setExpanded(prev => {
       const next = new Set(prev);
       if (next.has(key)) {
         next.delete(key);
@@ -519,13 +532,19 @@ function FailureHistoryCard({ executionId }: { executionId: number }) {
           <table className="w-full text-left text-body-sm">
             <thead>
               <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                <th scope="col" className="px-4 py-2 font-medium">Key</th>
-                <th scope="col" className="px-3 py-2 font-medium">Total failures</th>
-                <th scope="col" className="px-4 py-2 font-medium">Runs affected</th>
+                <th scope="col" className="px-4 py-2 font-medium">
+                  Key
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Total failures
+                </th>
+                <th scope="col" className="px-4 py-2 font-medium">
+                  Runs affected
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {groups.map((g) => (
+              {groups.map(g => (
                 <Fragment key={g.key}>
                   <tr>
                     <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{g.key}</td>
@@ -537,7 +556,8 @@ function FailureHistoryCard({ executionId }: { executionId: number }) {
                         onClick={() => toggle(g.key)}
                         className="rounded text-caption font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
                       >
-                        {expanded.has(g.key) ? 'Hide' : 'Show'} {g.rows.length === 1 ? 'signature' : 'signatures'} ({g.rows.length})
+                        {expanded.has(g.key) ? 'Hide' : 'Show'} {g.rows.length === 1 ? 'signature' : 'signatures'} (
+                        {g.rows.length})
                       </button>
                     </td>
                   </tr>
@@ -580,15 +600,23 @@ function pctPill(selected: boolean): string {
  * not a Unix timestamp and the live view charts run-relative time. The
  * wire's latencies are seconds; the chart reads ms, like Reports.
  */
-function LiveCharts({ series, pct, onPct }: { series: LiveSeriesPoint[]; pct: LivePercentile; onPct: (p: LivePercentile) => void }) {
+function LiveCharts({
+  series,
+  pct,
+  onPct,
+}: {
+  series: LiveSeriesPoint[];
+  pct: LivePercentile;
+  onPct: (p: LivePercentile) => void;
+}) {
   return (
     <div className="space-y-6">
       <div data-testid="live-chart-vus-rps">
         <p className="text-caption mb-2 font-medium text-slate-500 dark:text-slate-400">Concurrency and throughput</p>
         <TimeSeriesChart
           series={[
-            { name: 'VUs', color: 'text-sky-500', points: series.map((p) => ({ x: p.t, y: p.vus })) },
-            { name: 'RPS', color: 'text-amber-500', points: series.map((p) => ({ x: p.t, y: p.rps })) },
+            { name: 'VUs', color: 'text-sky-500', points: series.map(p => ({ x: p.t, y: p.vus })) },
+            { name: 'RPS', color: 'text-amber-500', points: series.map(p => ({ x: p.t, y: p.rps })) },
           ]}
         />
       </div>
@@ -596,7 +624,7 @@ function LiveCharts({ series, pct, onPct }: { series: LiveSeriesPoint[]; pct: Li
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <p className="text-caption font-medium text-slate-500 dark:text-slate-400">Response time</p>
           <div className="flex gap-1" role="group" aria-label="Latency percentile">
-            {LIVE_PERCENTILES.map((p) => (
+            {LIVE_PERCENTILES.map(p => (
               <button
                 key={p}
                 type="button"
@@ -613,7 +641,11 @@ function LiveCharts({ series, pct, onPct }: { series: LiveSeriesPoint[]; pct: Li
         <TimeSeriesChart
           yLabel="ms"
           series={[
-            { name: `p${pct}`, color: 'text-emerald-500', points: series.map((p) => ({ x: p.t, y: p[latencyField[pct]] * 1000 })) },
+            {
+              name: `p${pct}`,
+              color: 'text-emerald-500',
+              points: series.map(p => ({ x: p.t, y: p[latencyField[pct]] * 1000 })),
+            },
           ]}
         />
       </div>
@@ -629,8 +661,27 @@ export default function Execution() {
   const { id } = useParams<{ id: string }>();
   const { can } = useSession();
   const navigate = useNavigate();
+  const location = useLocation();
   const executionId = Number(id);
   const validId = Number.isInteger(executionId) && executionId > 0;
+  // Phase 90: a Simple submit whose config save was refused (typically the
+  // 409 "calibrate first") still navigated here -- the execution exists and
+  // this page owns the Calibrate action. The arrival state is captured
+  // once, then cleared from history so a refresh (or a shared link) never
+  // re-renders the banner; the captured copy keeps it visible for this
+  // visit.
+  const [configArrival] = useState(
+    () =>
+      (location.state ?? null) as { configError?: string; configErrorDetail?: Record<string, unknown> | null } | null
+  );
+  const configError = typeof configArrival?.configError === 'string' ? configArrival.configError : null;
+  const configErrorDetail = configArrival?.configErrorDetail ?? null;
+  useEffect(() => {
+    if (location.state) {
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [info, setInfo] = useState<ExecutionInfo | null>(null);
   const [status, setStatus] = useState<ExecutionStatus | null>(null);
@@ -675,7 +726,7 @@ export default function Execution() {
     // The execution's setup (engine kind, cluster) is immutable -- fetched
     // once. The lifecycle snapshot changes as engines deploy, so it polls.
     getExecutionInfo(executionId)
-      .then((i) => {
+      .then(i => {
         if (!cancelled) setInfo(i);
       })
       .catch((err: unknown) => {
@@ -683,7 +734,7 @@ export default function Execution() {
       });
     const loadStatus = () => {
       getExecutionStatus(executionId)
-        .then((s) => {
+        .then(s => {
           if (!cancelled) setStatus(s);
         })
         .catch((err: unknown) => {
@@ -695,7 +746,7 @@ export default function Execution() {
     // Past runs: fetched once on entry (the list is bounded by the
     // server's default limit; a finished run's report is immutable).
     listExecutionReports(executionId)
-      .then((rows) => {
+      .then(rows => {
         if (!cancelled) setReports(rows);
       })
       .catch((err: unknown) => {
@@ -717,7 +768,7 @@ export default function Execution() {
     let alive = true;
     const load = () => {
       getScenarioPodLog(executionId, logsScenario)
-        .then((text) => {
+        .then(text => {
           if (alive) setLogText(text);
         })
         .catch((err: unknown) => {
@@ -736,14 +787,16 @@ export default function Execution() {
     setBusyAction(action);
     setActionError(null);
     setActionDetails(null);
-    const fn = { deploy: deployExecution, trigger: triggerExecution, stop: stopExecution, purge: purgeExecution }[action];
+    const fn = { deploy: deployExecution, trigger: triggerExecution, stop: stopExecution, purge: purgeExecution }[
+      action
+    ];
     fn(executionId)
-      .then((message) => {
+      .then(message => {
         setActionError(null);
         setActionDetails(null);
         // The mutation succeeded; refresh the snapshot immediately rather
         // than waiting for the next poll tick.
-        getExecutionStatus(executionId).then((s) => setStatus(s));
+        getExecutionStatus(executionId).then(s => setStatus(s));
         if (action === 'purge') {
           // Purged: the hub's live view resets to the idle snapshot.
           resetLive();
@@ -770,7 +823,7 @@ export default function Execution() {
     );
   }
 
-  const enginesReachable = status?.status.every((s) => s.engines_reachable) ?? false;
+  const enginesReachable = status?.status.every(s => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
   // Phase 39's Calibrate action needs an engine to name (the backend rejects
   // an engineless calibration) and the session's execution:create. Phase 44:
@@ -781,14 +834,16 @@ export default function Execution() {
   // A scenario's display name: the config's test name doubles as it (the
   // NewTest flow names test and scenario the same); the id is the fallback.
   const scenarioName = (scenarioId: number): string =>
-    info?.load_profile.find((t) => t.scenario_id === scenarioId)?.name ?? `scenario ${scenarioId}`;
+    info?.load_profile.find(t => t.scenario_id === scenarioId)?.name ?? `scenario ${scenarioId}`;
   // The capacity key every calibration surface on this page assumes: the
   // execution's engine at the house-default pod size (the same defaults
   // CalibrateScenarioModal pre-fills, phase 39). Absent while info loads
   // or on engine-less executions.
-  const capacityKey = info?.engine
-    ? { engine: info.engine, cpu: '500m', memory: '512Mi' }
-    : undefined;
+  const capacityKey = info?.engine ? { engine: info.engine, cpu: '500m', memory: '512Mi' } : undefined;
+  // Phase 90: the execution's mode provenance, if any -- the header chip
+  // states what was asked for ("burst · 500 rps · 10m"); the resolved
+  // numbers live in the config card below.
+  const modeEntry = info?.load_profile.find(t => t.mode);
 
   return (
     <div className="space-y-6">
@@ -796,12 +851,7 @@ export default function Execution() {
           rather than guessed from the back button. Phase 67b: the list the
           trail roots at is /scenarios (the flat /executions list redirects
           there), so the way back never bounces through a redirect. */}
-      <Breadcrumbs
-        items={[
-          { label: 'Scenarios', href: '/scenarios' },
-          { label: `#${executionId}` },
-        ]}
-      />
+      <Breadcrumbs items={[{ label: 'Scenarios', href: '/scenarios' }, { label: `#${executionId}` }]} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-display-sm text-slate-900 dark:text-white">Execution #{executionId}</h1>
@@ -819,6 +869,22 @@ export default function Execution() {
           {error}
         </p>
       )}
+      {/* Phase 90: the carried-over Simple config refusal (see the state
+          handling at the top). Rendered once on arrival; the Calibrate
+          action below is the remediation the 409's hint names. */}
+      {configError && (
+        <Card data-testid="config-error-banner">
+          <CardContent>
+            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+              {configError}
+            </p>
+            <ActionErrorDetails details={configErrorDetail} />
+            <p className="text-caption mt-2 text-slate-500 dark:text-slate-400">
+              The test was created, but its load configuration was not saved.
+            </p>
+          </CardContent>
+        </Card>
+      )}
       {status && (
         <>
           <Card>
@@ -826,6 +892,15 @@ export default function Execution() {
               <div className="flex flex-wrap items-center gap-2">
                 <CardTitle>Execution #{executionId}</CardTitle>
                 {info?.engine && <EngineBadge engine={info.engine} />}
+                {modeEntry && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-medium text-sky-800 dark:bg-sky-900/30 dark:text-sky-300"
+                    data-testid="mode-chip"
+                    title="simplified mode: the server resolved concurrency, engines, and ramp-up at save time"
+                  >
+                    {modeChipLabel(modeEntry)}
+                  </span>
+                )}
                 {info?.fanout_targets ? (
                   <span
                     className="inline-flex items-center rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-medium text-violet-800 dark:bg-violet-900/30 dark:text-violet-300"
@@ -846,11 +921,7 @@ export default function Execution() {
                   value={`${stats.throughput.toFixed(1)}/s`}
                   caption="samples/sec, trailing 10s"
                 />
-                <StatCard
-                  label="Error rate"
-                  value={`${(stats.errorRate * 100).toFixed(1)}%`}
-                  caption="trailing 10s"
-                />
+                <StatCard label="Error rate" value={`${(stats.errorRate * 100).toFixed(1)}%`} caption="trailing 10s" />
                 <StatCard
                   label="Latency (p50)"
                   value={stats.latencySeconds !== null ? `${(stats.latencySeconds * 1000).toFixed(0)} ms` : '—'}
@@ -892,7 +963,13 @@ export default function Execution() {
                         runAction('purge');
                       }}
                       onBlur={isPurge ? disarmPurge : undefined}
-                      onKeyDown={isPurge ? (e) => { if (e.key === 'Escape') disarmPurge(); } : undefined}
+                      onKeyDown={
+                        isPurge
+                          ? e => {
+                              if (e.key === 'Escape') disarmPurge();
+                            }
+                          : undefined
+                      }
                     >
                       {busyAction === action
                         ? 'Working…'
@@ -927,7 +1004,11 @@ export default function Execution() {
               </h2>
               <div className="mt-3">
                 {!connected && (
-                  <p className="text-body-sm text-amber-600 dark:text-amber-400" role="status" data-testid="live-disconnected">
+                  <p
+                    className="text-body-sm text-amber-600 dark:text-amber-400"
+                    role="status"
+                    data-testid="live-disconnected"
+                  >
                     Stream disconnected — reconnecting…
                   </p>
                 )}
@@ -948,7 +1029,7 @@ export default function Execution() {
               <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No scenarios deployed yet.</p>
             ) : (
               <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-                {status.status.map((sc) => (
+                {status.status.map(sc => (
                   <li
                     key={sc.scenario_id}
                     className="flex min-h-[44px] flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -1027,7 +1108,7 @@ export default function Execution() {
                     {info.calibration.criterion}
                   </code>
                 </p>
-                {calibrationSpecLines(info.calibration).map((line) => (
+                {calibrationSpecLines(info.calibration).map(line => (
                   <p key={line}>{line}</p>
                 ))}
               </CardContent>
@@ -1049,7 +1130,16 @@ export default function Execution() {
             />
           )}
           {status.phase === 'idle' && (
-            <ExecutionConfigCard executionId={executionId} canUpdate={can('execution', 'update')} />
+            <>
+              <ExecutionConfigCard executionId={executionId} canUpdate={can('execution', 'update')} />
+              {capacityKey && (
+                <ModeConfigCard
+                  executionId={executionId}
+                  canUpdate={can('execution', 'update')}
+                  capacityKey={capacityKey}
+                />
+              )}
+            </>
           )}
           <Card padding="none">
             <CardHeader>
@@ -1061,7 +1151,7 @@ export default function Execution() {
               <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No runs yet.</p>
             ) : (
               <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-                {reports.map((rep) => (
+                {reports.map(rep => (
                   <li key={rep.run_id} className="flex items-center justify-between p-4">
                     <div className="flex items-center gap-3">
                       <span
@@ -1094,9 +1184,7 @@ export default function Execution() {
             </CardHeader>
             <CardContent>
               {status.status.length === 0 ? (
-                <p className="text-body-sm text-slate-500 dark:text-slate-400">
-                  No scenarios deployed yet.
-                </p>
+                <p className="text-body-sm text-slate-500 dark:text-slate-400">No scenarios deployed yet.</p>
               ) : (
                 <TaurusEditor
                   key={status.status[0].scenario_id}
@@ -1111,13 +1199,11 @@ export default function Execution() {
               <CardTitle>Engine logs</CardTitle>
             </CardHeader>
             {status.status.length === 0 ? (
-              <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">
-                No scenarios deployed yet.
-              </p>
+              <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No scenarios deployed yet.</p>
             ) : (
               <>
                 <div className="flex flex-wrap gap-2 border-b border-slate-200 p-4 dark:border-slate-700">
-                  {status.status.map((sc) => (
+                  {status.status.map(sc => (
                     <Button
                       key={sc.scenario_id}
                       variant={logsScenario === sc.scenario_id ? 'primary' : 'outline'}
@@ -1150,7 +1236,7 @@ export default function Execution() {
           sourceExecutionId={executionId}
           engine={info.engine}
           onClose={() => setCalibrateFor(null)}
-          onCreated={(executionId) => navigate(`/executions/${executionId}`)}
+          onCreated={executionId => navigate(`/executions/${executionId}`)}
         />
       )}
     </div>

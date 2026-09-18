@@ -55,7 +55,7 @@ describe('stagesToConfig', () => {
     ];
     for (const f of forms) {
       expect(JSON.stringify(stagesToConfig([rowFromForm(f, 7)], `${f.name}-load`, 0, 0))).toBe(
-        JSON.stringify(buildConfig(f, 7)),
+        JSON.stringify(buildConfig(f, 7))
       );
     }
   });
@@ -68,10 +68,7 @@ describe('stagesToConfig', () => {
   });
 
   it('emits every row in order', () => {
-    const rows: StageRow[] = [
-      rowFromForm(form, 1),
-      { ...rowFromForm(form, 2), concurrency: 10, duration: 60 },
-    ];
+    const rows: StageRow[] = [rowFromForm(form, 1), { ...rowFromForm(form, 2), concurrency: 10, duration: 60 }];
     const cfg = stagesToConfig(rows, 'n-load', 0, 0);
     expect(cfg.tests).toHaveLength(2);
     expect(cfg.tests[1].concurrency).toBe(10);
@@ -139,7 +136,16 @@ describe('configToStages', () => {
       execution_id: 0,
       tests: [
         { name: 'a', scenario_id: 1, concurrency: 1, rampup: 0, engines: 1, duration: 1 },
-        { name: 'b', scenario_id: 2, concurrency: 1, rampup: 0, engines: 1, throughput: 0, duration: 1, csv_split: false },
+        {
+          name: 'b',
+          scenario_id: 2,
+          concurrency: 1,
+          rampup: 0,
+          engines: 1,
+          throughput: 0,
+          duration: 1,
+          csv_split: false,
+        },
       ],
     };
     const rows = configToStages(cfg);
@@ -242,5 +248,73 @@ describe('round-trip property: configToStages(stagesToConfig(rows)) === rows', (
       // "modulo omitted defaults" equivalence the contract asks for.
       expect(back).toEqual(rows);
     }
+  });
+});
+
+// Phase 90: mode provenance must survive every rows -> wire -> rows
+// round trip. Dropping it would silently launder a mode config into an
+// advanced one the moment an editor re-serialized it; writing it in the
+// wrong position would break the Go-marshal-order mirror.
+describe('mode provenance (phase 90)', () => {
+  it('round-trips mode through configToStages/stagesToConfig', () => {
+    const rows: StageRow[] = [
+      {
+        name: 'a',
+        scenarioId: 1,
+        concurrency: 375,
+        rampup: 120,
+        engines: 4,
+        throughput: 500,
+        duration: 600,
+        mode: 'ramp',
+      },
+      { name: 'b', scenarioId: 2, concurrency: 10, rampup: 0, engines: 1, duration: 60 },
+    ];
+    const back = configToStages(stagesToConfig(rows, 'p90', 7, 9));
+    expect(back[0].mode).toBe('ramp');
+    expect(back[1].mode).toBeUndefined();
+  });
+
+  it('writes mode last on the wire (Go marshal order, after csv_split)', () => {
+    const cfg = stagesToConfig(
+      [
+        {
+          name: 'a',
+          scenarioId: 1,
+          concurrency: 375,
+          rampup: 120,
+          engines: 4,
+          throughput: 500,
+          duration: 600,
+          csvSplit: true,
+          mode: 'soak',
+        },
+      ],
+      'p90',
+      7,
+      9
+    );
+    expect(Object.keys(cfg.tests[0])).toEqual([
+      'name',
+      'scenario_id',
+      'concurrency',
+      'rampup',
+      'engines',
+      'throughput',
+      'duration',
+      'csv_split',
+      'mode',
+    ]);
+    expect(JSON.parse(JSON.stringify(cfg.tests[0])).mode).toBe('soak');
+  });
+
+  it('omits the mode key entirely for advanced rows (byte-compat)', () => {
+    const cfg = stagesToConfig(
+      [{ name: 'a', scenarioId: 1, concurrency: 5, rampup: 10, engines: 2, duration: 30 }],
+      'p90',
+      7,
+      9
+    );
+    expect(JSON.stringify(cfg.tests[0])).not.toContain('mode');
   });
 });

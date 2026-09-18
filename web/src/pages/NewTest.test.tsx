@@ -35,16 +35,24 @@ let execPosts: string[] = [];
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderNewTest() {
-  container = document.createElement('div');
-  document.body.appendChild(container);
+/** The flow's default API stub (project-if-absent -> scenario ->
+ * execution -> fragment -> config), capturing the config PUT. */
+function stubFlowApi() {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url.endsWith('/api/me')) {
-        return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+        return json({
+          subject: 'demo:a',
+          name: 'a',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { '*': ['*'] },
+          demo: true,
+        });
       }
       if (method === 'GET' && url.endsWith('/api/projects')) {
         return json([]);
@@ -66,8 +74,14 @@ async function renderNewTest() {
         return json({});
       }
       return json({ message: `no stub for ${method} ${url}` }, 500);
-    }),
+    })
   );
+}
+
+async function renderNewTest() {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  stubFlowApi();
   root = createRoot(container);
   await act(async () => {
     root!.render(
@@ -77,7 +91,7 @@ async function renderNewTest() {
             <Route path="/executions/new" element={<NewTest />} />
           </Routes>
         </SessionProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
   });
   await act(async () => {});
@@ -132,13 +146,26 @@ function submittedForm(name: string, targetUrl: string): NewTestForm {
 /** Fills name + target URL and clicks Create, flushing the five-call flow. */
 async function fillAndSubmit() {
   await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
-  await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+  await type(
+    container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+    'http://checkout.svc'
+  );
   await click(container!.querySelector('[data-testid="create-test"]')!);
 }
 
+/** Phase 90: flip the Load card to Advanced (the pre-phase-90 surface the
+ * byte-compat pins exercise; Simple is the new default). */
+async function switchToAdvanced() {
+  await click(container!.querySelector('[data-testid="load-tab-advanced"]')!);
+}
+
 describe('NewTest step 5 via StageEditor (mounted flow)', () => {
-  it('shows the stage editor as the step-5 surface (seeded from the form defaults)', async () => {
+  it('defaults to the Simple mode form; Advanced still seeds the stage editor from the form defaults', async () => {
     await renderNewTest();
+    // Phase 90: Simple is the default Load surface.
+    expect(container!.querySelector('[data-testid="mode-form"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="stage-editor"]')).toBeNull();
+    await switchToAdvanced();
     expect(container!.querySelector('[data-testid="stage-editor"]')).not.toBeNull();
     const concurrency = container!.querySelector('[aria-label="stage 1 concurrency"]') as HTMLInputElement;
     expect(concurrency.value).toBe('50');
@@ -147,6 +174,7 @@ describe('NewTest step 5 via StageEditor (mounted flow)', () => {
 
   it('reaches PUT /executions/{id}/config with a payload byte-equal to buildConfig', async () => {
     await renderNewTest();
+    await switchToAdvanced();
     await fillAndSubmit();
     await act(async () => {});
 
@@ -162,8 +190,12 @@ describe('NewTest step 5 via StageEditor (mounted flow)', () => {
 
   it('submits every edited stage row, each bound to the created scenario', async () => {
     await renderNewTest();
+    await switchToAdvanced();
     await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
-    await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
     await click(container!.querySelector('[aria-label="add stage"]')!);
     await type(container!.querySelector('[aria-label="stage 2 concurrency"]') as HTMLInputElement, '25');
     await type(container!.querySelector('[aria-label="stage 2 throughput"]') as HTMLInputElement, '120');
@@ -174,7 +206,14 @@ describe('NewTest step 5 via StageEditor (mounted flow)', () => {
       tests: Array<{ name: string; scenario_id: number; concurrency: number; throughput?: number }>;
     };
     expect(sent.tests).toHaveLength(2);
-    expect(sent.tests[0]).toEqual({ name: 'checkout-smoke', scenario_id: 42, concurrency: 50, rampup: 30, engines: 2, duration: 300 });
+    expect(sent.tests[0]).toEqual({
+      name: 'checkout-smoke',
+      scenario_id: 42,
+      concurrency: 50,
+      rampup: 30,
+      engines: 2,
+      duration: 300,
+    });
     expect(sent.tests[1].concurrency).toBe(25);
     expect(sent.tests[1].throughput).toBe(120);
     expect(sent.tests[1].scenario_id).toBe(42);
@@ -184,7 +223,9 @@ describe('NewTest step 5 via StageEditor (mounted flow)', () => {
 // Phase 24: a step failing with the structured details envelope surfaces
 // the hint/numbers under the message line; a message-only failure renders
 // exactly as before. renderNewTest's stub is swapped before submit because
-// the flow fetches at click time.
+// the flow fetches at click time. Since phase 90 the config step (step 5)
+// carries its failure to the execution page instead (see the Simple-mode
+// tests below), so these pins fail an earlier step.
 describe('NewTest action-error details (mounted)', () => {
   it('surfaces the hint code line and numbers when the failing step carried details', async () => {
     await renderNewTest();
@@ -206,31 +247,30 @@ describe('NewTest action-error details (mounted)', () => {
           return json({ id: 9 });
         }
         if (method === 'PUT' && url.endsWith('/api/scenarios/42/requests')) {
-          return json({});
-        }
-        if (method === 'PUT' && url.endsWith('/api/executions/9/config')) {
           return json(
             {
               message: 'reservation would exceed tenant quota',
               details: { requested: 2, used: 0, ceiling: 1, hint: 'PUT /api/tenants/{tenant_id}/quota ceiling=1' },
             },
-            429,
+            429
           );
         }
+        if (method === 'PUT' && url.endsWith('/api/executions/9/config')) {
+          puts.push({ url, body: String(init?.body) });
+          return json({});
+        }
         return json({ message: `no stub for ${method} ${url}` }, 500);
-      }),
+      })
     );
 
     await fillAndSubmit();
     await act(async () => {});
 
-    expect(container!.querySelector('[role="alert"]')?.textContent).toContain(
-      'reservation would exceed tenant quota',
-    );
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('reservation would exceed tenant quota');
     const details = container!.querySelector('[data-testid="action-error-details"]');
     expect(details?.querySelector('code')?.textContent).toBe('PUT /api/tenants/{tenant_id}/quota ceiling=1');
     expect(details?.textContent).toContain('used 0 / ceiling 1 — requested 2');
-    // The flow stopped at the failing step: no navigation away from the form.
+    // The flow stopped at the failing step: no config PUT, no navigation.
     expect(puts).toHaveLength(0);
   });
 
@@ -251,7 +291,7 @@ describe('NewTest action-error details (mounted)', () => {
           return json({ message: 'scenario name already in use' }, 409);
         }
         return json({ message: `no stub for ${method} ${url}` }, 500);
-      }),
+      })
     );
 
     await fillAndSubmit();
@@ -262,12 +302,166 @@ describe('NewTest action-error details (mounted)', () => {
   });
 });
 
+// Phase 90: the Simple Load tab. Default on; its submit PUTs the
+// mode-shaped statement (mode + rate + duration only) and -- when the
+// config save is refused (the 409 "calibrate first" above all) -- still
+// navigates to the created execution's page, carrying the error as
+// router state for the banner there. The probe route observes both.
+describe('NewTest Simple mode (phase 90)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return (
+      <div data-testid="probe" data-path={location.pathname} data-state={JSON.stringify(location.state ?? null)} />
+    );
+  }
+
+  async function renderWithProbe() {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    stubFlowApi();
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/executions/new']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/executions/new" element={<NewTest />} />
+              <Route path="/executions/:id" element={<LocationProbe />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>
+      );
+    });
+    await act(async () => {});
+  }
+
+  it('submits the mode-shaped config from the Simple tab', async () => {
+    await renderWithProbe();
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
+    // Simple defaults: burst, 100 rps, 10 minutes.
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    await act(async () => {});
+
+    expect(puts).toHaveLength(1);
+    const sent = JSON.parse(puts[0].body) as {
+      tests: Array<{
+        mode?: string;
+        throughput: number;
+        duration: number;
+        concurrency: number;
+        engines: number;
+        rampup: number;
+      }>;
+    };
+    expect(sent.tests).toHaveLength(1);
+    expect(sent.tests[0].mode).toBe('burst');
+    expect(sent.tests[0].throughput).toBe(100);
+    expect(sent.tests[0].duration).toBe(600);
+    // The resolved fields ride as zeros: the server owns them.
+    expect(sent.tests[0].concurrency).toBe(0);
+    expect(sent.tests[0].engines).toBe(0);
+    // Landed on the execution page, no error banner state.
+    const probe = container!.querySelector('[data-testid="probe"]');
+    expect(probe?.getAttribute('data-path')).toBe('/executions/9');
+    expect(probe?.getAttribute('data-state')).toBe('null');
+  });
+
+  it('navigates anyway when the config save is refused, carrying the error for the banner', async () => {
+    await renderWithProbe();
+    // Swap the config PUT stub to a 409 with the phase-90 envelope.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url.endsWith('/api/me')) {
+          return json({
+            subject: 'demo:a',
+            name: 'a',
+            email: '',
+            global_roles: [],
+            tenants: {},
+            permissions: { '*': ['*'] },
+            demo: true,
+          });
+        }
+        if (method === 'GET' && url.endsWith('/api/projects')) {
+          return json([]);
+        }
+        if (method === 'POST' && url.endsWith('/api/projects')) {
+          return json({ id: 1, name: 'tests-checkout-smoke' });
+        }
+        if (method === 'POST' && url.endsWith('/api/scenarios')) {
+          return json({ id: 42 });
+        }
+        if (method === 'POST' && url.endsWith('/api/executions')) {
+          return json({ id: 9 });
+        }
+        if (method === 'PUT' && url.endsWith('/api/scenarios/42/requests')) {
+          return json({});
+        }
+        if (method === 'PUT' && url.endsWith('/api/executions/9/config')) {
+          puts.push({ url, body: String(init?.body) });
+          return json(
+            {
+              message:
+                'executionapp: mode config refused: capacity profile status "no_profile" for scenario 42 on jmeter (500m CPU / 512Mi memory)',
+              details: {
+                fanout_status: 'no_profile',
+                scenario_id: 42,
+                engine: 'jmeter',
+                cpu: '500m',
+                memory: '512Mi',
+                hint: 'calibrate this scenario first (Execution page → Calibrate scenario), or configure it in Advanced mode',
+              },
+            },
+            409
+          );
+        }
+        return json({ message: `no stub for ${method} ${url}` }, 500);
+      })
+    );
+
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    await act(async () => {});
+
+    // The PUT was attempted and refused...
+    expect(puts).toHaveLength(1);
+    // ...and the flow still landed on the execution page, with the error
+    // and its structured details in router state for the banner.
+    const probe = container!.querySelector('[data-testid="probe"]');
+    expect(probe?.getAttribute('data-path')).toBe('/executions/9');
+    const state = JSON.parse(probe?.getAttribute('data-state') ?? 'null') as {
+      configError?: string;
+      configErrorDetail?: Record<string, unknown>;
+    };
+    expect(state.configError).toContain('no_profile');
+    expect(state.configErrorDetail?.fanout_status).toBe('no_profile');
+    expect(state.configErrorDetail?.hint).toContain('calibrate');
+  });
+});
+
 // Phase 65: the "From template" flow. Catalog from GET /api/templates drives
 // the picker; the create button fires the project-if-absent resolve and one
 // instantiate POST, then navigates to the created scenario's page. The
 // from-scratch flow above is untouched by all of it -- its stubs 500 on
 // /api/templates and the card degrades to a note.
-const templateRow = { id: 7, name: 'HTTPbin baseline', project_id: 0, is_template: true, template_name: 'httpbin-baseline' };
+const templateRow = {
+  id: 7,
+  name: 'HTTPbin baseline',
+  project_id: 0,
+  is_template: true,
+  template_name: 'httpbin-baseline',
+};
 
 describe('NewTest from template (mounted flow)', () => {
   it('lists the catalog in the picker, instantiates with the override, and lands on the scenario page', async () => {
@@ -289,7 +483,15 @@ describe('NewTest from template (mounted flow)', () => {
         const url = String(input);
         const method = init?.method ?? 'GET';
         if (url.endsWith('/api/me')) {
-          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+          return json({
+            subject: 'demo:a',
+            name: 'a',
+            email: '',
+            global_roles: [],
+            tenants: {},
+            permissions: { '*': ['*'] },
+            demo: true,
+          });
         }
         if (method === 'GET' && url.endsWith('/api/templates')) {
           return json([templateRow]);
@@ -305,7 +507,7 @@ describe('NewTest from template (mounted flow)', () => {
           return json({ id: 42, name: 'from-baseline', project_id: 1, is_template: false }, 201);
         }
         return json({ message: `no stub for ${method} ${url}` }, 500);
-      }),
+      })
     );
     root = createRoot(container);
     await act(async () => {
@@ -317,7 +519,7 @@ describe('NewTest from template (mounted flow)', () => {
               <Route path="/scenarios/:id" element={<LocationProbe />} />
             </Routes>
           </SessionProvider>
-        </MemoryRouter>,
+        </MemoryRouter>
       );
     });
     await act(async () => {});
@@ -340,7 +542,10 @@ describe('NewTest from template (mounted flow)', () => {
     });
     expect(createBtn().disabled).toBe(false);
     await type(container!.querySelector('[aria-label="template test name"]') as HTMLInputElement, 'from-baseline');
-    await type(container!.querySelector('[aria-label="template target URL override"]') as HTMLInputElement, 'http://checkout.svc');
+    await type(
+      container!.querySelector('[aria-label="template target URL override"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
     await click(createBtn());
     await act(async () => {});
 
@@ -385,7 +590,7 @@ describe('NewTest blur validation + error summary (phase 77)', () => {
       name.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     });
     expect(container!.querySelector('[data-testid="newtest-name-error"]')?.textContent).toContain(
-      'Test name is required.',
+      'Test name is required.'
     );
     expect(name.getAttribute('aria-invalid')).toBe('true');
     // The target URL was never touched: no error next to it yet.
@@ -402,7 +607,7 @@ describe('NewTest blur validation + error summary (phase 77)', () => {
     expect(document.activeElement).toBe(summary);
     // One entry per missing field, each a link to that field.
     const links = Array.from(summary!.querySelectorAll('a'));
-    expect(links.map((l) => l.getAttribute('href'))).toEqual(['#newtest-name', '#newtest-target-url']);
+    expect(links.map(l => l.getAttribute('href'))).toEqual(['#newtest-name', '#newtest-target-url']);
     expect(links[0].textContent).toContain('Test name is required.');
     await act(async () => {
       links[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
@@ -432,7 +637,15 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
         const url = String(input);
         const method = init?.method ?? 'GET';
         if (url.endsWith('/api/me')) {
-          return json({ subject: 'demo:a', name: 'a', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+          return json({
+            subject: 'demo:a',
+            name: 'a',
+            email: '',
+            global_roles: [],
+            tenants: {},
+            permissions: { '*': ['*'] },
+            demo: true,
+          });
         }
         if (url.endsWith('/api/clusters')) {
           return clusters === null ? json({ message: 'registry down' }, 500) : json(clusters);
@@ -458,7 +671,7 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
           return json({});
         }
         return json({ message: `no stub for ${method} ${url}` }, 500);
-      }),
+      })
     );
     root = createRoot(container);
     await act(async () => {
@@ -469,14 +682,17 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
               <Route path="/executions/new" element={<NewTest />} />
             </Routes>
           </SessionProvider>
-        </MemoryRouter>,
+        </MemoryRouter>
       );
     });
     await act(async () => {});
   }
 
   const operatorCluster = {
-    name: 'honryu', origin: 'operator', namespace: 'honryu', created_time: '2026-09-05T10:29:02Z',
+    name: 'honryu',
+    origin: 'operator',
+    namespace: 'honryu',
+    created_time: '2026-09-05T10:29:02Z',
   };
   const byoc = (name: string) => ({ ...operatorCluster, name, origin: 'byoc' });
 
@@ -491,7 +707,10 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
 
     // Unchecked: the request every pre-fan-out client sends stays identical.
     await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
-    await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
     await click(container!.querySelector('[data-testid="create-test"]')!);
     await act(async () => {});
     expect(execPosts).toHaveLength(1);
@@ -504,7 +723,10 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
     await click(container!.querySelector('[data-testid="fanout-target-eu-1"]')!);
     expect(container!.querySelector('[data-testid="fanout-targets-selected"]')!.textContent).toContain('2 targets');
     await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
-    await type(container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement, 'http://checkout.svc');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
     await click(container!.querySelector('[data-testid="create-test"]')!);
     await act(async () => {});
 
@@ -517,7 +739,7 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
   it('states the reason when no BYOC cluster is registered', async () => {
     await renderNewTestWithClusters([operatorCluster]);
     expect(container!.querySelector('[data-testid="fanout-targets-empty"]')?.textContent).toContain(
-      'No BYOC clusters registered',
+      'No BYOC clusters registered'
     );
     expect(container!.querySelector('[data-testid="fanout-target-eu-1"]')).toBeNull();
   });
