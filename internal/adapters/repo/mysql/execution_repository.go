@@ -582,7 +582,7 @@ func scanExecution(s rowScanner) (execution.Execution, error) {
 		c            execution.Execution
 		engine       string
 		kind         string
-		fanoutTarget sql.RawBytes // JSON array or NULL
+		fanoutTarget []byte // JSON array or NULL; []byte (not sql.RawBytes) because RawBytes is illegal on Row.Scan
 		csvSplit     int64
 		tenantID     sql.NullInt64
 		createdBy    sql.NullString
