@@ -8,6 +8,8 @@ package loadprofile
 import (
 	"errors"
 	"fmt"
+
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 )
 
 // Validation errors. Callers compare with errors.Is.
@@ -18,6 +20,13 @@ var (
 	ErrDurationInvalid    = errors.New("loadprofile: duration must be greater than zero")
 	ErrThroughputInvalid  = errors.New("loadprofile: throughput cannot be negative")
 	ErrNoScenarios        = errors.New("loadprofile: at least one scenario is required")
+	// ErrModeInvalid and ErrModeThroughput gate the simplified-mode
+	// provenance field (phase 90): a mode must be one of the three named
+	// modes, and a mode entry is rate-defined by construction -- its whole
+	// point is a target request rate, so "unlimited" (throughput 0)
+	// contradicts the mode itself.
+	ErrModeInvalid    = errors.New("loadprofile: mode must be one of burst, ramp, soak")
+	ErrModeThroughput = errors.New("loadprofile: a mode entry requires throughput greater than zero")
 )
 
 // Entry is one scenario's load configuration within an execution; it maps onto
@@ -34,6 +43,16 @@ type Entry struct {
 	Throughput int  `yaml:"throughput,omitempty" json:"throughput,omitempty"`
 	Duration   int  `yaml:"duration" json:"duration"`
 	CSVSplit   bool `yaml:"csv_split" json:"csv_split"`
+	// Mode is simplified-mode provenance (phase 90): "burst", "ramp", or
+	// "soak" when the entry was stated as a mode and resolved server-side
+	// (executionapp.StoreConfig fills Concurrency/Engines/Rampup before
+	// anything is validated or persisted), empty for an ordinary advanced
+	// entry. It rides along for the UI to render and never influences
+	// compile, sharding, or quota -- a mode-derived entry is byte-identical
+	// to an advanced entry with the same numbers. Last field on purpose:
+	// the JSON/YAML marshal order the web editor mirrors appends it after
+	// csv_split.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
 // Validate checks a single entry's invariants.
@@ -49,6 +68,10 @@ func (ep Entry) Validate() error {
 		return ErrDurationInvalid
 	case ep.Throughput < 0:
 		return ErrThroughputInvalid
+	case ep.Mode != "" && !loadmode.Valid(loadmode.Mode(ep.Mode)):
+		return fmt.Errorf("%w: %q", ErrModeInvalid, ep.Mode)
+	case ep.Mode != "" && ep.Throughput <= 0:
+		return ErrModeThroughput
 	}
 	return nil
 }

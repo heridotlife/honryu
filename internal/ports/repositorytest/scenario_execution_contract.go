@@ -811,6 +811,59 @@ func RunExecutionRepositoryContract(t *testing.T, newRepo NewRepo) {
 		}
 	})
 
+	// Phase 90: mode provenance round-trips through the load profile --
+	// an advanced entry stores and reads back as no mode at all (NULL on
+	// the column), and a resolved mode entry keeps its mode next to the
+	// numbers the server filled. The fake and the real adapter must agree
+	// here so the shared conformance meaning of "stored config" stays one
+	// thing.
+	t.Run("LoadProfileRoundTripsModeProvenance", func(t *testing.T) {
+		repo := newRepo(t)
+		ctx := context.Background()
+		id := mustCreateExecution(t, repo, "peak", 10)
+		scenarioID := mustCreateScenario(t, repo, "smoke", 10)
+
+		entries := []loadprofile.Entry{
+			{ScenarioID: scenarioID, Engines: 2, Concurrency: 10, Duration: 60},
+			{ScenarioID: scenarioID + 1, Engines: 4, Concurrency: 375, Rampup: 120, Duration: 600, Throughput: 500, Mode: "burst"},
+			{ScenarioID: scenarioID + 2, Engines: 1, Concurrency: 60, Rampup: 60, Duration: 3600, Throughput: 50, Mode: "soak"},
+		}
+		if err := repo.StoreExecutionConfig(ctx, id, false, entries, nil); err != nil {
+			t.Fatalf("StoreExecutionConfig: %v", err)
+		}
+		got, err := repo.LoadProfileFor(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadProfileFor: %v", err)
+		}
+		byScenario := map[int64]loadprofile.Entry{}
+		for _, e := range got {
+			byScenario[e.ScenarioID] = e
+		}
+		if m := byScenario[scenarioID].Mode; m != "" {
+			t.Errorf("advanced entry mode = %q, want \"\" (NULL reads back as advanced)", m)
+		}
+		if m := byScenario[scenarioID+1].Mode; m != "burst" {
+			t.Errorf("burst entry mode = %q, want burst", m)
+		}
+		if m := byScenario[scenarioID+2].Mode; m != "soak" {
+			t.Errorf("soak entry mode = %q, want soak", m)
+		}
+
+		// Replacing with mode-less entries clears the provenance: mode is
+		// per-entry state, never a sticky column default.
+		advanced := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 1, Concurrency: 1, Duration: 30}}
+		if err := repo.StoreLoadProfile(ctx, id, false, advanced); err != nil {
+			t.Fatalf("StoreLoadProfile (advanced): %v", err)
+		}
+		got, err = repo.LoadProfileFor(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadProfileFor after replace: %v", err)
+		}
+		if len(got) != 1 || got[0].Mode != "" {
+			t.Fatalf("LoadProfileFor after replace = %+v, want a single mode-less entry", got)
+		}
+	})
+
 	// A later call replaces both halves, not just one -- the same
 	// "replace, not accumulate" contract each half already guarantees on
 	// its own.

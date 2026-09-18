@@ -363,9 +363,9 @@ func (r *Repository) StoreLoadProfile(ctx context.Context, executionID int64, cs
 	}
 	for _, ep := range scenarios {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO execution_scenario (execution_id, scenario_id, concurrency, rampup, duration, engines, throughput, csv_split)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			executionID, ep.ScenarioID, ep.Concurrency, ep.Rampup, ep.Duration, ep.Engines, ep.Throughput, boolToInt(ep.CSVSplit),
+			"INSERT INTO execution_scenario (execution_id, scenario_id, concurrency, rampup, duration, engines, throughput, csv_split, mode)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			executionID, ep.ScenarioID, ep.Concurrency, ep.Rampup, ep.Duration, ep.Engines, ep.Throughput, boolToInt(ep.CSVSplit), nullableMode(ep.Mode),
 		); err != nil {
 			return fmt.Errorf("mysql: insert execution scenario: %w", err)
 		}
@@ -405,9 +405,9 @@ func (r *Repository) StoreExecutionConfig(ctx context.Context, executionID int64
 	}
 	for _, ep := range entries {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO execution_scenario (execution_id, scenario_id, concurrency, rampup, duration, engines, throughput, csv_split)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			executionID, ep.ScenarioID, ep.Concurrency, ep.Rampup, ep.Duration, ep.Engines, ep.Throughput, boolToInt(ep.CSVSplit),
+			"INSERT INTO execution_scenario (execution_id, scenario_id, concurrency, rampup, duration, engines, throughput, csv_split, mode)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			executionID, ep.ScenarioID, ep.Concurrency, ep.Rampup, ep.Duration, ep.Engines, ep.Throughput, boolToInt(ep.CSVSplit), nullableMode(ep.Mode),
 		); err != nil {
 			return fmt.Errorf("mysql: insert execution scenario: %w", err)
 		}
@@ -437,7 +437,7 @@ func (r *Repository) StoreExecutionConfig(ctx context.Context, executionID int64
 // are not persisted, so ExecutionScenario.Name is empty.
 func (r *Repository) LoadProfileFor(ctx context.Context, executionID int64) ([]loadprofile.Entry, error) {
 	rows, err := r.db.QueryContext(ctx,
-		"SELECT scenario_id, concurrency, rampup, duration, engines, throughput, csv_split FROM execution_scenario WHERE execution_id = ?", executionID)
+		"SELECT scenario_id, concurrency, rampup, duration, engines, throughput, csv_split, mode FROM execution_scenario WHERE execution_id = ?", executionID)
 	if err != nil {
 		return nil, fmt.Errorf("mysql: execution scenarios: %w", err)
 	}
@@ -449,13 +449,16 @@ func (r *Repository) LoadProfileFor(ctx context.Context, executionID int64) ([]l
 			ep       loadprofile.Entry
 			engines  sql.NullInt64
 			csvSplit int64
+			mode     sql.NullString
 		)
 		if scanErr := rows.Scan(&ep.ScenarioID, &ep.Concurrency, &ep.Rampup, &ep.Duration, &engines,
-			&ep.Throughput, &csvSplit); scanErr != nil {
+			&ep.Throughput, &csvSplit, &mode); scanErr != nil {
 			return nil, fmt.Errorf("mysql: scan execution scenario: %w", scanErr)
 		}
 		ep.Engines = int(engines.Int64)
 		ep.CSVSplit = csvSplit != 0
+		// NULL mode = an advanced entry, the only kind before phase 90.
+		ep.Mode = mode.String
 		out = append(out, ep)
 	}
 	if err := rows.Err(); err != nil {
@@ -613,4 +616,15 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// nullableMode maps an entry's mode provenance onto the column's NULL
+// convention: an advanced entry (empty mode) stores NULL, a mode entry
+// stores its name. any-typed nil, the shape database/sql wants for a NULL
+// bind parameter.
+func nullableMode(mode string) any {
+	if mode == "" {
+		return nil
+	}
+	return mode
 }

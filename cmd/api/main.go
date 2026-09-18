@@ -215,9 +215,21 @@ func run(ctx context.Context, getenv func(string) string) error {
 	}
 
 	router := httpapi.NewRouter(httpapi.Deps{
-		Projects:     projectapp.NewService(repo).WithReports(repo),
-		Scenarios:    scenarios,
-		Executions:   executionapp.NewService(repo, store, cfg.Limits.MaxEnginesInExecution),
+		Projects:  projectapp.NewService(repo).WithReports(repo),
+		Scenarios: scenarios,
+		// Mode sources (phase 90): the same calibration service the
+		// router serves answers capacity fan-out questions, the repo links
+		// a profile's job to the execution whose report measured it, and
+		// config supplies the latency-hint fallback and the deployment's
+		// default engine for engine-less executions.
+		Executions: executionapp.NewService(repo, store, cfg.Limits.MaxEnginesInExecution).
+			WithModeSources(executionapp.ModeSources{
+				Capacity:      calibrations,
+				Jobs:          repo,
+				Reports:       repo,
+				LatencyHint:   time.Duration(cfg.Mode.LatencyHintMS) * time.Millisecond,
+				DefaultEngine: cfg.Cluster.DefaultEngine,
+			}),
 		Lifecycle:    lifecycle,
 		Schedules:    schedules,
 		Campaigns:    campaigns,

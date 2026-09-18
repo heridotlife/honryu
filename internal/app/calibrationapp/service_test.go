@@ -2021,3 +2021,42 @@ func TestCreate_StoresEachExpressionAsItsOwnCriterion(t *testing.T) {
 		t.Errorf("SpecFor criterion = %q, want the created field joined back", resolved.Criterion)
 	}
 }
+
+// Phase 90: a mode-provenanced source entry must not carry its mode into
+// the calibration pod minted from it -- the mode is the source config's
+// provenance, not the calibration's, and a calibrate_engine execution's
+// entry is advanced by the search, never re-resolved.
+func TestCreate_BoundEntryStripsModeProvenance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	svc := calibrationapp.NewService(store)
+	projectID := seedProject(t, store)
+	src, scenarioID := seedBoundSource(t, store, projectID)
+
+	// Re-store the source entry with mode provenance, as a Simple-mode
+	// config would have left it.
+	modeEntry := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 4, Concurrency: 375, Rampup: 0, Duration: 600, Throughput: 500, Mode: "burst"}}
+	if err := store.StoreLoadProfile(ctx, src, false, modeEntry); err != nil {
+		t.Fatalf("StoreLoadProfile(mode entry): %v", err)
+	}
+
+	spec := calibration.Spec{Criterion: "failures>5%", CPU: "1", Memory: "512Mi", SeedQPS: 10, HoldSeconds: 20}
+	executionID, err := svc.Create(ctx, "calibrate", projectID, taurus.ExecutorJMeter, spec, src, scenarioID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	entries, err := store.LoadProfileFor(ctx, executionID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("LoadProfileFor = %+v, %v; want the single bound entry", entries, err)
+	}
+	if got := entries[0].Mode; got != "" {
+		t.Fatalf("bound entry Mode = %q, want stripped (the calibration pod is not a mode run)", got)
+	}
+	// The source keeps its provenance -- stripping is a copy rule, not a
+	// mutation of the source config.
+	sourceEntries, err := store.LoadProfileFor(ctx, src)
+	if err != nil || len(sourceEntries) != 1 || sourceEntries[0].Mode != "burst" {
+		t.Fatalf("source entry = %+v, %v; want the mode preserved in place", sourceEntries, err)
+	}
+}

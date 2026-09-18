@@ -52,6 +52,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Limits.MaxEnginesInExecution != 500 {
 		t.Errorf("Limits.MaxEnginesInExecution = %d, want 500", cfg.Limits.MaxEnginesInExecution)
 	}
+	if cfg.Mode.LatencyHintMS != 250 {
+		t.Errorf("Mode.LatencyHintMS = %d, want the 250ms default", cfg.Mode.LatencyHintMS)
+	}
 	if cfg.Auth.Mode != "none" {
 		t.Errorf("Auth.Mode = %q, want none", cfg.Auth.Mode)
 	}
@@ -175,6 +178,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"HONRYU_CALIBRATOR_HOST_IN_SCHEDULER": "true",
 		"HONRYU_RUN_RECONCILE_AFTER":          "90m",
 		"HONRYU_ENGINE_IDLE_TTL":              "6h",
+		"HONRYU_MODE_LATENCY_HINT_MS":         "400",
 	}))
 	if err != nil {
 		t.Fatalf("Load with overrides: unexpected error: %v", err)
@@ -184,6 +188,9 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	if cfg.Limits.MaxEnginesInExecution != 42 {
 		t.Errorf("MaxEnginesInExecution = %d, want 42", cfg.Limits.MaxEnginesInExecution)
+	}
+	if cfg.Mode.LatencyHintMS != 400 {
+		t.Errorf("Mode.LatencyHintMS = %d, want 400", cfg.Mode.LatencyHintMS)
 	}
 
 	if cfg.HTTP.Port != 9090 {
@@ -231,19 +238,21 @@ func TestLoad_ValidationErrors(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]map[string]string{
-		"port not a number":   {"HONRYU_HTTP_PORT": "abc"},
-		"port out of range":   {"HONRYU_HTTP_PORT": "70000"},
-		"port zero":           {"HONRYU_HTTP_PORT": "0"},
-		"bad read timeout":    {"HONRYU_HTTP_READ_TIMEOUT": "soon"},
-		"bad write timeout":   {"HONRYU_HTTP_WRITE_TIMEOUT": "later"},
-		"bad idle timeout":    {"HONRYU_HTTP_IDLE_TIMEOUT": "never"},
-		"unknown log level":   {"HONRYU_LOG_LEVEL": "verbose"},
-		"unknown log format":  {"HONRYU_LOG_FORMAT": "yaml"},
-		"unknown db driver":   {"HONRYU_DB_DRIVER": "postgres"},
-		"mysql without dsn":   {"HONRYU_DB_DRIVER": "mysql"},
-		"bad max engines":     {"HONRYU_MAX_ENGINES": "-3"},
-		"non-numeric engines": {"HONRYU_MAX_ENGINES": "lots"},
-		"unknown scheduler":   {"HONRYU_SCHEDULER": "nomad"},
+		"port not a number":              {"HONRYU_HTTP_PORT": "abc"},
+		"port out of range":              {"HONRYU_HTTP_PORT": "70000"},
+		"port zero":                      {"HONRYU_HTTP_PORT": "0"},
+		"bad read timeout":               {"HONRYU_HTTP_READ_TIMEOUT": "soon"},
+		"bad write timeout":              {"HONRYU_HTTP_WRITE_TIMEOUT": "later"},
+		"bad idle timeout":               {"HONRYU_HTTP_IDLE_TIMEOUT": "never"},
+		"unknown log level":              {"HONRYU_LOG_LEVEL": "verbose"},
+		"unknown log format":             {"HONRYU_LOG_FORMAT": "yaml"},
+		"unknown db driver":              {"HONRYU_DB_DRIVER": "postgres"},
+		"mysql without dsn":              {"HONRYU_DB_DRIVER": "mysql"},
+		"bad max engines":                {"HONRYU_MAX_ENGINES": "-3"},
+		"mode latency hint not a number": {"HONRYU_MODE_LATENCY_HINT_MS": "slow"},
+		"mode latency hint zero":         {"HONRYU_MODE_LATENCY_HINT_MS": "0"},
+		"non-numeric engines":            {"HONRYU_MAX_ENGINES": "lots"},
+		"unknown scheduler":              {"HONRYU_SCHEDULER": "nomad"},
 		"k8s scheduler without sidecar image": {
 			"HONRYU_SCHEDULER":  "k8s",
 			"HONRYU_INGEST_URL": "http://api.honryu.svc/api/ingest",

@@ -32,6 +32,7 @@ type Config struct {
 	Calibrator CalibratorConfig
 	APM        APMConfig
 	Digest     DigestConfig
+	Mode       ModeConfig
 }
 
 // SchedulerConfig configures cmd/scheduler's fire-due-occurrences loop.
@@ -44,6 +45,18 @@ type SchedulerConfig struct {
 	// to keep occurrences reserved out to the 7-day horizon, not react to a
 	// fire time arriving.
 	HorizonInterval time.Duration
+}
+
+// ModeConfig configures simplified execution-mode resolution (phase 90):
+// how the server derives concurrency/engines/ramp-up when an operator
+// states only a mode, a target rate, and a duration.
+type ModeConfig struct {
+	// LatencyHintMS is the fallback p95 (milliseconds) a mode entry's
+	// concurrency is sized from when no calibration report is reachable
+	// -- a stand-in for the measured response time, used only until the
+	// capacity-profile chain can supply a real one. Positive; 250ms is
+	// the shipped default.
+	LatencyHintMS int
 }
 
 // CalibratorConfig configures the engine-calibration advancement loop
@@ -325,6 +338,7 @@ func Load(getenv func(string) string) (Config, error) {
 		Auth:       AuthConfig{Mode: "none"},
 		Scheduler:  SchedulerConfig{TickInterval: 30 * time.Second, HorizonInterval: 24 * time.Hour},
 		Calibrator: CalibratorConfig{TickInterval: 30 * time.Second},
+		Mode:       ModeConfig{LatencyHintMS: 250},
 	}
 
 	var err error
@@ -425,6 +439,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Calibrator.HostInScheduler, err = boolEnv(getenv, "CALIBRATOR_HOST_IN_SCHEDULER", cfg.Calibrator.HostInScheduler); err != nil {
+		return Config{}, err
+	}
+	if cfg.Mode.LatencyHintMS, err = intEnv(getenv, "MODE_LATENCY_HINT_MS", cfg.Mode.LatencyHintMS); err != nil {
 		return Config{}, err
 	}
 
@@ -531,6 +548,12 @@ func (c Config) validate() error {
 	}
 	if c.Calibrator.TickInterval <= 0 {
 		return fmt.Errorf("config: %sCALIBRATOR_TICK_INTERVAL must be positive", envPrefix)
+	}
+	// The mode fallback hint sizes virtual users when divided into a rate;
+	// a non-positive value would collapse every mode entry to the
+	// concurrency floor, so it fails startup instead.
+	if c.Mode.LatencyHintMS <= 0 {
+		return fmt.Errorf("config: %sMODE_LATENCY_HINT_MS must be positive", envPrefix)
 	}
 	// The digest transports' https-only rule, enforced at the only gate a
 	// deployment-level value has: startup. A malformed or cleartext URL must
