@@ -373,7 +373,6 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 		spec := ports.DeploySpec{
 			// The execution's cluster (empty = this deployment's default), the
 			// load origin the scheduler resolves to a per-cluster client.
-			Cluster:     ports.ClusterRef(coll.Cluster),
 			ProjectID:   coll.ProjectID,
 			ExecutionID: executionID,
 			ScenarioID:  ep.ScenarioID,
@@ -387,8 +386,20 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 			Shards:        specs,
 			ScenarioFiles: files,
 		}
-		if err := s.sched.DeployScenario(ctx, spec); err != nil {
-			return err
+		// Fan-out (phase 88): the execution's full shard set deploys to EVERY
+		// cluster it runs on -- Clusters() is the fan-out targets of a fan-out
+		// execution, or the single configured cluster of an ordinary one, so
+		// this loop is a no-op change for everything that predates fan-out.
+		// Full duplication per target is the "run everywhere" primitive:
+		// capacity planning (capacityprofile.FanOut) decides how many shards
+		// "everywhere" needs; a shard-aware split across clusters is a later
+		// refinement. A failure partway fails the deploy -- the next Deploy is
+		// idempotent and fills in whatever is missing.
+		for _, cluster := range coll.Clusters() {
+			spec.Cluster = ports.ClusterRef(cluster)
+			if err := s.sched.DeployScenario(ctx, spec); err != nil {
+				return fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+			}
 		}
 	}
 	return nil
@@ -482,7 +493,7 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	if err != nil {
 		return err
 	}
-	status, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(coll.Cluster), executionID, planRefs(scenarios))
+	status, err := s.executionStatusAcross(ctx, coll, executionID, planRefs(scenarios))
 	if err != nil {
 		return err
 	}
@@ -564,10 +575,67 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	}
 	// Begin streaming metrics from the now-running engines and open a usage
 	// launch (best effort: accounting must not fail a successful trigger).
+	// A fan-out execution's pods are its shard set duplicated on every target
+	// cluster, so the usage launch records the pods that actually exist.
 	if proj, perr := s.repo.GetProject(ctx, coll.ProjectID); perr == nil {
-		_ = s.usage.RecordStart(ctx, executionID, proj.Owner, ec.TotalEngines(), run.VirtualUsers(ec))
+		_ = s.usage.RecordStart(ctx, executionID, proj.Owner, fanOutEngines(ec.TotalEngines(), coll), run.VirtualUsers(ec))
 	}
 	return nil
+}
+
+// fanOutEngines is the engine-pod count an execution actually deploys: the
+// profile's own count, multiplied by the number of target clusters of a
+// fan-out execution (full shard duplication). An ordinary execution's count
+// is its profile's, unchanged.
+func fanOutEngines(profileEngines int, exe execution.Execution) int {
+	if !exe.IsFanOut() {
+		return profileEngines
+	}
+	return profileEngines * len(exe.FanOutTargets)
+}
+
+// executionStatusAcross reports an execution's scheduler readiness across
+// every cluster it runs on, with fan-out-aware strictness: a fan-out
+// execution is ready only when EVERY target cluster's pool covers the whole
+// load profile -- under full duplication a summed pool that happens to
+// cover the profile can hide a cluster whose pods never came up, and a run
+// opened against it would silently measure half the world. The error names
+// the cluster that is short. The returned status sums every cluster's pods
+// (pool size and per-scenario deployed counts), so downstream pool-size
+// semantics -- Trigger's phase checks, the abandoned-run sweep, the status
+// view -- keep meaning "engine pods this execution has, wherever they
+// run". An ordinary execution is a single-cluster call, exactly as before.
+func (s *Service) executionStatusAcross(ctx context.Context, exe execution.Execution, executionID int64, refs []ports.ScenarioRef) (ports.ExecutionStatus, error) {
+	if !exe.IsFanOut() {
+		return s.sched.ExecutionStatus(ctx, ports.ClusterRef(exe.Cluster), executionID, refs)
+	}
+	wanted := 0
+	for _, ref := range refs {
+		wanted += ref.Shards
+	}
+	var total ports.ExecutionStatus
+	deployed := make(map[int64]int, len(refs))
+	for _, cluster := range exe.FanOutTargets {
+		st, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(cluster), executionID, refs)
+		if err != nil {
+			return ports.ExecutionStatus{}, fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+		}
+		if st.PoolSize < wanted {
+			return ports.ExecutionStatus{}, fmt.Errorf("lifecycle: fan-out cluster %q: %w (have %d of %d)",
+				cluster, run.ErrEnginesNotReady, st.PoolSize, wanted)
+		}
+		total.PoolSize += st.PoolSize
+		for _, pr := range st.Scenarios {
+			deployed[pr.ScenarioID] += pr.EnginesDeployed
+		}
+	}
+	for _, ref := range refs {
+		total.Scenarios = append(total.Scenarios, ports.ScenarioReadiness{
+			ScenarioID: ref.ScenarioID, EnginesWanted: ref.Shards,
+			EnginesDeployed: deployed[ref.ScenarioID], Reachable: true,
+		})
+	}
+	return total, nil
 }
 
 // Reconcile closes stranded runs: ones still open whose engines already

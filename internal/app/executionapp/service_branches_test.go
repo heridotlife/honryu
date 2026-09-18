@@ -28,7 +28,7 @@ func TestBranches_InvalidFilename(t *testing.T) {
 func TestBranches_Create_InvalidName(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newCollService(t)
-	if _, err := svc.Create(context.Background(), "", 10, "", ""); err == nil {
+	if _, err := svc.Create(context.Background(), "", 10, "", "", nil); err == nil {
 		t.Fatal("Create(empty name) expected error")
 	}
 }
@@ -62,7 +62,7 @@ func TestBranches_ListByProject(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newCollService(t)
 	ctx := context.Background()
-	if _, err := svc.Create(ctx, "peak", 10, "", ""); err != nil {
+	if _, err := svc.Create(ctx, "peak", 10, "", "", nil); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	list, err := svc.ListByProject(ctx, 10)

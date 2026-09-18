@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
@@ -85,7 +86,12 @@ func (h *handlers) checkIngestCredentials(ctx context.Context, r *http.Request, 
 	if err != nil {
 		return http.StatusForbidden, "ingest token is not valid for this execution"
 	}
-	if exe.Cluster != cluster.Name {
+	// A fan-out execution (phase 88) runs on every cluster in its target
+	// list, so a target cluster's token speaks for it exactly as the
+	// single-cluster match always did; without this, engines in every
+	// target cluster would be rejected on arrival and no fan-out run could
+	// ever complete.
+	if exe.Cluster != cluster.Name && !slices.Contains(exe.FanOutTargets, cluster.Name) {
 		return http.StatusForbidden, "ingest token is not valid for this execution"
 	}
 	return 0, ""

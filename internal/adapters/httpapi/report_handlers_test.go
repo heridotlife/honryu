@@ -848,7 +848,7 @@ func TestRunReport_APMDepthLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create project: %v", err)
 	}
-	exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "")
+	exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "", nil)
 	if err != nil {
 		t.Fatalf("Create execution: %v", err)
 	}
@@ -921,7 +921,7 @@ func TestRunReport_APMDepthLayerOmitted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create project: %v", err)
 		}
-		exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "")
+		exec, err := executions.Create(ctx, "exec", proj.ID, taurus.ExecutorJMeter, "", nil)
 		if err != nil {
 			t.Fatalf("Create execution: %v", err)
 		}
