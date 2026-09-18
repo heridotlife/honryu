@@ -23,11 +23,12 @@
 // every run compared against it. Deltas are computed HERE, client-side, in
 // both modes — the optional baseline_run_id param on the batch endpoint
 // only orders the payload baseline-first.
-import { Fragment, useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { GitCompare } from 'lucide-react';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
 import TimeSeriesChart from '../components/charts/TimeSeriesChart';
 import { ApiError } from '../api/client';
@@ -243,7 +244,122 @@ function RunSelect({
   );
 }
 
+/**
+ * One delta cell's content (phase 86): the arrow + signed figure wrapped
+ * in the pair's tone classes. The wrapper span carries the tone on the
+ * value itself so the card branch (whose value slot ignores td classes)
+ * colors the same figures the table's colored td shows.
+ */
+function deltaCell(m: MetricSpec, baseline: Report, candidate: Report, kind: 'abs' | 'pct'): ReactNode {
+  const vBase = m.value(baseline);
+  const vCand = m.value(candidate);
+  const pct = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
+  const abs = vBase !== undefined && vCand !== undefined ? vCand - vBase : null;
+  const value = kind === 'abs' ? signedAbs(abs, m.format) : formatDelta(pct);
+  const arrow = deltaArrow(kind === 'abs' ? abs : pct);
+  return (
+    <span className={deltaClass(deltaKind(m.better, pct))}>
+      {arrow !== '' && (
+        <span aria-hidden="true" className="mr-1">
+          {arrow}{' '}
+        </span>
+      )}
+      {value}
+    </span>
+  );
+}
+
 function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Report[] }) {
+  // Phase 86: the delta comparison renders through the shared CardTable,
+  // revisiting phase 79's keep-it-scrolling call: below sm each metric is
+  // a card -- the metric name the title, the baseline value and every
+  // candidate's value/abs/pct figures its pairs -- so the per-candidate
+  // reading order survives a narrow viewport instead of a sideways scroll
+  // being the only mechanism. The data-metric/data-delta hooks the tests
+  // pin ride both branches (rowAttributes/cellAttributes), and the tone
+  // classes ride both the td and the value itself so neither branch is
+  // color-blind.
+  const columns: CardTableColumn<MetricSpec>[] = [
+    {
+      key: 'metric',
+      header: 'Metric',
+      primary: true,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
+      render: (m) => m.label,
+    },
+    {
+      key: `run-${baseline.run_id}`,
+      header: `Run #${baseline.run_id}`,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (m) => {
+        const v = m.value(baseline);
+        return v !== undefined ? m.format(v) : '—';
+      },
+    },
+  ];
+  for (const c of candidates) {
+    // One value/abs-delta/pct-delta column trio per candidate, in slot
+    // order. The verdict chip rides the candidate's own column header
+    // (phase 61): per column, exactly where the numbers it summarizes
+    // sit. Only-when-regressed -- a clean comparison gets no chip, the row
+    // cells already color the individual movements. Real text, not a
+    // color-only cue. Phase 86: headerExtra keeps it a th-only affordance
+    // (a column header has no card counterpart); below sm the colored
+    // delta pairs carry the same verdict candidate by candidate.
+    const regressions = summarizeRegressions(baseline, c);
+    // One classification per pair: the percent delta is the band's unit,
+    // so it decides the cells' tone; the abs cell repeats it only because
+    // the two always share a sign (and when the percent is undefined -- a
+    // zero baseline -- the abs still shows, uncolored).
+    const tone = (m: MetricSpec): string => {
+      const vBase = m.value(baseline);
+      const vCand = m.value(c);
+      const pct = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
+      return deltaClass(deltaKind(m.better, pct));
+    };
+    columns.push(
+      {
+        key: `run-${c.run_id}`,
+        header: `Run #${c.run_id}`,
+        thAttributes: { 'data-run-id': String(c.run_id) },
+        headerExtra:
+          regressions.length > 0 ? (
+            <span
+              data-testid="compare-regression-chip"
+              data-run-id={c.run_id}
+              title={`${regressions.map((r) => `${r.metric} ${formatDelta(r.delta)}`).join(' · ')} vs run #${baseline.run_id}`}
+              className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
+            >
+              regressed
+            </span>
+          ) : undefined,
+        thClassName: 'px-3 py-2 font-medium',
+        tdClassName: 'px-3 py-2 whitespace-nowrap',
+        render: (m) => {
+          const v = m.value(c);
+          return v !== undefined ? m.format(v) : '—';
+        },
+      },
+      {
+        key: `abs-${c.run_id}`,
+        header: `Δ abs vs #${baseline.run_id}`,
+        thClassName: 'px-3 py-2 font-medium',
+        cellAttributes: () => ({ 'data-delta': 'abs', 'data-run-id': String(c.run_id) }),
+        tdClassName: (m) => `px-3 py-2 font-medium whitespace-nowrap ${tone(m)}`,
+        render: (m) => deltaCell(m, baseline, c, 'abs'),
+      },
+      {
+        key: `pct-${c.run_id}`,
+        header: `Δ % vs #${baseline.run_id}`,
+        thClassName: 'px-3 py-2 font-medium',
+        cellAttributes: () => ({ 'data-delta': 'pct', 'data-run-id': String(c.run_id) }),
+        tdClassName: (m) => `px-3 py-2 font-medium whitespace-nowrap ${tone(m)}`,
+        render: (m) => deltaCell(m, baseline, c, 'pct'),
+      },
+    );
+  }
   return (
     <Card>
       <CardHeader>
@@ -253,99 +369,15 @@ function DeltaTable({ baseline, candidates }: { baseline: Report; candidates: Re
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {/* Phase 79 decision: the delta table stays overflow-x-auto below
-            sm -- side-by-side comparison is desktop tooling (the same call
-            as Reports' compare tables), and the per-metric baseline/delta
-            column pairing is the point; cards would flatten it. */}
-        <div className="overflow-x-auto" data-testid="delta-table">
-          <table className="w-full text-left text-body-sm">
-            <thead>
-              <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                <th scope="col" className="px-3 py-2 font-medium">
-                  Metric
-                </th>
-                <th scope="col" className="px-3 py-2 font-medium">
-                  Run #{baseline.run_id}
-                </th>
-                {/* One value/abs-delta/pct-delta column trio per candidate,
-                    in slot order. The verdict chip rides the candidate's own
-                    column header (phase 61): per column, exactly where the
-                    numbers it summarizes sit. Only-when-regressed -- a clean
-                    comparison gets no chip, the row cells already color the
-                    individual movements. Real text, not a color-only cue. */}
-                {candidates.map((c) => {
-                  const regressions = summarizeRegressions(baseline, c);
-                  return (
-                    <Fragment key={c.run_id}>
-                      <th scope="col" data-run-id={c.run_id} className="px-3 py-2 font-medium">
-                        <span className="inline-flex items-center gap-2">
-                          Run #{c.run_id}
-                          {regressions.length > 0 && (
-                            <span
-                              data-testid="compare-regression-chip"
-                              data-run-id={c.run_id}
-                              title={`${regressions.map((r) => `${r.metric} ${formatDelta(r.delta)}`).join(' · ')} vs run #${baseline.run_id}`}
-                              className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300"
-                            >
-                              regressed
-                            </span>
-                          )}
-                        </span>
-                      </th>
-                      <th scope="col" className="px-3 py-2 font-medium">Δ abs vs #{baseline.run_id}</th>
-                      <th scope="col" className="px-3 py-2 font-medium">Δ % vs #{baseline.run_id}</th>
-                    </Fragment>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {METRICS.map((m) => {
-                const vBase = m.value(baseline);
-                return (
-                  <tr key={m.key} data-metric={m.key}>
-                    <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{m.label}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{vBase !== undefined ? m.format(vBase) : '—'}</td>
-                    {candidates.map((c) => {
-                      const vCand = m.value(c);
-                      const pct = vBase !== undefined && vCand !== undefined ? pctDelta(vBase, vCand) : null;
-                      const abs = vBase !== undefined && vCand !== undefined ? vCand - vBase : null;
-                      // One classification per pair: the percent delta is
-                      // the band's unit, so it decides both cells' tone;
-                      // the abs cell repeats it only because the two always
-                      // share a sign (and when the percent is undefined --
-                      // a zero baseline -- the abs still shows, uncolored).
-                      const cls = deltaClass(deltaKind(m.better, pct));
-                      const pctArrow = deltaArrow(pct);
-                      const absArrow = deltaArrow(abs);
-                      return (
-                        <Fragment key={c.run_id}>
-                          <td className="px-3 py-2 whitespace-nowrap">{vCand !== undefined ? m.format(vCand) : '—'}</td>
-                          <td data-delta="abs" data-run-id={c.run_id} className={`px-3 py-2 font-medium whitespace-nowrap ${cls}`}>
-                            {absArrow && (
-                              <span aria-hidden="true" className="mr-1">
-                                {absArrow}{' '}
-                              </span>
-                            )}
-                            {signedAbs(abs, m.format)}
-                          </td>
-                          <td data-delta="pct" data-run-id={c.run_id} className={`px-3 py-2 font-medium whitespace-nowrap ${cls}`}>
-                            {pctArrow && (
-                              <span aria-hidden="true" className="mr-1">
-                                {pctArrow}{' '}
-                              </span>
-                            )}
-                            {formatDelta(pct)}
-                          </td>
-                        </Fragment>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <CardTable
+          tableTestId="delta-table"
+          columns={columns}
+          rows={METRICS}
+          rowKey={(m) => m.key}
+          rowAttributes={(m) => ({ 'data-metric': m.key })}
+          headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+          tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+        />
       </CardContent>
     </Card>
   );
@@ -575,6 +607,67 @@ export default function RunCompare() {
   };
   const removeRun = (index: number) => setSelected((prev) => prev.filter((_, i) => i !== index));
 
+  // Phase 86: the vs-baseline run list's CardTable columns -- the run's
+  // identity is the primary/title column, and the radio + checkbox ride
+  // both branches as cell content, so their testids and the radio's name
+  // group never move. At sm+ the list finally carries column headers for
+  // its two controls; below sm each run is a card.
+  const baselineRunColumns: CardTableColumn<Report>[] = [
+    {
+      key: 'run',
+      header: 'Run',
+      primary: true,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 font-medium text-slate-900 dark:text-white',
+      render: (r) => `Run #${r.run_id} · ${formatTime(r.started_at)}`,
+    },
+    {
+      key: 'baseline',
+      header: 'Baseline',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2',
+      render: (r) => (
+        <input
+          type="radio"
+          name="compare-baseline"
+          data-testid={`baseline-radio-${r.run_id}`}
+          aria-label={`Use run ${r.run_id} as the baseline`}
+          checked={r.run_id === baselineId}
+          onChange={() => {
+            setBaselineId(r.run_id);
+            // The new baseline leaves the comparison set: its
+            // checkbox disables, it can't compare against itself.
+            setPicked((prev) => prev.filter((id) => id !== r.run_id));
+          }}
+          className="size-4 accent-sky-600"
+        />
+      ),
+    },
+    {
+      key: 'compare',
+      header: 'Compare',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2',
+      render: (r) => {
+        const isBaseline = r.run_id === baselineId;
+        const isPicked = picked.includes(r.run_id);
+        return (
+          <input
+            type="checkbox"
+            data-testid={`compare-check-${r.run_id}`}
+            aria-label={`Compare run ${r.run_id} against the baseline`}
+            checked={isPicked}
+            disabled={isBaseline}
+            onChange={() =>
+              setPicked((prev) => (isPicked ? prev.filter((id) => id !== r.run_id) : [...prev, r.run_id]))
+            }
+            className="size-4 accent-sky-600"
+          />
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-6" role="region" aria-label="Run comparison panel">
       {/* Phase 52: the trail back up -- execution hub AND the scenario
@@ -705,45 +798,14 @@ export default function RunCompare() {
                   <p className="text-body-sm text-slate-500 dark:text-slate-400">
                     Pick the baseline with the radio, then tick every run to compare against it.
                   </p>
-                  {reports.map((r) => {
-                    const isBaseline = r.run_id === baselineId;
-                    const isPicked = picked.includes(r.run_id);
-                    return (
-                      <div
-                        key={r.run_id}
-                        className="flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700"
-                      >
-                        <input
-                          type="radio"
-                          name="compare-baseline"
-                          data-testid={`baseline-radio-${r.run_id}`}
-                          aria-label={`Use run ${r.run_id} as the baseline`}
-                          checked={isBaseline}
-                          onChange={() => {
-                            setBaselineId(r.run_id);
-                            // The new baseline leaves the comparison set: its
-                            // checkbox disables, it can't compare against itself.
-                            setPicked((prev) => prev.filter((id) => id !== r.run_id));
-                          }}
-                          className="size-4 accent-sky-600"
-                        />
-                        <input
-                          type="checkbox"
-                          data-testid={`compare-check-${r.run_id}`}
-                          aria-label={`Compare run ${r.run_id} against the baseline`}
-                          checked={isPicked}
-                          disabled={isBaseline}
-                          onChange={() =>
-                            setPicked((prev) => (isPicked ? prev.filter((id) => id !== r.run_id) : [...prev, r.run_id]))
-                          }
-                          className="size-4 accent-sky-600"
-                        />
-                        <span className="text-body-sm text-slate-900 dark:text-white">
-                          Run #{r.run_id} · {formatTime(r.started_at)}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  <CardTable
+                    tableTestId="baseline-runs"
+                    columns={baselineRunColumns}
+                    rows={reports}
+                    rowKey={(r) => String(r.run_id)}
+                    headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+                    tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+                  />
                 </div>
               )}
               {mode === 'baseline' && baselineId === null && (

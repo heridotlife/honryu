@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import { Server } from 'lucide-react';
 import Card, { CardContent } from '../components/ui/Card';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
 import { ApiError } from '../api/client';
 import { listClusters } from '../api/clusters';
@@ -98,6 +99,123 @@ export function engineImages(clusters: Cluster[]): string[] {
   return engineImageRows(clusters).map((r) => r.image);
 }
 
+// Phase 86: the registry table's column defs -- one source for the sm+
+// table and the below-sm card list (the cluster name is the card title;
+// the origin hint rides the row title in both branches). clusterCapacity
+// and the code-cell renders stay exactly what they fed the old <td>s.
+const registryColumns: CardTableColumn<Cluster>[] = [
+  {
+    key: 'name',
+    header: 'Name',
+    primary: true,
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
+    render: (c) => c.name,
+  },
+  {
+    key: 'origin',
+    header: 'Origin',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => <OriginBadge origin={c.origin} />,
+  },
+  {
+    key: 'capacity',
+    header: 'Capacity',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (c) => <CapacityMeter label="engines" {...clusterCapacity(c)} />,
+  },
+  {
+    key: 'namespace',
+    header: 'Engine namespace',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (c) => c.namespace,
+  },
+  {
+    key: 'sidecar_image',
+    header: 'Sidecar image',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => <code className="text-caption break-all">{c.sidecar_image || '—'}</code>,
+  },
+  {
+    key: 'ingest_url',
+    header: 'Ingest URL',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => <code className="text-caption break-all">{c.ingest_url || '—'}</code>,
+  },
+  {
+    key: 'api_url',
+    header: 'API server',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => <code className="text-caption break-all">{c.api_url || '—'}</code>,
+  },
+  {
+    key: 'secret_ref',
+    header: 'Credential Secret',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => <code className="text-caption break-all">{c.secret_ref || '—'}</code>,
+  },
+  {
+    key: 'registered',
+    header: 'Registered',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (c) => (
+      <>
+        <span className="text-slate-700 dark:text-slate-300">{formatClusterTime(c.created_time)}</span>
+        {c.created_by && (
+          <span className="text-caption block text-slate-500 dark:text-slate-400">by {c.created_by}</span>
+        )}
+      </>
+    ),
+  },
+];
+
+// Phase 86: the capacity matrix's column defs -- the pod size (the row's
+// identity) is the card title below sm; rows arrive in the backend's
+// order and the calibrated dates stay short dates.
+const matrixColumns: CardTableColumn<CapacityProfileSummary>[] = [
+  {
+    key: 'pod',
+    header: 'Pod size',
+    primary: true,
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (p) => (
+      <code className="text-caption">
+        {p.cpu} / {p.memory}
+      </code>
+    ),
+  },
+  {
+    key: 'qps',
+    header: 'Per-pod QPS',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (p) => p.per_pod_qps,
+  },
+  {
+    key: 'saturated_by',
+    header: 'Saturated by',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (p) => p.saturated_by,
+  },
+  {
+    key: 'calibrated',
+    header: 'Calibrated',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap text-slate-700 dark:text-slate-300',
+    render: (p) => formatCalibratedShortDate(p.calibrated_at),
+  },
+];
+
 /** The cluster registry, read-only. */
 export default function Clusters() {
   const [clusters, setClusters] = useState<Cluster[] | null>(null);
@@ -161,55 +279,15 @@ export default function Clusters() {
           )}
 
           {clusters && clusters.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-body-sm">
-                <thead>
-                  <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                    <th scope="col" className="px-3 py-2 font-medium">Name</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Origin</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Capacity</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Engine namespace</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Sidecar image</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Ingest URL</th>
-                    <th scope="col" className="px-3 py-2 font-medium">API server</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Credential Secret</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Registered</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {clusters.map((c) => (
-                    <tr key={c.name} title={originDescription(c.origin)}>
-                      <td className="px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white">{c.name}</td>
-                      <td className="px-3 py-2">
-                        <OriginBadge origin={c.origin} />
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <CapacityMeter label="engines" {...clusterCapacity(c)} />
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{c.namespace}</td>
-                      <td className="px-3 py-2">
-                        <code className="text-caption break-all">{c.sidecar_image || '—'}</code>
-                      </td>
-                      <td className="px-3 py-2">
-                        <code className="text-caption break-all">{c.ingest_url || '—'}</code>
-                      </td>
-                      <td className="px-3 py-2">
-                        <code className="text-caption break-all">{c.api_url || '—'}</code>
-                      </td>
-                      <td className="px-3 py-2">
-                        <code className="text-caption break-all">{c.secret_ref || '—'}</code>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        <span className="text-slate-700 dark:text-slate-300">{formatClusterTime(c.created_time)}</span>
-                        {c.created_by && (
-                          <span className="text-caption block text-slate-500 dark:text-slate-400">by {c.created_by}</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <CardTable
+              tableTestId="clusters-table"
+              columns={registryColumns}
+              rows={clusters}
+              rowKey={(c) => c.name}
+              rowTitle={(c) => originDescription(c.origin)}
+              headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+              tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+            />
           )}
         </CardContent>
       </Card>
@@ -256,36 +334,18 @@ export default function Clusters() {
               <div>
                 <p className="text-caption text-slate-500 dark:text-slate-400">Capacity matrix</p>
                 {profiles.length > 0 ? (
-                  <div className="mt-1 overflow-x-auto">
-                    {/* Rows arrive in the backend's order: scenario ascending,
-                        then biggest pod first (cpu compared as milli-cores).
-                        Calibrated dates render as short dates -- no raw ISO. */}
-                    <table className="w-full text-left text-body-sm">
-                      <thead>
-                        <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                          <th scope="col" className="px-3 py-2 font-medium">Pod size</th>
-                          <th scope="col" className="px-3 py-2 font-medium">Per-pod QPS</th>
-                          <th scope="col" className="px-3 py-2 font-medium">Saturated by</th>
-                          <th scope="col" className="px-3 py-2 font-medium">Calibrated</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {profiles.map((p) => (
-                          <tr key={`${p.scenario_id}-${p.engine}-${p.cpu}-${p.memory}`}>
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              <code className="text-caption">
-                                {p.cpu} / {p.memory}
-                              </code>
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap">{p.per_pod_qps}</td>
-                            <td className="px-3 py-2">{p.saturated_by}</td>
-                            <td className="px-3 py-2 whitespace-nowrap text-slate-700 dark:text-slate-300">
-                              {formatCalibratedShortDate(p.calibrated_at)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  /* Phase 86: shared CardTable -- the sm+ markup is the
+                     matrix this card always had; below sm each pod size is
+                     a card with its QPS/saturation/calibration pairs. */
+                  <div className="mt-1">
+                    <CardTable
+                      tableTestId="capacity-matrix"
+                      columns={matrixColumns}
+                      rows={profiles}
+                      rowKey={(p) => `${p.scenario_id}-${p.engine}-${p.cpu}-${p.memory}`}
+                      headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+                      tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+                    />
                   </div>
                 ) : (
                   <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">

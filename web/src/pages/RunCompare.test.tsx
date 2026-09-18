@@ -669,3 +669,87 @@ describe('RunCompare breadcrumbs (phase 52)', () => {
     expect(nav!.querySelectorAll('svg[aria-hidden="true"]').length).toBe(2);
   });
 });
+
+// Phase 86: card-mode render pins -- the delta table and the vs-baseline
+// run list render through the shared CardTable, so below sm each becomes
+// a card list off the same column definitions the table renders. The
+// query-aware matchMedia stub mirrors CardTable's own: min-width queries
+// answer the flag, everything else false. Default mounts (no stub) keep
+// the table branch every pre-phase-86 pin above asserts against.
+function stubCardMode(wide: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query.includes('min-width') ? wide : false })),
+  );
+}
+
+describe('RunCompare card mode (phase 86)', () => {
+  it('renders metric cards below sm: metric name the title, values and deltas the pairs', async () => {
+    stubCardMode(false);
+    await renderCompare(); // A=8 baseline, B=9 candidate by default.
+
+    // The narrow branch replaces the table outright.
+    expect(container!.querySelector('table[data-testid="delta-table"]')).toBeNull();
+    const list = container!.querySelector('ul[data-testid="delta-table-cards"]');
+    expect(list).not.toBeNull();
+    // One card per metric, keyed by the same data-metric the rows carry.
+    const cards = Array.from(list!.querySelectorAll('li'));
+    expect(cards).toHaveLength(5);
+    const p50 = list!.querySelector('li[data-metric="p50"]')!;
+    expect(p50).not.toBeNull();
+
+    // The metric name is the card title and never repeats as a pair; the
+    // pairs are the baseline value and the candidate's value/abs/pct
+    // figures, labelled with the same header strings the table used.
+    expect(p50.textContent).toContain('p50');
+    expect(Array.from(p50.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual([
+      'Run #8',
+      'Run #9',
+      'Δ abs vs #8',
+      'Δ % vs #8',
+    ]);
+
+    // The delta pairs keep their arrows, signs and tones below sm: the
+    // tone rides the value itself, not just the td it lost.
+    const pct = p50.querySelector('dd[data-delta="pct"]')!;
+    expect(pct.textContent).toBe('▼ -20.0%');
+    expect(pct.querySelector('span')!.className).toContain('text-emerald-600');
+    const abs = p50.querySelector('dd[data-delta="abs"]')!;
+    expect(abs.textContent).toBe('▼ -10.0 ms');
+    expect(abs.getAttribute('data-run-id')).toBe('9');
+
+    // The regression chip is a column-header affordance (th-only): below
+    // sm it does not render -- the colored delta pairs carry the verdict.
+    expect(container!.querySelector('[data-testid="compare-regression-chip"]')).toBeNull();
+  });
+
+  it('renders the vs-baseline run list as cards below sm, controls and all', async () => {
+    stubCardMode(false);
+    await renderCompare();
+
+    await act(async () => {
+      (container!.querySelector('[data-testid="mode-vs-baseline"]') as HTMLButtonElement).click();
+    });
+
+    // The group keeps its own wrapper testid; the run list inside is the
+    // card branch of its CardTable.
+    const group = container!.querySelector('[data-testid="baseline-run-list"]')!;
+    expect(group).not.toBeNull();
+    expect(group.querySelector('table[data-testid="baseline-runs"]')).toBeNull();
+    const list = group.querySelector('ul[data-testid="baseline-runs-cards"]');
+    expect(list).not.toBeNull();
+    const cards = Array.from(list!.querySelectorAll('li'));
+    expect(cards).toHaveLength(2);
+
+    // The run's identity is the card title; the two controls are its
+    // pairs, inputs keeping their testids, radio group and states.
+    expect(cards[0].textContent).toContain('Run #9');
+    expect(Array.from(cards[0].querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual(['Baseline', 'Compare']);
+    const radio8 = list!.querySelector('[data-testid="baseline-radio-8"]') as HTMLInputElement;
+    expect(radio8.checked).toBe(true);
+    expect(radio8.name).toBe('compare-baseline');
+    expect((list!.querySelector('[data-testid="baseline-radio-9"]') as HTMLInputElement).checked).toBe(false);
+    expect((list!.querySelector('[data-testid="compare-check-9"]') as HTMLInputElement).checked).toBe(true);
+    expect((list!.querySelector('[data-testid="compare-check-8"]') as HTMLInputElement).disabled).toBe(true);
+  });
+});

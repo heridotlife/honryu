@@ -361,3 +361,85 @@ describe('Clusters loading vs empty (phase 76)', () => {
     expect(container!.querySelector('[data-testid="clusters-empty"]')).not.toBeNull();
   });
 });
+
+// Phase 86: card-mode render pins -- the registry table and the capacity
+// matrix render through the shared CardTable, so below sm each becomes a
+// card list off the same column definitions. The stub mirrors CardTable's
+// own: min-width queries answer the flag, everything else false; default
+// mounts (no stub) keep the table branch every pin above asserts against.
+function stubCardMode(wide: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query.includes('min-width') ? wide : false })),
+  );
+}
+
+describe('Clusters card mode (phase 86)', () => {
+  it('renders the registry as cards below sm: cluster name the title, origin hint and meter intact', async () => {
+    stubCardMode(false);
+    await mountClusters([{ ...registered, engines_used: 2, engines_ceiling: 12 }]);
+
+    // The narrow branch replaces the table outright.
+    expect(container!.querySelector('table[data-testid="clusters-table"]')).toBeNull();
+    const list = container!.querySelector('ul[data-testid="clusters-table-cards"]');
+    expect(list).not.toBeNull();
+    const cards = Array.from(list!.querySelectorAll('li'));
+    expect(cards).toHaveLength(1);
+
+    // The cluster name is the card title and never repeats as a pair; the
+    // pairs are the other eight columns, labelled with the same header
+    // strings the table used.
+    const card = cards[0]!;
+    expect(card.textContent).toContain('honryu');
+    expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual([
+      'Origin',
+      'Capacity',
+      'Engine namespace',
+      'Sidecar image',
+      'Ingest URL',
+      'API server',
+      'Credential Secret',
+      'Registered',
+    ]);
+
+    // The row's origin hint rides the card root the way it rode the <tr>.
+    expect(card.getAttribute('title')).toBe(originDescription('operator'));
+    // The capacity meter rides the Capacity pair's value slot.
+    expect(card.querySelector('dd [role="img"]')?.getAttribute('aria-label')).toBe('2 of 12 engines in use');
+  });
+
+  it('renders the capacity matrix as cards below sm: pod size the title, figures the pairs', async () => {
+    stubCardMode(false);
+    await mountClusters(
+      [registered],
+      [
+        {
+          scenario_id: 6,
+          engine: 'jmeter',
+          cpu: '2',
+          memory: '2Gi',
+          per_pod_qps: 4543.9,
+          saturated_by: 'engine',
+          calibrated_at: '2026-09-12T08:30:00Z',
+        },
+      ],
+    );
+
+    expect(container!.querySelector('table[data-testid="capacity-matrix"]')).toBeNull();
+    const region = container!.querySelector('[role="region"][aria-label="Fleet summary"]')!;
+    const list = region.querySelector('ul[data-testid="capacity-matrix-cards"]');
+    expect(list).not.toBeNull();
+    const card = list!.querySelector('li')!;
+    // The pod size is the card title (code text kept); the figures are
+    // the pairs, short dates per the house rule.
+    expect(card.querySelector('code')!.textContent).toBe('2 / 2Gi');
+    expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual([
+      'Per-pod QPS',
+      'Saturated by',
+      'Calibrated',
+    ]);
+    expect(card.textContent).toContain('4543.9');
+    expect(card.textContent).toContain(new Date('2026-09-12T08:30:00Z').toLocaleDateString());
+    expect(card.textContent).not.toContain('2026-09-12T08:30:00Z');
+  });
+});
