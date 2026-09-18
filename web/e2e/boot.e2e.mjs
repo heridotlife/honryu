@@ -38,6 +38,14 @@
  * can only shrink the measurement. (Branch choice is a real DOM switch,
  * not CSS visibility, so no row testid ever exists twice.)
  *
+ * Phase 86 audit, same reasoning for the second wave: RunCompare (the
+ * delta table and the vs-baseline run list) and Clusters (the registry
+ * table and the capacity matrix) joined CardTable. No scenario in this
+ * harness visits either page -- A-E navigate /, /scenarios and
+ * /executions only, never /executions/{id}/compare or /clusters -- so no
+ * selector here carries table-structure or card-mode risk from them;
+ * F's scrollWidth measurement can again only shrink.
+ *
  * It is NOT wired into `bun run test` (it needs jsdom-free real browser
  * navigation), but since phase 64 CI runs it on every PR: the e2e lane in
  * .github/workflows/ci.yml boots the API with demo auth and the in-memory
