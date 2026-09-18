@@ -78,14 +78,21 @@ type FileRef struct {
 
 // Create validates input and persists a new execution. An empty engine or
 // cluster means the caller expressed no preference and takes the deployment's
-// configured default at deploy time.
-func (s *Service) Create(ctx context.Context, name string, projectID int64, engine taurus.Executor, cluster string) (execution.Execution, error) {
+// configured default at deploy time. fanOutTargets, when non-empty, makes the
+// execution a fan-out one: its full load profile runs on every named cluster
+// simultaneously (see Execution.FanOutTargets). An all-blank list is no
+// fan-out -- the same normalization the domain applies -- and a duplicate
+// target is refused (ErrFanOutTargetDuplicate).
+func (s *Service) Create(ctx context.Context, name string, projectID int64, engine taurus.Executor, cluster string, fanOutTargets []string) (execution.Execution, error) {
 	c, err := execution.New(name, projectID)
 	if err != nil {
 		return execution.Execution{}, err
 	}
 	c.Engine = engine
 	c.Cluster = strings.TrimSpace(cluster)
+	if c.FanOutTargets, err = execution.NormalizeFanOutTargets(fanOutTargets); err != nil {
+		return execution.Execution{}, err
+	}
 	// The execution's tenant always equals its project's tenant (Phase 20).
 	// A missing project is tolerated here rather than failing Create: the
 	// HTTP layer already 404s on an unknown project before ever reaching

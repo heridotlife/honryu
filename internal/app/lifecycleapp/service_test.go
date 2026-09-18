@@ -713,7 +713,7 @@ func TestEnginesDetailAndPodLog(t *testing.T) {
 	if len(detail.Engines) != 2 {
 		t.Fatalf("detail engines = %d, want 2", len(detail.Engines))
 	}
-	log, err := e.svc.PodLog(ctx, e.executionID, e.planIDs[0])
+	log, err := e.svc.PodLog(ctx, e.executionID, e.planIDs[0], "")
 	if err != nil || log == "" {
 		t.Fatalf("PodLog = %q, err = %v", log, err)
 	}

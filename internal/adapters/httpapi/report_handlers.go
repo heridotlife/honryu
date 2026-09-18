@@ -725,7 +725,14 @@ func (h *handlers) runShardObject(w http.ResponseWriter, r *http.Request, kind, 
 		respondError(w, err)
 		return
 	}
+	// A fan-out run captures each target cluster's copy under its own
+	// cluster-qualified key (phase 88); the cluster query parameter selects
+	// one, and its absence keeps the single-cluster key every existing
+	// reader uses.
 	key := lifecycleapp.RunShardKey(runID, scenarioID, int(shard), kind)
+	if cluster := r.URL.Query().Get("cluster"); cluster != "" {
+		key = lifecycleapp.RunShardClusterKey(runID, scenarioID, int(shard), cluster, kind)
+	}
 	data, err := h.deps.Store.Download(r.Context(), key)
 	if err != nil {
 		respondError(w, err)

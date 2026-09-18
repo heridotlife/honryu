@@ -23,6 +23,8 @@ import EngineBadge from '../components/ui/EngineBadge';
 import CopyLink from '../components/CopyLink';
 import ActionErrorDetails from '../components/ActionErrorDetails';
 import CalibrateScenarioModal from '../components/CalibrateScenarioModal';
+import CardTable, { type CardTableColumn } from '../components/CardTable';
+import type { ClusterResult } from '../api/reports';
 
 const phaseClasses: Record<Phase, string> = {
   idle: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300',
@@ -119,6 +121,172 @@ export function gateControls(
     const perm = controlPermission[action];
     return can(perm.resource, perm.action);
   });
+}
+
+/** Phase 88: one fan-out target cluster's card -- its own scenario
+ * readiness, read through the status endpoint's cluster scoping, so a
+ * cluster whose pods never came up is visible as its own gap rather than
+ * dissolving into the cross-cluster aggregate. Reuses CardTable: the
+ * scenario rows are the same shape the page's own status list renders. */
+function FanOutClusterCard({ executionId, cluster }: { executionId: number; cluster: string }) {
+  const [clusterStatus, setClusterStatus] = useState<ExecutionStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getExecutionStatus(executionId, cluster)
+      .then((s) => {
+        if (alive) setClusterStatus(s);
+      })
+      .catch((err: unknown) => {
+        if (alive) setError(err instanceof ApiError ? err.message : 'Failed to load cluster status.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [executionId, cluster]);
+
+  const columns: CardTableColumn<ScenarioStatus>[] = [
+    {
+      key: 'scenario',
+      header: 'Scenario',
+      primary: true,
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 font-medium whitespace-nowrap text-slate-900 dark:text-white',
+      render: (sc) => `Scenario ${sc.scenario_id}`,
+    },
+    {
+      key: 'engines',
+      header: 'Engines',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (sc) =>
+        `${sc.engines_deployed}/${sc.engines} deployed${engineShortfall(sc) > 0 ? ` · ${engineShortfall(sc)} pending` : ''}`,
+    },
+    {
+      key: 'reachable',
+      header: 'Reachable',
+      thClassName: 'px-3 py-2 font-medium',
+      tdClassName: 'px-3 py-2 whitespace-nowrap',
+      render: (sc) =>
+        sc.engines_reachable ? (
+          <span className="text-emerald-600 dark:text-emerald-400">yes</span>
+        ) : (
+          <span className="text-amber-600 dark:text-amber-400">unreachable</span>
+        ),
+    },
+  ];
+
+  return (
+    <Card data-testid={`fanout-cluster-card-${cluster}`}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ClusterBadge cluster={cluster} />
+          {clusterStatus && <PhaseBadge phase={clusterStatus.phase} />}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {error}
+          </p>
+        )}
+        {!error && clusterStatus === null && (
+          <p className="text-body-sm text-slate-500 dark:text-slate-400">Loading cluster status…</p>
+        )}
+        {clusterStatus && (
+          <CardTable
+            tableTestId={`fanout-cluster-${cluster}-scenarios`}
+            columns={columns}
+            rows={clusterStatus.status}
+            rowKey={(sc) => String(sc.scenario_id)}
+            headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+            tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+            emptyMessage="No scenarios deployed on this cluster yet."
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Phase 88: the latest report's per-cluster results -- each target's share
+ * of the run's samples and failures. Rendered only when the report carries
+ * them (a control-plane restart between ingest and finalize leaves only the
+ * aggregate -- honest absence, never zeros). */
+const clusterResultColumns: CardTableColumn<ClusterResult>[] = [
+  {
+    key: 'cluster',
+    header: 'Cluster',
+    primary: true,
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 font-medium whitespace-nowrap',
+    render: (r) => <ClusterBadge cluster={r.cluster || ''} />,
+  },
+  {
+    key: 'outcome',
+    header: 'Outcome',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (r) => (
+      <span
+        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeBadge((r.outcome ?? 'error') as Report['outcome'])}`}
+      >
+        {r.outcome ?? '—'}
+      </span>
+    ),
+  },
+  {
+    key: 'samples',
+    header: 'Samples',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (r) => (r.samples ?? 0).toLocaleString(),
+  },
+  {
+    key: 'failed',
+    header: 'Failed',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (r) => (r.failed ?? 0).toLocaleString(),
+  },
+];
+
+/** Phase 88: a fan-out execution's own section -- one card per target
+ * cluster plus the latest run's per-cluster results. */
+function FanOutSection({ executionId, targets, latest }: { executionId: number; targets: string[]; latest: Report | null | undefined }) {
+  return (
+    <section aria-labelledby="fanout-heading" data-testid="fanout-section">
+      <h2 id="fanout-heading" className="text-lg font-semibold text-slate-900 sm:text-xl dark:text-white">
+        Fan-out clusters
+      </h2>
+      <p className="text-body-sm mt-1 text-slate-500 dark:text-slate-400">
+        The full shard set runs on every target cluster — {targets.length} × the configured engines.
+      </p>
+      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {targets.map((cluster) => (
+          <FanOutClusterCard key={cluster} executionId={executionId} cluster={cluster} />
+        ))}
+      </div>
+      {latest?.cluster_results && latest.cluster_results.length > 0 && (
+        <Card className="mt-4" data-testid="fanout-cluster-results">
+          <CardHeader>
+            <CardTitle>Latest run by cluster</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CardTable
+              tableTestId="fanout-latest-cluster-results"
+              columns={clusterResultColumns}
+              rows={latest.cluster_results}
+              rowKey={(r) => r.cluster ?? ''}
+              headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
+              tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"
+            />
+          </CardContent>
+        </Card>
+      )}
+    </section>
+  );
 }
 
 /** Outcome-to-color mapping for the report rows. */
@@ -658,7 +826,16 @@ export default function Execution() {
               <div className="flex flex-wrap items-center gap-2">
                 <CardTitle>Execution #{executionId}</CardTitle>
                 {info?.engine && <EngineBadge engine={info.engine} />}
-                {info?.cluster && <ClusterBadge cluster={info.cluster} />}
+                {info?.fanout_targets ? (
+                  <span
+                    className="inline-flex items-center rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-medium text-violet-800 dark:bg-violet-900/30 dark:text-violet-300"
+                    data-testid="fanout-badge"
+                  >
+                    fan-out ×{info.fanout_targets.length}
+                  </span>
+                ) : (
+                  info?.cluster && <ClusterBadge cluster={info.cluster} />
+                )}
               </div>
               <PhaseBadge phase={status.phase} />
             </CardHeader>
@@ -814,6 +991,12 @@ export default function Execution() {
               </ul>
             )}
           </Card>
+          {/* Phase 88: a fan-out execution's own section -- per-target-cluster
+              cards and the latest run's per-cluster results -- mounted only
+              when the execution IS fan-out. */}
+          {info?.fanout_targets && info.fanout_targets.length > 0 && (
+            <FanOutSection executionId={executionId} targets={info.fanout_targets} latest={reports?.[0] ?? null} />
+          )}
           {/* Phase 39: the Capacity card mounts ONLY on calibrate_engine
               executions (isCalibrationExecution). Before Kind rode the wire
               this gate was just info?.engine, so a normal execution's

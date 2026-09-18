@@ -245,6 +245,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Tenants:          tenantapp.NewService(repo, repo, repo),
 		Clusters:         clusterSvc,
 		Quota:            quota,
+		FanOutRuns:       repo,
 		Audit:            audit,
 		DefaultOwners:    []string{"honryu"},
 		Sessions:         sessions,

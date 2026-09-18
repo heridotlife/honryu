@@ -77,6 +77,9 @@ var badRequestErrors = []error{
 	campaign.ErrDuplicateService, campaign.ErrProjectRequired, campaign.ErrServiceExecutionInvalid,
 	campaignapp.ErrServiceExecutionMismatch, campaignapp.ErrServiceProjectTenantMismatch,
 	execution.ErrEngineUnknown,
+	// A fan-out target list naming the same cluster twice is the caller's
+	// input, refused at Create -- 400 naming the duplicate, not a 500.
+	execution.ErrFanOutTargetDuplicate,
 	calibration.ErrCriterionRequired, calibration.ErrPodSizeRequired, calibration.ErrSeedQPSInvalid,
 	calibration.ErrMaxQPSInvalid, calibration.ErrMaxStepsInvalid, calibration.ErrHoldInvalid,
 	calibrationapp.ErrExecutionNotCalibration, calibrationapp.ErrEngineRequired,

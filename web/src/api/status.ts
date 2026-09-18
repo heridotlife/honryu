@@ -23,8 +23,12 @@ export interface ExecutionStatus {
   status: ScenarioStatus[];
 }
 
-export async function getExecutionStatus(executionId: number): Promise<ExecutionStatus> {
-  const got = await apiClient.get<ExecutionStatus>(`/executions/${executionId}/status`);
+export async function getExecutionStatus(executionId: number, cluster?: string): Promise<ExecutionStatus> {
+  // An optional cluster query parameter (phase 88) narrows a fan-out
+  // execution's status to one target cluster; absent keeps the
+  // cross-cluster aggregate every existing caller reads.
+  const query = cluster === undefined ? '' : `?cluster=${encodeURIComponent(cluster)}`;
+  const got = await apiClient.get<ExecutionStatus>(`/executions/${executionId}/status${query}`);
   // Go marshals a nil []ScenarioStatus as JSON null, not [], when no
   // scenarios are deployed yet (see internal/app/lifecycleapp's Status).
   return { ...got, status: got.status ?? [] };
@@ -107,6 +111,10 @@ export interface ExecutionInfo {
    * backends, which only ever produced normal executions. */
   kind?: string;
   cluster?: string;
+  /** The registered clusters a fan-out execution runs its full load profile
+   * on simultaneously (phase 88). Absent on ordinary single-cluster
+   * executions. */
+  fanout_targets?: string[];
   csv_split: boolean;
   created_time: string;
   load_profile: LoadProfileEntry[];

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
@@ -34,7 +35,12 @@ func (h *handlers) ingest(w http.ResponseWriter, r *http.Request) {
 
 	// The body is decoded before credentials are checked because scoping a
 	// cluster token needs to know which execution the batch claims.
-	if code, msg := h.checkIngestCredentials(r.Context(), r, batch); code != 0 {
+	//
+	// checkIngestCredentials also stamps batch.Cluster: the authenticated
+	// cluster's name for a cluster token, the empty default for the
+	// deployment-wide token -- a pod cannot name its own cluster, so a
+	// client-supplied value never survives the door.
+	if code, msg := h.checkIngestCredentials(r.Context(), r, &batch); code != 0 {
 		writeError(w, code, msg)
 		return
 	}
@@ -64,7 +70,7 @@ func (h *handlers) ingest(w http.ResponseWriter, r *http.Request) {
 //     additionally scoped to that cluster: the batch's execution must be one
 //     routed there. A cluster token never speaks for the default fleet or for
 //     a rival cluster's executions.
-func (h *handlers) checkIngestCredentials(ctx context.Context, r *http.Request, batch metrics.Batch) (int, string) {
+func (h *handlers) checkIngestCredentials(ctx context.Context, r *http.Request, batch *metrics.Batch) (int, string) {
 	presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		return http.StatusUnauthorized, "invalid ingest credentials"
@@ -72,6 +78,10 @@ func (h *handlers) checkIngestCredentials(ctx context.Context, r *http.Request, 
 	// Constant time, so a wrong token cannot be discovered a byte at a time.
 	if h.deps.IngestToken != "" &&
 		subtle.ConstantTimeCompare([]byte(presented), []byte(h.deps.IngestToken)) == 1 {
+		// The deployment-wide engine token: the default fleet. batch.Cluster
+		// is forced to the empty default so a pod cannot claim an origin it
+		// did not authenticate as.
+		batch.Cluster = ""
 		return 0, ""
 	}
 	if h.deps.IngestTokens == nil || h.deps.ExecutionCluster == nil {
@@ -85,8 +95,16 @@ func (h *handlers) checkIngestCredentials(ctx context.Context, r *http.Request, 
 	if err != nil {
 		return http.StatusForbidden, "ingest token is not valid for this execution"
 	}
-	if exe.Cluster != cluster.Name {
+	// A fan-out execution (phase 88) runs on every cluster in its target
+	// list, so a target cluster's token speaks for it exactly as the
+	// single-cluster match always did; without this, engines in every
+	// target cluster would be rejected on arrival and no fan-out run could
+	// ever complete.
+	if exe.Cluster != cluster.Name && !slices.Contains(exe.FanOutTargets, cluster.Name) {
 		return http.StatusForbidden, "ingest token is not valid for this execution"
 	}
+	// The authenticated cluster is the batch's load origin: what the
+	// fan-out report's per-cluster breakdown is tallied from.
+	batch.Cluster = cluster.Name
 	return 0, ""
 }

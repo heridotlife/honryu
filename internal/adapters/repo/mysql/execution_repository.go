@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,15 +15,19 @@ import (
 	"github.com/heridotlife/honryu/internal/ports"
 )
 
-const executionColumns = "id, name, project_id, engine, kind, cpu, memory, cluster, csv_split, tenant_id, created_by, updated_by, created_time"
+const executionColumns = "id, name, project_id, engine, kind, cpu, memory, cluster, fanout_targets, csv_split, tenant_id, created_by, updated_by, created_time"
 
 // CreateExecution inserts c and returns its auto-assigned ID.
 func (r *Repository) CreateExecution(ctx context.Context, c execution.Execution) (int64, error) {
+	targets, err := encodeFanOutTargets(c.FanOutTargets)
+	if err != nil {
+		return 0, err
+	}
 	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO execution (name, project_id, engine, kind, cpu, memory, cluster, csv_split, tenant_id, created_by, updated_by)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO execution (name, project_id, engine, kind, cpu, memory, cluster, fanout_targets, csv_split, tenant_id, created_by, updated_by)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		c.Name, c.ProjectID, string(c.Engine), string(c.Kind), c.CPU, c.Memory, c.Cluster,
-		boolToInt(c.CSVSplit), nullPtr(c.TenantID), nullString(c.CreatedBy), nullString(c.UpdatedBy),
+		targets, boolToInt(c.CSVSplit), nullPtr(c.TenantID), nullString(c.CreatedBy), nullString(c.UpdatedBy),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("mysql: create execution: %w", err)
@@ -32,6 +37,19 @@ func (r *Repository) CreateExecution(ctx context.Context, c execution.Execution)
 		return 0, fmt.Errorf("mysql: create execution last id: %w", err)
 	}
 	return id, nil
+}
+
+// encodeFanOutTargets marshals a fan-out target list for the fanout_targets
+// JSON column: nil (no fan-out) stays NULL, a set list becomes a JSON array.
+func encodeFanOutTargets(targets []string) (any, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(targets)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: encode fanout targets: %w", err)
+	}
+	return raw, nil
 }
 
 // GetExecution returns the execution with id, or ports.ErrNotFound.
@@ -249,12 +267,20 @@ func (r *Repository) DeleteExecution(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ExecutionsWithActiveRunOnCluster returns the ids of executions on cluster
-// that currently have an active run (an execution_run row), ordered by id.
+// ExecutionsWithActiveRunOnCluster returns the ids of executions that
+// currently have an active run (an execution_run row) and run on cluster:
+// the executions whose own cluster is cluster, and -- phase 88 -- every
+// fan-out execution whose target list names it (a fan-out run mid-flight
+// holds the target's engines exactly as a single-cluster one does, which is
+// what the cluster delete guard and the Clusters page read this for).
+// JSON_CONTAINS matches the quoted name inside the fanout_targets array;
+// NULL (every ordinary execution) never contains anything. Ordered by id.
 func (r *Repository) ExecutionsWithActiveRunOnCluster(ctx context.Context, cluster string) ([]int64, error) {
+	// #nosec G201 -- no interpolation: a fixed statement with bound params.
 	rows, err := r.db.QueryContext(ctx,
-		"SELECT e.id FROM execution e JOIN execution_run r ON r.execution_id = e.id WHERE e.cluster = ? ORDER BY e.id",
-		cluster)
+		"SELECT e.id FROM execution e JOIN execution_run r ON r.execution_id = e.id"+
+			" WHERE e.cluster = ? OR JSON_CONTAINS(e.fanout_targets, JSON_QUOTE(?)) ORDER BY e.id",
+		cluster, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("mysql: executions with active run on cluster: %w", err)
 	}
@@ -553,16 +579,17 @@ func (r *Repository) LastActivity(ctx context.Context, executionID int64) (time.
 
 func scanExecution(s rowScanner) (execution.Execution, error) {
 	var (
-		c         execution.Execution
-		engine    string
-		kind      string
-		csvSplit  int64
-		tenantID  sql.NullInt64
-		createdBy sql.NullString
-		updatedBy sql.NullString
+		c            execution.Execution
+		engine       string
+		kind         string
+		fanoutTarget []byte // JSON array or NULL; []byte (not sql.RawBytes) because RawBytes is illegal on Row.Scan
+		csvSplit     int64
+		tenantID     sql.NullInt64
+		createdBy    sql.NullString
+		updatedBy    sql.NullString
 	)
-	if err := s.Scan(&c.ID, &c.Name, &c.ProjectID, &engine, &kind, &c.CPU, &c.Memory, &c.Cluster, &csvSplit,
-		&tenantID, &createdBy, &updatedBy, &c.CreatedTime); err != nil {
+	if err := s.Scan(&c.ID, &c.Name, &c.ProjectID, &engine, &kind, &c.CPU, &c.Memory, &c.Cluster, &fanoutTarget,
+		&csvSplit, &tenantID, &createdBy, &updatedBy, &c.CreatedTime); err != nil {
 		return execution.Execution{}, err
 	}
 	c.Engine = taurus.Executor(engine)
@@ -572,6 +599,11 @@ func scanExecution(s rowScanner) (execution.Execution, error) {
 	c.UpdatedBy = updatedBy.String
 	if tenantID.Valid {
 		c.TenantID = &tenantID.Int64
+	}
+	if len(fanoutTarget) > 0 {
+		if err := json.Unmarshal(fanoutTarget, &c.FanOutTargets); err != nil {
+			return execution.Execution{}, fmt.Errorf("mysql: decode fanout targets: %w", err)
+		}
 	}
 	return c, nil
 }

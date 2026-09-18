@@ -302,12 +302,17 @@ func TestPhase12_ClusterIngestTokenMatrix(t *testing.T) {
 	})
 
 	t.Run("global token carries everything", func(t *testing.T) {
+		// on-b, not on-a: since phase 88 keys shard progress by load
+		// origin, an interval push opens a per-origin shard row, and on-a's
+		// row must stay single-origin for the absorption proof below (a
+		// default-origin phantom row would roll an unknown exit code into
+		// its verdict). on-b carries the same authorization case -- a
+		// BYOC-routed execution under the deployment-wide token.
 		for _, tc := range []struct {
 			name                 string
 			executionID          int64
 			scenarioID, runIDVal int64
 		}{
-			{"on-a", idA, scA, runA},
 			{"on-b", idB, scB, runB},
 			{"on-default", idD, scD, runD},
 		} {
@@ -343,7 +348,9 @@ func TestPhase12_ClusterIngestTokenMatrix(t *testing.T) {
 
 		// Absorption proof: the accepted pushes reached a report. A Final
 		// under the rotated token closes on-a's run and the report must
-		// reflect it -- authenticated, scoped, absorbed, finalized.
+		// reflect it -- authenticated, scoped, absorbed, finalized. on-a's
+		// shard stayed single-origin (see the global sweep above), so the
+		// exit-code roll-up is exactly its one real pod's.
 		exit := 0
 		body, _ := json.Marshal(metrics.Batch{
 			ExecutionID: idA, ScenarioID: scA, RunID: runA,

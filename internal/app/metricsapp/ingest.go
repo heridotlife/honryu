@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 
 	"github.com/heridotlife/honryu/internal/domain/engine"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
+	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
 	"github.com/heridotlife/honryu/internal/ports"
 )
@@ -61,6 +63,72 @@ func (s *seen) forget(executionID int64) {
 	delete(s.runs, executionID)
 }
 
+// clusterCounts is one cluster's share of a run's measurements.
+type clusterCounts struct {
+	Samples int64
+	Failed  int64
+}
+
+// clusterTally accumulates a run's measurements per load origin, for the
+// fan-out report's per-cluster breakdown (phase 88). Like seen it is
+// in-memory: a control-plane restart loses the tally, and a run finalised
+// after that lands with no cluster_results -- the run's own aggregate is
+// still exact, only the origin split is gone. Counted inside the same
+// dedup gate the live view uses, so a retried batch does not double it.
+type clusterTally struct {
+	mu   sync.Mutex
+	runs map[int64]map[string]clusterCounts // runID -> cluster -> counts
+}
+
+func newClusterTally() *clusterTally {
+	return &clusterTally{runs: map[int64]map[string]clusterCounts{}}
+}
+
+// add folds one interval into its cluster's share of runID.
+func (c *clusterTally) add(runID int64, cluster string, in metrics.Interval) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	counts, ok := c.runs[runID]
+	if !ok {
+		counts = map[string]clusterCounts{}
+		c.runs[runID] = counts
+	}
+	cur := counts[cluster]
+	cur.Samples += in.Samples
+	cur.Failed += in.Failed
+	counts[cluster] = cur
+}
+
+// snapshot copies runID's per-cluster counts, ordered by cluster name so a
+// report's rows are deterministic.
+func (c *clusterTally) snapshot(runID int64) []report.ClusterResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	counts, ok := c.runs[runID]
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]report.ClusterResult, 0, len(names))
+	for _, name := range names {
+		out = append(out, report.ClusterResult{
+			Cluster: name, Samples: counts[name].Samples, Failed: counts[name].Failed,
+		})
+	}
+	return out
+}
+
+// forget drops a finished run's tally, the same lifecycle seen follows.
+func (c *clusterTally) forget(runID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.runs, runID)
+}
+
 // Ingest absorbs one engine pod's measurements.
 //
 // Batches arrive by push from a sidecar inside the pod. Nothing here reaches
@@ -102,7 +170,7 @@ func (s *Service) Ingest(ctx context.Context, batch metrics.Batch) error {
 
 	progressBatch := ports.ProgressBatch{
 		RunID: runID, ScenarioID: batch.ScenarioID, ShardIndex: batch.ShardIndex, StreamID: batch.StreamID,
-		Final: batch.Final, ExitCode: batch.ExitCode, Intervals: batch.Intervals,
+		Cluster: batch.Cluster, Final: batch.Final, ExitCode: batch.ExitCode, Intervals: batch.Intervals,
 	}
 	// Validated before anything is forwarded: a batch this malformed can only
 	// come from a sidecar older than the control plane, and rejecting it after
@@ -118,6 +186,7 @@ func (s *Service) Ingest(ctx context.Context, batch metrics.Batch) error {
 			// Already absorbed; a retry of a batch that did arrive.
 			continue
 		}
+		s.clusterTally.add(runID, batch.Cluster, in)
 		s.record(batch, in, runID)
 	}
 
@@ -144,6 +213,7 @@ func (s *Service) Ingest(ctx context.Context, batch metrics.Batch) error {
 	// The run is over and its report is written; its intervals cannot arrive
 	// again, so stop remembering them.
 	s.seen.forget(batch.ExecutionID)
+	s.clusterTally.forget(runID)
 	return nil
 }
 
@@ -169,7 +239,21 @@ func (s *Service) allShardsFinished(ctx context.Context, executionID, runID int6
 	for _, e := range profile {
 		planned += e.Engines
 	}
-	return planned > 0 && finished >= planned, nil
+	if planned == 0 {
+		return false, nil
+	}
+	// Fan-out (phase 88): every target cluster runs the full shard set, so
+	// the run is finished only when every shard on EVERY cluster finished --
+	// without the multiplier, the first cluster to finish would close the
+	// run while the others still loaded.
+	exe, err := s.repo.GetExecution(ctx, executionID)
+	if err != nil {
+		return false, err
+	}
+	if exe.IsFanOut() {
+		planned *= len(exe.FanOutTargets)
+	}
+	return finished >= planned, nil
 }
 
 // exitCodeUnknown stands in for a finished shard whose exit code never
@@ -200,10 +284,14 @@ func (s *Service) finalizeCompleted(ctx context.Context, executionID, runID int6
 	return s.finalize(ctx, executionID, runID, taurus.CombineOutcomes(codes))
 }
 
-// intervalKey identifies one measurement uniquely within a run: which pod, which
-// second, which request.
+// intervalKey identifies one measurement uniquely within a run: which pod,
+// which second, which request. The cluster is part of the pod's identity
+// under fan-out (phase 88): two target clusters' pods share shard indexes,
+// so without it the second cluster's live-view measurements would be
+// mistaken for re-pushes of the first's and dropped.
 func intervalKey(b metrics.Batch, in metrics.Interval) string {
-	return strconv.Itoa(b.ShardIndex) + "|" +
+	return b.Cluster + "|" +
+		strconv.Itoa(b.ShardIndex) + "|" +
 		strconv.FormatInt(b.ScenarioID, 10) + "|" +
 		strconv.FormatInt(in.Timestamp, 10) + "|" + in.Label
 }
@@ -219,6 +307,13 @@ func (s *Service) record(b metrics.Batch, in metrics.Interval, runID int64) {
 	if in.Failed > 0 && in.Succeeded == 0 {
 		status = "500"
 	}
+	// Under fan-out, shard indexes repeat across target clusters; the
+	// cluster prefix keeps two pods' live-view series apart. An ordinary
+	// run's ids are unchanged, byte for byte.
+	engineID := strconv.Itoa(b.ShardIndex)
+	if b.Cluster != "" {
+		engineID = b.Cluster + "/" + engineID
+	}
 	m := engine.Metric{
 		Label:       in.Label,
 		Latency:     in.Latency.Percentile(50),
@@ -226,7 +321,7 @@ func (s *Service) record(b metrics.Batch, in metrics.Interval, runID int64) {
 		Status:      status,
 		ExecutionID: strconv.FormatInt(b.ExecutionID, 10),
 		ScenarioID:  strconv.FormatInt(b.ScenarioID, 10),
-		EngineID:    strconv.Itoa(b.ShardIndex),
+		EngineID:    engineID,
 		RunID:       strconv.FormatInt(runID, 10),
 	}
 	s.sink.Record(m)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	yaml "gopkg.in/yaml.v3"
@@ -38,30 +39,32 @@ type calibrationSpecResponse struct {
 // configured (and only when the deployment has the calibration service at
 // all), so every other execution serialises exactly as before.
 type executionResponse struct {
-	ID          int64                    `json:"id"`
-	Name        string                   `json:"name"`
-	ProjectID   int64                    `json:"project_id"`
-	Engine      taurus.Executor          `json:"engine,omitempty"`
-	Kind        execution.Kind           `json:"kind"`
-	Cluster     string                   `json:"cluster,omitempty"`
-	CSVSplit    bool                     `json:"csv_split"`
-	CreatedTime time.Time                `json:"created_time"`
-	LoadProfile []loadprofile.Entry      `json:"load_profile"`
-	Data        []executionapp.FileRef   `json:"data"`
-	Calibration *calibrationSpecResponse `json:"calibration,omitempty"`
+	ID            int64                    `json:"id"`
+	Name          string                   `json:"name"`
+	ProjectID     int64                    `json:"project_id"`
+	Engine        taurus.Executor          `json:"engine,omitempty"`
+	Kind          execution.Kind           `json:"kind"`
+	Cluster       string                   `json:"cluster,omitempty"`
+	FanOutTargets []string                 `json:"fanout_targets,omitempty"`
+	CSVSplit      bool                     `json:"csv_split"`
+	CreatedTime   time.Time                `json:"created_time"`
+	LoadProfile   []loadprofile.Entry      `json:"load_profile"`
+	Data          []executionapp.FileRef   `json:"data"`
+	Calibration   *calibrationSpecResponse `json:"calibration,omitempty"`
 }
 
 // executionSummary is the list-item wire shape: identity and metadata only,
 // no load profile or file listing -- those belong to the single-execution
 // fetch, and embedding them here would turn the list into N config reads.
 type executionSummary struct {
-	ID          int64           `json:"id"`
-	Name        string          `json:"name"`
-	ProjectID   int64           `json:"project_id"`
-	Engine      taurus.Executor `json:"engine,omitempty"`
-	Kind        execution.Kind  `json:"kind"`
-	Cluster     string          `json:"cluster,omitempty"`
-	CreatedTime time.Time       `json:"created_time"`
+	ID            int64           `json:"id"`
+	Name          string          `json:"name"`
+	ProjectID     int64           `json:"project_id"`
+	Engine        taurus.Executor `json:"engine,omitempty"`
+	Kind          execution.Kind  `json:"kind"`
+	Cluster       string          `json:"cluster,omitempty"`
+	FanOutTargets []string        `json:"fanout_targets,omitempty"`
+	CreatedTime   time.Time       `json:"created_time"`
 }
 
 // listExecutions returns the caller's executions, newest first -- every
@@ -95,13 +98,14 @@ func (h *handlers) listExecutions(w http.ResponseWriter, r *http.Request) {
 // so a caller's parsing never depends on which list a row came from.
 func toExecutionSummary(c execution.Execution) executionSummary {
 	return executionSummary{
-		ID:          c.ID,
-		Name:        c.Name,
-		ProjectID:   c.ProjectID,
-		Engine:      c.Engine,
-		Kind:        c.Kind,
-		Cluster:     c.Cluster,
-		CreatedTime: c.CreatedTime,
+		ID:            c.ID,
+		Name:          c.Name,
+		ProjectID:     c.ProjectID,
+		Engine:        c.Engine,
+		Kind:          c.Kind,
+		Cluster:       c.Cluster,
+		FanOutTargets: c.FanOutTargets,
+		CreatedTime:   c.CreatedTime,
 	}
 }
 
@@ -131,16 +135,17 @@ func (h *handlers) getExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := executionResponse{
-		ID:          c.ID,
-		Name:        c.Name,
-		ProjectID:   c.ProjectID,
-		Engine:      c.Engine,
-		Kind:        c.Kind,
-		Cluster:     c.Cluster,
-		CSVSplit:    c.CSVSplit,
-		CreatedTime: c.CreatedTime,
-		LoadProfile: cfg.Content.Tests,
-		Data:        files,
+		ID:            c.ID,
+		Name:          c.Name,
+		ProjectID:     c.ProjectID,
+		Engine:        c.Engine,
+		Kind:          c.Kind,
+		Cluster:       c.Cluster,
+		FanOutTargets: c.FanOutTargets,
+		CSVSplit:      c.CSVSplit,
+		CreatedTime:   c.CreatedTime,
+		LoadProfile:   cfg.Content.Tests,
+		Data:          files,
 	}
 	// Phase 62: a calibrate_engine execution carries the search it was
 	// configured with. Only when the deployment has the calibration service
@@ -179,13 +184,33 @@ func (h *handlers) createExecution(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
+	fanOutTargets, err := parseFanOutTargets(r.PostForm.Get("fanout_targets"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid fanout_targets: expected a JSON array of cluster names")
+		return
+	}
 	c, err := h.deps.Executions.Create(r.Context(), r.PostForm.Get("name"), projectID,
-		taurus.Executor(r.PostForm.Get("engine")), r.PostForm.Get("cluster"))
+		taurus.Executor(r.PostForm.Get("engine")), r.PostForm.Get("cluster"), fanOutTargets)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toExecutionResponse(c))
+}
+
+// parseFanOutTargets decodes the fanout_targets form field: a JSON array of
+// cluster names (e.g. `["eu-1","us-1"]`). Absent or blank means no fan-out --
+// an ordinary single-cluster execution, exactly as before the field existed.
+// Anything present but not a JSON array of strings is a client error.
+func parseFanOutTargets(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var targets []string
+	if err := json.Unmarshal([]byte(raw), &targets); err != nil {
+		return nil, err
+	}
+	return targets, nil
 }
 
 func (h *handlers) deleteExecution(w http.ResponseWriter, r *http.Request) {
@@ -351,15 +376,16 @@ func (h *handlers) authorizeExecution(r *http.Request, executionID int64, action
 
 func toExecutionResponse(c execution.Execution) executionResponse {
 	return executionResponse{
-		Engine:      c.Engine,
-		Kind:        c.Kind,
-		Cluster:     c.Cluster,
-		ID:          c.ID,
-		Name:        c.Name,
-		ProjectID:   c.ProjectID,
-		CSVSplit:    c.CSVSplit,
-		CreatedTime: c.CreatedTime,
-		LoadProfile: []loadprofile.Entry{},
-		Data:        []executionapp.FileRef{},
+		Engine:        c.Engine,
+		Kind:          c.Kind,
+		Cluster:       c.Cluster,
+		FanOutTargets: c.FanOutTargets,
+		ID:            c.ID,
+		Name:          c.Name,
+		ProjectID:     c.ProjectID,
+		CSVSplit:      c.CSVSplit,
+		CreatedTime:   c.CreatedTime,
+		LoadProfile:   []loadprofile.Entry{},
+		Data:          []executionapp.FileRef{},
 	}
 }

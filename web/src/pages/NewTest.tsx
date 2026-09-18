@@ -8,6 +8,7 @@ import StageEditor, { type StageEditorState } from '../components/StageEditor';
 import { useFieldValidation } from '../hooks/useFieldValidation';
 import { apiClient, ApiError, errorDetails } from '../api/client';
 import { instantiateScenario, listTemplates, setScenarioRequests, type Template } from '../api/scenarios';
+import { listClusters, type Cluster } from '../api/clusters';
 import { useSession } from '../hooks/useSession';
 import {
   buildFragment,
@@ -114,6 +115,43 @@ export default function NewTest() {
   const [templateStep, setTemplateStep] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [templateErrorDetail, setTemplateErrorDetail] = useState<Record<string, unknown> | null>(null);
+
+  // --- Fan-out targets (phase 88) ------------------------------------------
+  // The registered BYOC clusters, offered as fan-out targets: checking any
+  // makes the execution run its full load profile on every checked cluster
+  // simultaneously. A registry read failure degrades to the disabled note,
+  // never to a failed form. Disabled when no BYOC cluster is registered --
+  // there is nothing to fan out to (the deployment default needs no target).
+  const [clusters, setClusters] = useState<Cluster[] | null>(null);
+  const [clustersUnavailable, setClustersUnavailable] = useState(false);
+  const [fanOutTargets, setFanOutTargets] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let alive = true;
+    listClusters()
+      .then((cs) => {
+        if (alive) setClusters(cs);
+      })
+      .catch(() => {
+        if (alive) setClustersUnavailable(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const byocClusters = (clusters ?? []).filter((c) => c.origin === 'byoc');
+  const toggleFanOut = (name: string) => {
+    setFanOutTargets((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -250,13 +288,20 @@ export default function NewTest() {
         })) as { id: number; scenario?: { id: number } };
       const scenarioId = scenario.id ?? scenario.scenario?.id;
 
-      // Step 3: execution.
+      // Step 3: execution. fanout_targets rides the form only when the
+      // operator checked targets -- the request every pre-fan-out client
+      // sends stays byte-identical otherwise.
       setStep(flowSteps[2]);
+      const executionForm = new URLSearchParams({
+        project_id: String(project.id),
+        name: form.name,
+        engine: form.engine,
+      });
+      if (fanOutTargets.size > 0) {
+        executionForm.set('fanout_targets', JSON.stringify([...fanOutTargets].sort()));
+      }
       const execution = await apiClient
-        .post<{ id: number }>(
-          '/executions',
-          new URLSearchParams({ project_id: String(project.id), name: form.name, engine: form.engine }),
-        )
+        .post<{ id: number }>('/executions', executionForm)
         .catch((e: unknown) => {
           throw stepError('create execution', e);
         });
@@ -398,6 +443,46 @@ export default function NewTest() {
               {warning}
             </p>
           )}
+          {/* Phase 88: fan-out targets. A checkbox per registered BYOC
+              cluster; any checked makes the execution fan-out (the full
+              shard set runs on every checked cluster). Disabled -- with the
+              reason stated -- when no BYOC cluster is registered. */}
+          <fieldset className="rounded-md border border-slate-200 p-3 dark:border-slate-700" data-testid="fanout-targets">
+            <legend className="text-caption px-1 text-slate-600 dark:text-slate-300">Run everywhere (fan-out)</legend>
+            {clustersUnavailable ? (
+              <p className="text-caption text-slate-400">Cluster registry unavailable — the test will run on the deployment&apos;s default cluster.</p>
+            ) : clusters === null ? (
+              <p className="text-caption text-slate-400">Loading clusters…</p>
+            ) : byocClusters.length === 0 ? (
+              <p className="text-caption text-slate-400" data-testid="fanout-targets-empty">
+                No BYOC clusters registered — the test will run on the deployment&apos;s default cluster.
+              </p>
+            ) : (
+              <>
+                <p className="text-caption mb-2 text-slate-500 dark:text-slate-400">
+                  Check any cluster to run this test&apos;s full load there simultaneously.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {byocClusters.map((c) => (
+                    <label key={c.name} className="flex items-center gap-1.5 text-sm text-slate-700 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        data-testid={`fanout-target-${c.name}`}
+                        checked={fanOutTargets.has(c.name)}
+                        onChange={() => toggleFanOut(c.name)}
+                      />
+                      {c.name}
+                    </label>
+                  ))}
+                </div>
+                {fanOutTargets.size > 0 && (
+                  <p className="text-caption mt-2 text-slate-500 dark:text-slate-400" data-testid="fanout-targets-selected">
+                    {fanOutTargets.size} target{fanOutTargets.size === 1 ? '' : 's'} selected — engines multiply per target.
+                  </p>
+                )}
+              </>
+            )}
+          </fieldset>
         </CardContent>
       </Card>
       <Card>

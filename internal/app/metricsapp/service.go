@@ -75,7 +75,11 @@ type Service struct {
 	// view only. The permanent record's exactness comes from ReportProgress's
 	// own per-shard sequence, which survives a restart this map does not.
 	seen *seen
-	now  func() time.Time
+	// clusterTally accumulates a run's measurements per load origin for the
+	// fan-out report's per-cluster breakdown (phase 88); in-memory like seen,
+	// and read by finalize before the run's tally is forgotten.
+	clusterTally *clusterTally
+	now          func() time.Time
 }
 
 // Notifier is the outbound notification a completed run produces. It has
@@ -105,7 +109,8 @@ type ThresholdEvaluator interface {
 
 // NewService wires the metric service.
 func NewService(repo Repo, sink ports.MetricsSink, bus ports.EventBus, progress ports.ReportProgress, reports ports.ReportStore) *Service {
-	return &Service{repo: repo, sink: sink, bus: bus, progress: progress, reports: reports, notifier: noopNotifier{}, seen: newSeen(), now: time.Now}
+	return &Service{repo: repo, sink: sink, bus: bus, progress: progress, reports: reports,
+		notifier: noopNotifier{}, seen: newSeen(), clusterTally: newClusterTally(), now: time.Now}
 }
 
 // WithNotifier overrides the run-completion hook. A nil notifier is
@@ -208,6 +213,19 @@ func (s *Service) stopOutcome(ctx context.Context, runID int64) (taurus.Outcome,
 	return taurus.WorstOutcome(outcomes), nil
 }
 
+// hasNamedCluster reports whether any tallied row names a registered
+// cluster -- the signal that this run had a fan-out (or at least
+// cross-cluster) origin worth reporting. The default fleet's empty name
+// alone is every ordinary run and must not grow the field.
+func hasNamedCluster(rows []report.ClusterResult) bool {
+	for _, r := range rows {
+		if r.Cluster != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // finalize builds a run's report from its accumulated measurements, stores it,
 // discards the working state that produced it, and closes the run's marker.
 //
@@ -280,6 +298,21 @@ func (s *Service) finalize(ctx context.Context, executionID, runID int64, outcom
 	}
 
 	rep := report.Restore(snapshot).Report(meta)
+	// The fan-out origin split (phase 88): per-target-cluster shares of the
+	// run's samples, tallied at ingest off the authenticated cluster token.
+	// Only clusters that actually pushed measurements appear -- a target
+	// that contributed nothing has no row, rather than a zero row that
+	// would read as "ran fine". Each row carries the run's own outcome; see
+	// ClusterResults' doc for why no per-cluster verdict exists. A tally with
+	// no named cluster (an ordinary single-cluster run's default-fleet entry,
+	// or a restart that lost it) leaves the field unset and the report
+	// exactly as it always was.
+	if rows := s.clusterTally.snapshot(runID); hasNamedCluster(rows) {
+		for i := range rows {
+			rows[i].Outcome = rep.Outcome
+		}
+		rep.ClusterResults = rows
+	}
 	if err := s.reports.SaveReport(ctx, rep); err != nil {
 		return err
 	}

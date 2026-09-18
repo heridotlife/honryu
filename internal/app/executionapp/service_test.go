@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/app/executionapp"
+	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
@@ -58,7 +59,7 @@ func TestCreate_Get_List(t *testing.T) {
 	svc, _, _ := newCollService(t)
 	ctx := context.Background()
 
-	c, err := svc.Create(ctx, "peak", 10, "", "")
+	c, err := svc.Create(ctx, "peak", 10, "", "", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestCreate_StampsTenantFromProject(t *testing.T) {
 	tenantID := int64(7)
 
 	projectID := seedProject(t, store, &tenantID)
-	c, err := svc.Create(ctx, "peak", projectID, "", "")
+	c, err := svc.Create(ctx, "peak", projectID, "", "", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestCreate_NilTenantProjectStampsNilTenant(t *testing.T) {
 	ctx := context.Background()
 
 	projectID := seedProject(t, store, nil)
-	c, err := svc.Create(ctx, "peak", projectID, "", "")
+	c, err := svc.Create(ctx, "peak", projectID, "", "", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestCreate_StoresClusterTrimmed(t *testing.T) {
 	svc, _, _ := newCollService(t)
 	ctx := context.Background()
 
-	c, err := svc.Create(ctx, "peak", 10, "", "  prod-eu  ")
+	c, err := svc.Create(ctx, "peak", 10, "", "  prod-eu  ", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestCreate_StoresClusterTrimmed(t *testing.T) {
 func TestCreate_EmptyClusterIsDefault(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newCollService(t)
-	c, err := svc.Create(context.Background(), "peak", 10, "", "")
+	c, err := svc.Create(context.Background(), "peak", 10, "", "", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestFileLifecycle(t *testing.T) {
 	t.Parallel()
 	svc, _, obj := newCollService(t)
 	ctx := context.Background()
-	c, _ := svc.Create(ctx, "peak", 10, "", "")
+	c, _ := svc.Create(ctx, "peak", 10, "", "", nil)
 
 	if err := svc.UploadFile(ctx, c.ID, "shared.csv", bytes.NewReader([]byte("x,y"))); err != nil {
 		t.Fatalf("UploadFile: %v", err)
@@ -187,7 +188,7 @@ func TestDelete_RemovesFiles(t *testing.T) {
 	t.Parallel()
 	svc, _, obj := newCollService(t)
 	ctx := context.Background()
-	c, _ := svc.Create(ctx, "peak", 10, "", "")
+	c, _ := svc.Create(ctx, "peak", 10, "", "", nil)
 	_ = svc.UploadFile(ctx, c.ID, "shared.csv", bytes.NewReader([]byte("x")))
 
 	if err := svc.Delete(ctx, c.ID); err != nil {
@@ -202,7 +203,7 @@ func TestStoreConfig_And_GetConfig(t *testing.T) {
 	t.Parallel()
 	svc, store, _ := newCollService(t)
 	ctx := context.Background()
-	c, _ := svc.Create(ctx, "peak", 10, "", "")
+	c, _ := svc.Create(ctx, "peak", 10, "", "", nil)
 	scenarioID := seedScenario(t, store, "smoke", 10)
 
 	ec := loadprofile.Profile{
@@ -239,7 +240,7 @@ func TestStoreConfig_ReuploadWithNoCriteriaClearsThem(t *testing.T) {
 	t.Parallel()
 	svc, store, _ := newCollService(t)
 	ctx := context.Background()
-	c, _ := svc.Create(ctx, "peak", 10, "", "")
+	c, _ := svc.Create(ctx, "peak", 10, "", "", nil)
 	scenarioID := seedScenario(t, store, "smoke", 10)
 	tests := []loadprofile.Entry{{ScenarioID: scenarioID, Engines: 2, Concurrency: 10, Duration: 60}}
 
@@ -265,7 +266,7 @@ func TestStoreConfig_Errors(t *testing.T) {
 	t.Parallel()
 	svc, store, _ := newCollService(t)
 	ctx := context.Background()
-	c, _ := svc.Create(ctx, "peak", 10, "", "")
+	c, _ := svc.Create(ctx, "peak", 10, "", "", nil)
 	scenarioID := seedScenario(t, store, "smoke", 10)
 	foreignScenario := seedScenario(t, store, "other", 99)
 
@@ -338,5 +339,50 @@ func TestLatestRunsForScenarios_EmptyListAsksNothing(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("LatestRunsForScenarios(nil) = %v, want empty", got)
+	}
+}
+
+// --- Fan-out (phase 88) --------------------------------------------------------
+
+func TestCreate_FanOutTargetsNormalized(t *testing.T) {
+	t.Parallel()
+	svc, store, obj := newCollService(t)
+	c, err := svc.Create(context.Background(), "everywhere", 10, "", "", []string{" eu-1 ", "", "us-1"})
+	if err != nil {
+		t.Fatalf("Create (fan-out) = %v, want nil", err)
+	}
+	if len(c.FanOutTargets) != 2 || c.FanOutTargets[0] != "eu-1" || c.FanOutTargets[1] != "us-1" {
+		t.Fatalf("FanOutTargets = %q, want [eu-1 us-1]", c.FanOutTargets)
+	}
+	if !c.IsFanOut() {
+		t.Error("IsFanOut = false, want true")
+	}
+	got, err := store.GetExecution(context.Background(), c.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if len(got.FanOutTargets) != 2 || got.FanOutTargets[0] != "eu-1" {
+		t.Fatalf("persisted FanOutTargets = %q, want [eu-1 us-1]", got.FanOutTargets)
+	}
+	_ = obj
+}
+
+func TestCreate_FanOutAllBlankIsNoFanOut(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newCollService(t)
+	c, err := svc.Create(context.Background(), "plain", 10, "", "", []string{"", "  "})
+	if err != nil {
+		t.Fatalf("Create (all-blank targets) = %v, want nil", err)
+	}
+	if c.IsFanOut() {
+		t.Error("IsFanOut = true for an all-blank target list, want false")
+	}
+}
+
+func TestCreate_FanOutDuplicateTargetRejected(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := newCollService(t)
+	if _, err := svc.Create(context.Background(), "everywhere", 10, "", "", []string{"eu", "eu"}); !errors.Is(err, execution.ErrFanOutTargetDuplicate) {
+		t.Fatalf("Create (duplicate target) err = %v, want ErrFanOutTargetDuplicate", err)
 	}
 }

@@ -127,6 +127,32 @@ const registryColumns: CardTableColumn<Cluster>[] = [
     render: (c) => <CapacityMeter label="engines" {...clusterCapacity(c)} />,
   },
   {
+    // Phase 88: the fan-out executions mid-run on this cluster, served by
+    // the registry list's fanout_running enrichment. The honest states are
+    // all distinct: '—' (none mid-flight), the absent field (deployment
+    // wired no run lookup), and the running names themselves.
+    key: 'fanout_running',
+    header: 'Fan-out in progress',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2',
+    render: (c) => {
+      if (c.fanout_running === undefined) return <span className="text-slate-400">—</span>;
+      if (c.fanout_running.length === 0) return <span className="text-slate-400">—</span>;
+      return (
+        <span className="text-caption" data-testid={`fanout-running-${c.name}`}>
+          {c.fanout_running.map((e) => (
+            <span key={e.execution_id} className="mr-2 inline-flex items-center gap-1">
+              <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+                running
+              </span>
+              {e.name} (#{e.execution_id})
+            </span>
+          ))}
+        </span>
+      );
+    },
+  },
+  {
     key: 'namespace',
     header: 'Engine namespace',
     thClassName: 'px-3 py-2 font-medium',

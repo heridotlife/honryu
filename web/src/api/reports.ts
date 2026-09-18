@@ -58,6 +58,19 @@ export interface StatusBadge {
 
 export type Outcome = 'passed' | 'failed' | 'aborted' | 'error';
 
+/** One cluster's share of a fan-out run (phase 88). Fields are optional
+ * the way the generated client's are: a defensive fallback in the render
+ * (never a crash) covers a malformed row. */
+export interface ClusterResult {
+  /** Load origin: empty string means the deployment default cluster. */
+  cluster?: string;
+  /** The run's own outcome -- under full shard duplication no per-cluster
+   * verdict evidence exists (see the Go side's doc for why). */
+  outcome?: Outcome;
+  samples?: number;
+  failed?: number;
+}
+
 /** One configured criterion the run tripped (unparsed absent/false), or
  * could not be evaluated at all (unparsed true) — Phase 29's verdict layer.
  * unparsed is omitempty on the wire, hence optional here. */
@@ -73,6 +86,11 @@ export interface Report {
   engine?: string;
   /** Load origin: empty/absent means the deployment default cluster. */
   cluster?: string;
+  /** Per-cluster breakdown of a fan-out run (phase 88): one row per target
+   * cluster that pushed measurements, with its share of samples/failures
+   * and the run's own outcome. Absent on single-cluster runs; the run-level
+   * fields remain the run's whole truth either way. */
+  cluster_results?: ClusterResult[];
   /** Trace id the run's load carried (traceparent/baggage); absent on runs that predate it. */
   correlation_id?: string;
   /** The execution's project (phase 37): the {{project_id}} an APM link-out

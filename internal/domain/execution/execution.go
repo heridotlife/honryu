@@ -22,6 +22,11 @@ var (
 	ErrProjectRequired = errors.New("execution: a valid project id is required")
 	ErrEngineUnknown   = errors.New("execution: unknown engine")
 	ErrKindUnknown     = errors.New("execution: unknown kind")
+	// ErrFanOutTargetDuplicate means the fan-out target list names the same
+	// cluster twice. Duplicating a target would double-deploy its full shard
+	// set under one name -- never what the caller meant -- so it is refused
+	// rather than silently deduplicated.
+	ErrFanOutTargetDuplicate = errors.New("execution: duplicate fan-out target")
 )
 
 // Kind distinguishes what an execution is for.
@@ -79,12 +84,23 @@ type Execution struct {
 	// deployment's default cluster -- the same "empty is the default"
 	// convention Engine uses -- so every execution created before multi-cluster
 	// existed resolves to the control plane's own cluster and behaves as before.
-	Cluster     string
-	CSVSplit    bool
-	TenantID    *int64
-	CreatedBy   string
-	UpdatedBy   string
-	CreatedTime time.Time
+	// A fan-out execution ignores it: its load origin is FanOutTargets.
+	Cluster string
+	// FanOutTargets names the registered clusters a fan-out execution runs
+	// its FULL load profile on, simultaneously -- the "run everywhere"
+	// primitive (phase 88): N clusters × S shards = N×S pods, each cluster
+	// running the complete shard set rather than a slice of it. nil/empty
+	// means an ordinary single-cluster execution; a non-empty list makes the
+	// execution fan-out, and Cluster is then meaningless. Names are
+	// clusterregistry.Cluster names; the empty string never appears
+	// (NormalizeFanOutTargets drops it), because the implicit default cluster
+	// is chosen by leaving fan-out unset, not by naming it.
+	FanOutTargets []string
+	CSVSplit      bool
+	TenantID      *int64
+	CreatedBy     string
+	UpdatedBy     string
+	CreatedTime   time.Time
 }
 
 // New constructs and validates a Execution. Name is trimmed; ID and
@@ -113,5 +129,58 @@ func (c Execution) Validate() error {
 	if c.Kind != "" && !c.Kind.Known() {
 		return fmt.Errorf("%w: %q", ErrKindUnknown, c.Kind)
 	}
+	// Fan-out targets are checked (trimmed, no duplicates) but not rewritten
+	// here: Validate is a pure check on a value receiver, so normalization
+	// happens once at construction -- executionapp.Create -- not per check.
+	if _, err := NormalizeFanOutTargets(c.FanOutTargets); err != nil {
+		return err
+	}
 	return nil
+}
+
+// NormalizeFanOutTargets trims each target, drops empty entries, and refuses
+// duplicates. The empty-in/empty-out cases are both "no fan-out": a nil or
+// blank list is an ordinary single-cluster execution, not an error. A
+// non-empty input that normalizes to nothing (e.g. [""]) is likewise no
+// fan-out -- the caller said nothing meaningful.
+func NormalizeFanOutTargets(targets []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(targets))
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, dup := seen[t]; dup {
+			return nil, fmt.Errorf("%w: %q", ErrFanOutTargetDuplicate, t)
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// IsFanOut reports whether this execution runs its load on multiple clusters
+// at once (FanOutTargets set). Everything that branches on fan-out behaviour
+// -- deploy fan-out, per-cluster readiness, per-cluster quota, ingest-token
+// scoping -- asks this, never len(FanOutOutTargets) directly, so the nil and
+// empty-list forms stay equivalent.
+func (c Execution) IsFanOut() bool {
+	return len(c.FanOutTargets) > 0
+}
+
+// Clusters returns every cluster this execution's engines live on: the
+// fan-out targets of a fan-out execution, or the execution's own single
+// cluster (empty = the deployment default) of an ordinary one. It is the one
+// iteration source for every per-cluster operation -- deploy, status, purge,
+// quota, log capture -- so a fan-out-aware caller can never forget a target
+// by iterating Cluster alone.
+func (c Execution) Clusters() []string {
+	if c.IsFanOut() {
+		return c.FanOutTargets
+	}
+	return []string{c.Cluster}
 }

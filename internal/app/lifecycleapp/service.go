@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -373,7 +374,6 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 		spec := ports.DeploySpec{
 			// The execution's cluster (empty = this deployment's default), the
 			// load origin the scheduler resolves to a per-cluster client.
-			Cluster:     ports.ClusterRef(coll.Cluster),
 			ProjectID:   coll.ProjectID,
 			ExecutionID: executionID,
 			ScenarioID:  ep.ScenarioID,
@@ -387,8 +387,20 @@ func (s *Service) Deploy(ctx context.Context, executionID int64) error {
 			Shards:        specs,
 			ScenarioFiles: files,
 		}
-		if err := s.sched.DeployScenario(ctx, spec); err != nil {
-			return err
+		// Fan-out (phase 88): the execution's full shard set deploys to EVERY
+		// cluster it runs on -- Clusters() is the fan-out targets of a fan-out
+		// execution, or the single configured cluster of an ordinary one, so
+		// this loop is a no-op change for everything that predates fan-out.
+		// Full duplication per target is the "run everywhere" primitive:
+		// capacity planning (capacityprofile.FanOut) decides how many shards
+		// "everywhere" needs; a shard-aware split across clusters is a later
+		// refinement. A failure partway fails the deploy -- the next Deploy is
+		// idempotent and fills in whatever is missing.
+		for _, cluster := range coll.Clusters() {
+			spec.Cluster = ports.ClusterRef(cluster)
+			if err := s.sched.DeployScenario(ctx, spec); err != nil {
+				return fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+			}
 		}
 	}
 	return nil
@@ -482,9 +494,20 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	if err != nil {
 		return err
 	}
-	status, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(coll.Cluster), executionID, planRefs(scenarios))
+	refs := planRefs(scenarios)
+	status, err := s.executionStatusAcross(ctx, coll, executionID, refs)
 	if err != nil {
 		return err
+	}
+	// Fan-out strictness: every target cluster's pool must cover the whole
+	// profile before anything else happens (the summed status a fan-out
+	// returns can hide a cluster whose pods never came up -- see
+	// requireEveryClusterReady). Refused before the orphan check, quota,
+	// and StartRun, so a partial fan-out opens no run and reserves nothing.
+	if coll.IsFanOut() {
+		if err := s.requireEveryClusterReady(ctx, coll, executionID, refs); err != nil {
+			return err
+		}
 	}
 	phase := run.DerivePhase(status.PoolSize, running)
 	if err := run.CanTrigger(phase, ec, status.PoolSize); err != nil {
@@ -507,6 +530,16 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	// Quota is opt-in with the tenant it scopes to: an execution that never
 	// named one has no ceiling to check against, so every existing deployment
 	// (none of which set up tenant context) triggers exactly as before.
+	//
+	// A fan-out execution (phase 88) reserves on EVERY cluster it loads
+	// from: a tenant's ceiling is per cluster (migrations/0028), so the
+	// duplicated shard set occupies each target's capacity and each must
+	// admit it. A failure partway releases the reservations already made --
+	// the run is not starting, and holding capacity nothing uses until the
+	// window lapses would starve exactly the fan-out a ceiling exists to
+	// protect. Release drops the execution's reservations wholesale, which
+	// is safe here: Trigger cannot run while a run is active, and teardown
+	// releases a finished run's reservations before this point.
 	if coll.TenantID != nil {
 		engineUnits, err := engineEquivalents(coll.CPU, coll.Memory, ec.TotalEngines())
 		if err != nil {
@@ -514,8 +547,11 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 		}
 		start := s.now()
 		end := start.Add(time.Duration(ec.LongestDurationSeconds()) * time.Second)
-		if _, err := s.quota.Reserve(ctx, *coll.TenantID, coll.Cluster, engineUnits, start, end, executionID); err != nil {
-			return err
+		for _, cluster := range coll.Clusters() {
+			if _, err := s.quota.Reserve(ctx, *coll.TenantID, cluster, engineUnits, start, end, executionID); err != nil {
+				_ = s.quota.Release(ctx, executionID)
+				return err
+			}
 		}
 	}
 
@@ -564,8 +600,83 @@ func (s *Service) Trigger(ctx context.Context, executionID int64) error {
 	}
 	// Begin streaming metrics from the now-running engines and open a usage
 	// launch (best effort: accounting must not fail a successful trigger).
+	// A fan-out execution's pods are its shard set duplicated on every target
+	// cluster, so the usage launch records the pods that actually exist.
 	if proj, perr := s.repo.GetProject(ctx, coll.ProjectID); perr == nil {
-		_ = s.usage.RecordStart(ctx, executionID, proj.Owner, ec.TotalEngines(), run.VirtualUsers(ec))
+		_ = s.usage.RecordStart(ctx, executionID, proj.Owner, fanOutEngines(ec.TotalEngines(), coll), run.VirtualUsers(ec))
+	}
+	return nil
+}
+
+// fanOutEngines is the engine-pod count an execution actually deploys: the
+// profile's own count, multiplied by the number of target clusters of a
+// fan-out execution (full shard duplication). An ordinary execution's count
+// is its profile's, unchanged.
+func fanOutEngines(profileEngines int, exe execution.Execution) int {
+	if !exe.IsFanOut() {
+		return profileEngines
+	}
+	return profileEngines * len(exe.FanOutTargets)
+}
+
+// executionStatusAcross reports an execution's scheduler readiness summed
+// across every cluster it runs on: pool size and per-scenario deployed
+// counts add up, so downstream pool-size semantics -- Trigger's phase
+// checks, the abandoned-run sweep, the status view -- keep meaning "engine
+// pods this execution has, wherever they run". An ordinary execution is a
+// single-cluster call, exactly as before fan-out existed. It gates nothing:
+// readiness strictness is requireEveryClusterReady's, because a read view
+// of a half-deployed fan-out is legitimate (it is what Deploy progress
+// looks like), while a trigger against one is not.
+func (s *Service) executionStatusAcross(ctx context.Context, exe execution.Execution, executionID int64, refs []ports.ScenarioRef) (ports.ExecutionStatus, error) {
+	clusters := exe.Clusters()
+	if len(clusters) == 1 {
+		return s.sched.ExecutionStatus(ctx, ports.ClusterRef(clusters[0]), executionID, refs)
+	}
+	var total ports.ExecutionStatus
+	deployed := make(map[int64]int, len(refs))
+	reachable := true
+	for _, cluster := range clusters {
+		st, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(cluster), executionID, refs)
+		if err != nil {
+			return ports.ExecutionStatus{}, fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+		}
+		total.PoolSize += st.PoolSize
+		for _, pr := range st.Scenarios {
+			if !pr.Reachable {
+				reachable = false
+			}
+			deployed[pr.ScenarioID] += pr.EnginesDeployed
+		}
+	}
+	for _, ref := range refs {
+		total.Scenarios = append(total.Scenarios, ports.ScenarioReadiness{
+			ScenarioID: ref.ScenarioID, EnginesWanted: ref.Shards,
+			EnginesDeployed: deployed[ref.ScenarioID], Reachable: reachable,
+		})
+	}
+	return total, nil
+}
+
+// requireEveryClusterReady refuses a fan-out trigger unless EVERY target
+// cluster's pool covers the whole load profile: under full duplication the
+// summed pool can cover the profile while a cluster's pods never came up,
+// and a run opened against that would silently measure half the world. The
+// error names the cluster that is short.
+func (s *Service) requireEveryClusterReady(ctx context.Context, exe execution.Execution, executionID int64, refs []ports.ScenarioRef) error {
+	wanted := 0
+	for _, ref := range refs {
+		wanted += ref.Shards
+	}
+	for _, cluster := range exe.FanOutTargets {
+		st, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(cluster), executionID, refs)
+		if err != nil {
+			return fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+		}
+		if st.PoolSize < wanted {
+			return fmt.Errorf("lifecycle: fan-out cluster %q: %w (have %d of %d)",
+				cluster, run.ErrEnginesNotReady, st.PoolSize, wanted)
+		}
 	}
 	return nil
 }
@@ -703,7 +814,7 @@ func (s *Service) ReconcileAbandoned(ctx context.Context, after time.Duration) (
 		if err != nil {
 			return nil, err
 		}
-		status, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(coll.Cluster), orun.ExecutionID, planRefs(scenarios))
+		status, err := s.executionStatusAcross(ctx, coll, orun.ExecutionID, planRefs(scenarios))
 		if err != nil {
 			return nil, err
 		}
@@ -880,26 +991,36 @@ func (s *Service) Stop(ctx context.Context, executionID int64) error {
 // clusterFor returns the ClusterRef an execution's engines live on: its
 // configured cluster, empty meaning the deployment default. Status, purge, and
 // log operations resolve it so they target the same cluster the execution was
-// deployed to.
+// deployed to. A fan-out execution has no single cluster; callers that must
+// address one use clustersFor (all targets) or defaultClusterFor (the first,
+// for operations a cluster must merely be named for).
 func (s *Service) clusterFor(ctx context.Context, executionID int64) (ports.ClusterRef, error) {
 	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
 		return "", err
 	}
+	if coll.IsFanOut() {
+		return ports.ClusterRef(coll.FanOutTargets[0]), nil
+	}
 	return ports.ClusterRef(coll.Cluster), nil
 }
 
-// Purge stops any in-progress run and removes all engines of an execution.
+// Purge stops any in-progress run and removes all engines of an execution --
+// on EVERY cluster a fan-out execution deployed to (phase 88), or its single
+// cluster otherwise. A failure partway fails the purge; the next purge is
+// idempotent and finishes the rest.
 func (s *Service) Purge(ctx context.Context, executionID int64) error {
-	cluster, err := s.clusterFor(ctx, executionID)
+	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
 		return err
 	}
 	if err := s.teardownAndCapture(ctx, executionID); err != nil {
 		return err
 	}
-	if err := s.sched.PurgeExecution(ctx, cluster, executionID); err != nil {
-		return err
+	for _, cluster := range coll.Clusters() {
+		if err := s.sched.PurgeExecution(ctx, ports.ClusterRef(cluster), executionID); err != nil {
+			return fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+		}
 	}
 	s.metrics.Purge(executionID)
 	return nil
@@ -953,6 +1074,15 @@ func RunShardKey(runID, scenarioID int64, shard int, ext string) string {
 	return fmt.Sprintf("run/%d/scenario-%d-shard-%d.%s", runID, scenarioID, shard, ext)
 }
 
+// RunShardClusterKey is RunShardKey's fan-out form: one cluster's copy of a
+// shard artefact. Under full shard duplication the same (scenario, shard)
+// exists on every target cluster, so the cluster name is what keeps the
+// copies from overwriting each other. The httpapi read side reaches a
+// fan-out copy through the same key, via its cluster query parameter.
+func RunShardClusterKey(runID, scenarioID int64, shard int, cluster, ext string) string {
+	return fmt.Sprintf("run/%d/cluster-%s/scenario-%d-shard-%d.%s", runID, cluster, scenarioID, shard, ext)
+}
+
 // runLogKey is the object-store key for one shard's engine log.
 func runLogKey(runID, scenarioID int64, shard int) string {
 	return RunShardKey(runID, scenarioID, shard, "log")
@@ -969,9 +1099,12 @@ func runLogKey(runID, scenarioID int64, shard int) string {
 // Every shard's PodLog/Upload round trip is independent of every other's, so
 // they run concurrently rather than one after another -- an execution with
 // several scenarios can have dozens of shards, and Purge is a request a
-// customer is waiting on.
+// customer is waiting on. Under fan-out the same shard indexes exist on every
+// target cluster, so each cluster's copy is captured under its own
+// cluster-qualified key (RunShardClusterKey) -- a shared key would let the
+// last cluster's log overwrite every earlier one's.
 func (s *Service) captureLogs(ctx context.Context, executionID, runID int64) {
-	cluster, err := s.clusterFor(ctx, executionID)
+	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
 		return
 	}
@@ -980,17 +1113,25 @@ func (s *Service) captureLogs(ctx context.Context, executionID, runID int64) {
 		return
 	}
 	var wg sync.WaitGroup
-	for _, ep := range scenarios {
-		for i := 0; i < ep.Engines; i++ {
-			wg.Add(1)
-			go func(scenarioID int64, shard int) {
-				defer wg.Done()
-				log, err := s.sched.PodLog(ctx, cluster, executionID, scenarioID, shard)
-				if err != nil {
-					return
-				}
-				_ = s.store.Upload(ctx, runLogKey(runID, scenarioID, shard), strings.NewReader(log))
-			}(ep.ScenarioID, i)
+	for _, cluster := range coll.Clusters() {
+		ref := ports.ClusterRef(cluster)
+		fanOut := coll.IsFanOut()
+		for _, ep := range scenarios {
+			for i := 0; i < ep.Engines; i++ {
+				wg.Add(1)
+				go func(ref ports.ClusterRef, fanOut bool, scenarioID int64, shard int) {
+					defer wg.Done()
+					log, err := s.sched.PodLog(ctx, ref, executionID, scenarioID, shard)
+					if err != nil {
+						return
+					}
+					key := runLogKey(runID, scenarioID, shard)
+					if fanOut {
+						key = RunShardClusterKey(runID, scenarioID, shard, string(ref), "log")
+					}
+					_ = s.store.Upload(ctx, key, strings.NewReader(log))
+				}(ref, fanOut, ep.ScenarioID, i)
+			}
 		}
 	}
 	wg.Wait()
@@ -1238,9 +1379,11 @@ func (s *Service) RunExecutionID(ctx context.Context, runID int64) (int64, error
 	return rec.ExecutionID, nil
 }
 
-// Status reports the deployment/run status of an execution.
+// Status reports the deployment/run status of an execution, summed across
+// every cluster it runs on: a fan-out execution's pool and per-scenario
+// deployed counts are the totals over all its target clusters.
 func (s *Service) Status(ctx context.Context, executionID int64) (Status, error) {
-	cluster, err := s.clusterFor(ctx, executionID)
+	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1248,7 +1391,7 @@ func (s *Service) Status(ctx context.Context, executionID int64) (Status, error)
 	if err != nil {
 		return Status{}, err
 	}
-	sched, err := s.sched.ExecutionStatus(ctx, cluster, executionID, planRefs(scenarios))
+	sched, err := s.executionStatusAcross(ctx, coll, executionID, planRefs(scenarios))
 	if err != nil {
 		return Status{}, err
 	}
@@ -1278,22 +1421,96 @@ func (s *Service) Status(ctx context.Context, executionID int64) (Status, error)
 	return out, nil
 }
 
-// EnginesDetail reports the engine pods and ingress of an execution.
+// ClusterStatus is Status's per-cluster view: one target cluster's snapshot
+// of a fan-out execution's scenarios, for the detail page's per-cluster
+// cards. cluster must name a cluster the execution actually runs on (a
+// fan-out target, or its own cluster); anything else is ports.ErrNotFound --
+// an addressable mistake rather than a silently-elsewhere read.
+func (s *Service) ClusterStatus(ctx context.Context, executionID int64, cluster string) (Status, error) {
+	coll, err := s.repo.GetExecution(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	if !slices.Contains(coll.Clusters(), cluster) {
+		return Status{}, fmt.Errorf("%w: execution %d does not run on cluster %q", ports.ErrNotFound, executionID, cluster)
+	}
+	scenarios, err := s.repo.LoadProfileFor(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	sched, err := s.sched.ExecutionStatus(ctx, ports.ClusterRef(cluster), executionID, planRefs(scenarios))
+	if err != nil {
+		return Status{}, err
+	}
+	_, running, err := s.repo.CurrentRun(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	runningByScenario, err := s.runningByScenario(ctx, executionID)
+	if err != nil {
+		return Status{}, err
+	}
+	out := Status{Phase: run.DerivePhase(sched.PoolSize, running), PoolSize: sched.PoolSize}
+	for _, pr := range sched.Scenarios {
+		ps := ScenarioStatus{
+			ScenarioID:      pr.ScenarioID,
+			EnginesWanted:   pr.EnginesWanted,
+			EnginesDeployed: pr.EnginesDeployed,
+			Reachable:       pr.Reachable,
+		}
+		if started, ok := runningByScenario[pr.ScenarioID]; ok {
+			ps.InProgress = true
+			ps.StartedTime = started
+		}
+		out.Scenarios = append(out.Scenarios, ps)
+	}
+	return out, nil
+}
+
+// EnginesDetail reports the engine pods and ingress of an execution. A
+// fan-out execution's pods are concatenated across its target clusters,
+// each pod named "cluster/pod" -- pod names repeat across clusters, so the
+// prefix is what keeps the list honest. Ingress is the first cluster's; a
+// fan-out run's traffic does not enter through one address.
 func (s *Service) EnginesDetail(ctx context.Context, projectID, executionID int64) (ports.ExecutionDetail, error) {
-	cluster, err := s.clusterFor(ctx, executionID)
+	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
 		return ports.ExecutionDetail{}, err
 	}
-	return s.sched.EngineDetail(ctx, cluster, projectID, executionID)
+	clusters := coll.Clusters()
+	if len(clusters) == 1 {
+		return s.sched.EngineDetail(ctx, ports.ClusterRef(clusters[0]), projectID, executionID)
+	}
+	var out ports.ExecutionDetail
+	for _, cluster := range clusters {
+		d, err := s.sched.EngineDetail(ctx, ports.ClusterRef(cluster), projectID, executionID)
+		if err != nil {
+			return ports.ExecutionDetail{}, fmt.Errorf("lifecycle: fan-out cluster %q: %w", cluster, err)
+		}
+		if out.IngressIP == "" {
+			out.IngressIP = d.IngressIP
+		}
+		for _, e := range d.Engines {
+			e.Name = cluster + "/" + e.Name
+			out.Engines = append(out.Engines, e)
+		}
+	}
+	return out, nil
 }
 
-// PodLog returns the logs of a scenario's engine pod.
-func (s *Service) PodLog(ctx context.Context, executionID, scenarioID int64) (string, error) {
-	cluster, err := s.clusterFor(ctx, executionID)
-	if err != nil {
-		return "", err
+// PodLog returns the logs of a scenario's engine pod. cluster names which of
+// a fan-out execution's target clusters to read from; empty means the
+// execution's own single cluster (a fan-out execution's first target when a
+// caller names none -- the detail view's default tab).
+func (s *Service) PodLog(ctx context.Context, executionID, scenarioID int64, cluster string) (string, error) {
+	ref := ports.ClusterRef(cluster)
+	if ref == "" {
+		var err error
+		if ref, err = s.clusterFor(ctx, executionID); err != nil {
+			return "", err
+		}
 	}
-	return s.sched.PodLog(ctx, cluster, executionID, scenarioID, 0)
+	return s.sched.PodLog(ctx, ref, executionID, scenarioID, 0)
 }
 
 // Resume returns the scenarios still marked running in this deployment context, so

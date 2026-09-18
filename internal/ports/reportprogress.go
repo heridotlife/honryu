@@ -33,6 +33,12 @@ type ProgressBatch struct {
 	ScenarioID int64
 	// ShardIndex identifies the pod within its scenario's StatefulSet.
 	ShardIndex int
+	// Cluster is the pod's load origin (phase 88): a fan-out run's target
+	// clusters each run a pod with the same (scenario, shard) indexes, so the
+	// cluster is what keeps their working state -- and above all their
+	// finished flags -- apart. Empty is the deployment default cluster, the
+	// identity every ordinary run's pods keep.
+	Cluster string
 	// StreamID names the sidecar instance. Sequences count from one per
 	// instance, so a change of stream means a restarted pod rather than a
 	// duplicate.
@@ -52,6 +58,10 @@ type ShardState struct {
 	// repeats across an execution's scenarios.
 	ScenarioID int64
 	ShardIndex int
+	// Cluster is the shard's load origin (phase 88): repeats across a
+	// fan-out run's target clusters -- the same pod indexes, different
+	// clusters -- and empty for the deployment default.
+	Cluster string
 	// Finished means this shard sent its last batch. It does not imply an exit
 	// code is known -- a pod torn down before it could write one still finishes.
 	Finished bool

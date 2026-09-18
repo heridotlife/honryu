@@ -35,9 +35,11 @@ type progressRun struct {
 
 // shardKey identifies a pod within a run. Shard index alone cannot: it is a
 // StatefulSet ordinal scoped to one scenario's own pods, and repeats across
-// every scenario an execution bundles into one run.
+// every scenario an execution bundles into one run -- and, since fan-out
+// (phase 88), across every target cluster running the duplicated shard set.
 type shardKey struct {
 	scenarioID int64
+	cluster    string
 	shardIndex int
 }
 
@@ -77,7 +79,7 @@ func (p *ReportProgress) Absorb(_ context.Context, b ports.ProgressBatch) error 
 		run = &progressRun{acc: report.NewAccumulator(), shards: map[shardKey]*shardStream{}}
 		p.runs[b.RunID] = run
 	}
-	key := shardKey{scenarioID: b.ScenarioID, shardIndex: b.ShardIndex}
+	key := shardKey{scenarioID: b.ScenarioID, cluster: b.Cluster, shardIndex: b.ShardIndex}
 	shard, ok := run.shards[key]
 	if !ok {
 		shard = &shardStream{streamID: b.StreamID}
@@ -131,13 +133,16 @@ func (p *ReportProgress) ShardStates(_ context.Context, runID int64) ([]ports.Sh
 	out := make([]ports.ShardState, 0, len(run.shards))
 	for key, shard := range run.shards {
 		out = append(out, ports.ShardState{
-			ScenarioID: key.scenarioID, ShardIndex: key.shardIndex,
+			ScenarioID: key.scenarioID, Cluster: key.cluster, ShardIndex: key.shardIndex,
 			Finished: shard.finished, ExitCode: shard.exitCode,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ScenarioID != out[j].ScenarioID {
 			return out[i].ScenarioID < out[j].ScenarioID
+		}
+		if out[i].Cluster != out[j].Cluster {
+			return out[i].Cluster < out[j].Cluster
 		}
 		return out[i].ShardIndex < out[j].ShardIndex
 	})
