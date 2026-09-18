@@ -51,15 +51,14 @@ func clusterBatch(e *env, cluster, stream string, seq, ts int64, samples, failed
 // fakeBatch is the input half of clusterBatch, kept as a plain struct so the
 // test body reads as the sequence of pushes it is.
 type fakeBatch struct {
-	e        *env
-	cluster  string
-	stream   string
-	seq      int64
-	ts       int64
-	samples  int64
-	failed   int64
-	final    bool
-	exitCode int
+	e       *env
+	cluster string
+	stream  string
+	seq     int64
+	ts      int64
+	samples int64
+	failed  int64
+	final   bool
 }
 
 func (f fakeBatch) post(t *testing.T) {

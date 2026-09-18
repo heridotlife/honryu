@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -43,7 +42,6 @@ import (
 // Without it a single fake.Scheduler would answer for both clusters and the
 // per-cluster assertions below would be comparing one pool to itself.
 type routerScheduler struct {
-	mu       sync.Mutex
 	clusters map[ports.ClusterRef]*fake.Scheduler
 }
 
