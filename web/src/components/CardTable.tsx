@@ -20,6 +20,16 @@ import useMinWidth from '../hooks/useMinWidth';
  *   - onRowClick       -> tr / card click
  *   - rowClassName     -> tr classes / (cardClassName covers the card)
  *   - actions.render   -> right-aligned last column / inline card footer
+ *
+ * Phase 86 additions, same discipline (RunCompare's delta table pins its
+ * rows/cells by data-metric/data-delta, and its verdict chip lives in the
+ * candidate's <th>):
+ *   - rowAttributes    -> extra attributes on the <tr> / card root
+ *   - cellAttributes   -> extra attributes on the <td> / value slot
+ *   - tdClassName      -> td classes, static string OR per-row (delta tone)
+ *   - thAttributes + headerExtra -> the <th> ONLY: a column header has no
+ *     card counterpart, so below sm headerExtra does not render -- the
+ *     per-row cells it summarizes (colored deltas) render in both modes.
  * The primary column (smallest card) becomes the card title and is left
  * out of the label:value pairs, so the title never repeats itself.
  */
@@ -35,10 +45,18 @@ export interface CardTableColumn<Row> {
   primary?: boolean;
   /** Per-row testid for the cell wrapper (<td> at sm+, value slot below). */
   cellTestId?: (row: Row) => string | undefined;
+  /** Extra cell attributes (e.g. data-delta) on the <td> and the value slot. */
+  cellAttributes?: (row: Row) => Record<string, string | undefined>;
+  /** Extra <th> attributes (e.g. data-run-id); table branch only. */
+  thAttributes?: Record<string, string | undefined>;
+  /** Content rendered in the <th> after the header (verdict chips); table
+   * branch only -- never a card pair, so card labels stay plain strings. */
+  headerExtra?: ReactNode;
   /** The <th> classes at sm+ (unchanged from the page's old markup). */
   thClassName?: string;
-  /** The <td> classes at sm+ (unchanged from the page's old markup). */
-  tdClassName?: string;
+  /** The <td> classes at sm+ -- a static string, or per-row when a cell's
+   * tone depends on the row (RunCompare's delta coloring). */
+  tdClassName?: string | ((row: Row) => string);
 }
 
 export interface CardTableProps<Row> {
@@ -55,6 +73,8 @@ export interface CardTableProps<Row> {
   tbodyClassName?: string;
   /** Per-row testid on the <tr> at sm+ and the card root below sm. */
   rowTestId?: (row: Row) => string | undefined;
+  /** Extra row attributes (e.g. data-metric) on the <tr> and card root. */
+  rowAttributes?: (row: Row) => Record<string, string | undefined>;
   /** The <tr> classes at sm+ (separators, hover, selection). */
   rowClassName?: (row: Row) => string;
   /** The card root classes below sm (selection, cursor), after the base card classes. */
@@ -92,6 +112,7 @@ export default function CardTable<Row>({
   headerRowClassName,
   tbodyClassName,
   rowTestId,
+  rowAttributes,
   rowClassName,
   cardClassName,
   rowTitle,
@@ -109,8 +130,9 @@ export default function CardTable<Row>({
         <thead>
           <tr className={headerRowClassName}>
             {columns.map((col) => (
-              <th key={col.key} scope="col" className={col.thClassName}>
+              <th key={col.key} scope="col" className={col.thClassName} {...(col.thAttributes ?? {})}>
                 {col.header}
+                {col.headerExtra}
               </th>
             ))}
             {actions !== undefined && (
@@ -135,9 +157,15 @@ export default function CardTable<Row>({
                 title={rowTitle?.(row)}
                 className={rowClassName?.(row)}
                 onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}
+                {...(rowAttributes?.(row) ?? {})}
               >
                 {columns.map((col) => (
-                  <td key={col.key} className={col.tdClassName} data-testid={col.cellTestId?.(row)}>
+                  <td
+                    key={col.key}
+                    className={typeof col.tdClassName === 'function' ? col.tdClassName(row) : col.tdClassName}
+                    data-testid={col.cellTestId?.(row)}
+                    {...(col.cellAttributes?.(row) ?? {})}
+                  >
                     {col.render(row)}
                   </td>
                 ))}
@@ -166,6 +194,7 @@ export default function CardTable<Row>({
             title={rowTitle?.(row)}
             onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}
             className={`rounded-xl border border-slate-200 p-3 dark:border-slate-700 ${cardClassName?.(row) ?? ''}`}
+            {...(rowAttributes?.(row) ?? {})}
           >
             {primary !== undefined && (
               <div className="text-body-sm font-medium text-slate-900 dark:text-white">{primary.render(row)}</div>
@@ -175,7 +204,11 @@ export default function CardTable<Row>({
                 {pairs.map((col) => (
                   <div key={col.key} className="flex items-baseline justify-between gap-3">
                     <dt className="shrink-0 text-caption text-slate-500 dark:text-slate-400">{col.header}</dt>
-                    <dd className="min-w-0 text-right text-body-sm" data-testid={col.cellTestId?.(row)}>
+                    <dd
+                      className="min-w-0 text-right text-body-sm"
+                      data-testid={col.cellTestId?.(row)}
+                      {...(col.cellAttributes?.(row) ?? {})}
+                    >
                       {col.render(row)}
                     </dd>
                   </div>

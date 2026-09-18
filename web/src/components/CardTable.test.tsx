@@ -263,3 +263,101 @@ describe('CardTable (phase 79)', () => {
     expect(empty?.textContent).toBe('No role grants in this tenant yet.');
   });
 });
+
+// Phase 86: the delta-table conversions needed richer hooks than plain
+// testids -- RunCompare's suite pins rows by data-metric, cells by
+// data-delta, and the regression chip lives inside the candidate's <th>.
+// The extensions keep the same mode-for-mode discipline: row/cell
+// attributes ride both branches, per-row td classes stay table-branch
+// styling, and header extras are th-only (a column header has no card
+// counterpart -- the cells it summarizes render below sm too).
+describe('CardTable (phase 86 extensions)', () => {
+  const attrColumns: CardTableColumn<Row>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      primary: true,
+      thClassName: 'px-4 py-3',
+      tdClassName: 'px-4 py-3',
+      render: (r) => r.name,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cellTestId: (r) => `status-${r.id}`,
+      cellAttributes: (r) => ({ 'data-run': String(r.id) }),
+      thClassName: 'px-4 py-3',
+      // Per-row tone: the failed row colors, the passed one does not.
+      tdClassName: (r) => `px-4 py-3 ${r.status === 'failed' ? 'text-red-600' : ''}`,
+      render: (r) => r.status,
+    },
+  ];
+
+  it('spreads row/cell attributes on the tr/td and again on the card root/value slot', async () => {
+    matchMediaStubs(true);
+    await renderCardTable({ columns: attrColumns, rowAttributes: (r) => ({ 'data-row': r.name }) });
+    const tr = container!.querySelector('[data-testid="row-1"]')!;
+    expect(tr.tagName).toBe('TR');
+    expect(tr.getAttribute('data-row')).toBe('checkout-baseline');
+    const td = tr.querySelector('[data-testid="status-1"]')!;
+    expect(td.tagName).toBe('TD');
+    expect(td.getAttribute('data-run')).toBe('1');
+    // The per-row td class resolves per row: only the failed row colors.
+    expect(td.className).not.toContain('text-red-600');
+    expect(container!.querySelector('[data-testid="row-2"] [data-testid="status-2"]')!.className).toContain('text-red-600');
+
+    await act(async () => {
+      root!.unmount();
+    });
+    container?.remove();
+
+    matchMediaStubs(false);
+    await renderCardTable({ columns: attrColumns, rowAttributes: (r) => ({ 'data-row': r.name }) });
+    const li = container!.querySelector('[data-testid="row-1"]')!;
+    expect(li.tagName).toBe('LI');
+    expect(li.getAttribute('data-row')).toBe('checkout-baseline');
+    const dd = li.querySelector('[data-testid="status-1"]')!;
+    expect(dd.tagName).toBe('DD');
+    expect(dd.getAttribute('data-run')).toBe('1');
+  });
+
+  it('renders thAttributes and headerExtra in the th only -- never in the card branch', async () => {
+    const chipColumns: CardTableColumn<Row>[] = [
+      { key: 'name', header: 'Name', primary: true, thClassName: 'px-4 py-3', tdClassName: 'px-4 py-3', render: (r) => r.name },
+      {
+        key: 'status',
+        header: 'Status',
+        thAttributes: { 'data-owner': 'status' },
+        headerExtra: (
+          <span data-testid="col-chip" className="ml-2">
+            verdict
+          </span>
+        ),
+        thClassName: 'px-4 py-3',
+        tdClassName: 'px-4 py-3',
+        render: (r) => r.status,
+      },
+    ];
+
+    matchMediaStubs(true);
+    await renderCardTable({ columns: chipColumns });
+    const th = container!.querySelector('th[data-owner="status"]')!;
+    expect(th).not.toBeNull();
+    // The extra rides INSIDE the th, right after the header text.
+    expect(th.querySelector('[data-testid="col-chip"]')?.textContent).toBe('verdict');
+    expect(th.textContent).toBe('Statusverdict');
+
+    await act(async () => {
+      root!.unmount();
+    });
+    container?.remove();
+
+    matchMediaStubs(false);
+    await renderCardTable({ columns: chipColumns });
+    // Below sm the header extra is gone outright and the pair label stays
+    // the plain header string.
+    expect(container!.querySelector('[data-testid="col-chip"]')).toBeNull();
+    const card = container!.querySelector('[data-testid="row-1"]')!;
+    expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual(['Status']);
+  });
+});

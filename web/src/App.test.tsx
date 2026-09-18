@@ -102,7 +102,15 @@ async function renderAppAt(url: string, me: () => Response) {
     return json({ message: `no stub for ${url_}` }, 500);
   }));
   // DashboardLayout's theme effect asks matchMedia, which jsdom lacks.
-  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }));
+  // Phase 86: query-aware, the shape CardTable/Reports tests established --
+  // the theme's prefers-color-scheme answers false (dark-mode listeners
+  // dormant), min-width queries answer true so a mounted CardTable renders
+  // the desktop table branch the compare deep-link pin below asserts
+  // against (a blanket `false` would swap it to the card branch).
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query.includes('min-width') ? true : false })),
+  );
   root = createRoot(container);
   await act(async () => {
     root!.render(<App />);
