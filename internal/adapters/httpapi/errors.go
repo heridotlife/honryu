@@ -20,6 +20,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/tenantapp"
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/campaign"
+	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
 	"github.com/heridotlife/honryu/internal/domain/compile"
 	"github.com/heridotlife/honryu/internal/domain/digest"
@@ -47,6 +48,9 @@ var badRequestErrors = []error{
 	execution.ErrNameRequired, execution.ErrNameTooLong, execution.ErrProjectRequired,
 	loadprofile.ErrScenarioRequired, loadprofile.ErrEnginesInvalid, loadprofile.ErrConcurrencyInvalid,
 	loadprofile.ErrDurationInvalid, loadprofile.ErrNoScenarios,
+	// Phase 90: an unresolvable mode statement is the caller's input -- an
+	// unknown mode name, or a mode without the target rate it is defined by.
+	loadprofile.ErrModeInvalid, loadprofile.ErrModeThroughput,
 	scenarioapp.ErrInvalidFilename, scenarioapp.ErrRequestsInvalid,
 	// An unusable JMeter plan is the caller's file, not a server fault: the
 	// import must say which of the three ways it was unusable.
@@ -150,6 +154,7 @@ var conflictErrors = []error{
 func respondError(w http.ResponseWriter, err error) {
 	var probeErr *ports.ProbeError
 	var finishedErr *lifecycleapp.EnginesFinishedError
+	var modeRefused *executionapp.ModeResolutionError
 	switch {
 	case errors.Is(err, ports.ErrNotFound), errors.Is(err, ports.ErrObjectNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -186,6 +191,21 @@ func respondError(w http.ResponseWriter, err error) {
 		} else {
 			writeError(w, http.StatusTooManyRequests, "reservation would exceed tenant quota")
 		}
+	case errors.As(err, &modeRefused):
+		// Phase 90: a mode config the server cannot honestly resolve --
+		// no capacity profile, a stale one, or a finding that engines are
+		// not the limit -- is a state conflict, not bad input: the same PUT
+		// succeeds once the scenario is calibrated. The envelope carries
+		// the FanOut status, the capacity key it was asked about, and a
+		// per-status remediation so the operator's next click is obvious.
+		writeErrorDetails(w, http.StatusConflict, modeRefused.Error(), map[string]any{
+			"fanout_status": string(modeRefused.Status),
+			"scenario_id":   modeRefused.Key.ScenarioID,
+			"engine":        string(modeRefused.Key.Engine),
+			"cpu":           modeRefused.Key.CPU,
+			"memory":        modeRefused.Key.Memory,
+			"hint":          modeRemediation(modeRefused.Status),
+		})
 	case errors.As(err, &finishedErr):
 		// Triggering engines that already ran and finished: re-deploying is
 		// the fix. The verbatim conflict text stays the message (conflict
@@ -223,4 +243,25 @@ func matchesAny(err error, sentinels []error) bool {
 		}
 	}
 	return false
+}
+
+// modeRemediation is the per-status next step a 409 mode refusal
+// surfaces: most statuses say "calibrate", the ones recalibration cannot
+// fix say which knob actually moves (a lower rate, or Advanced mode's
+// manual engine count).
+func modeRemediation(status capacityprofile.Status) string {
+	switch status {
+	case capacityprofile.StatusNoProfile:
+		return "calibrate this scenario first (Execution page \u2192 Calibrate scenario), or configure it in Advanced mode"
+	case capacityprofile.StatusStale:
+		return "the scenario changed since its calibration; recalibrate it (Execution page \u2192 Calibrate scenario), or configure it in Advanced mode"
+	case capacityprofile.StatusTargetLimited:
+		return "one engine pod already overloaded the target during calibration; lower the target rate, or set engines yourself in Advanced mode"
+	case capacityprofile.StatusInconclusive:
+		return "the calibration found no ceiling (budget exhausted with both sides healthy); recalibrate with a higher max QPS, or set engines yourself in Advanced mode"
+	case capacityprofile.StatusEngineFloor:
+		return "even the lowest calibrated rate saturated the engine; the scenario or its criterion is too heavy for one pod -- use Advanced mode"
+	default:
+		return "calibrate this scenario, or configure it in Advanced mode"
+	}
 }
