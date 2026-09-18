@@ -7,6 +7,7 @@ package fake
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -575,14 +576,15 @@ func (s *Store) ListExecutionsByProjects(_ context.Context, projectIDs []int64) 
 	return out, nil
 }
 
-// ExecutionsWithActiveRunOnCluster returns the ids of executions on cluster
-// that have an active run, ordered by id.
+// ExecutionsWithActiveRunOnCluster returns the ids of executions that have
+// an active run and run on cluster -- their own cluster, or (phase 88) a
+// fan-out target list naming it. Ordered by id.
 func (s *Store) ExecutionsWithActiveRunOnCluster(_ context.Context, cluster string) ([]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []int64
 	for id, exe := range s.executions {
-		if exe.Cluster != cluster {
+		if exe.Cluster != cluster && !slices.Contains(exe.FanOutTargets, cluster) {
 			continue
 		}
 		if _, ok := s.currentRun[id]; ok {

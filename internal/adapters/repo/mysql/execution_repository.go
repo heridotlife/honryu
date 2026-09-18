@@ -267,12 +267,20 @@ func (r *Repository) DeleteExecution(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ExecutionsWithActiveRunOnCluster returns the ids of executions on cluster
-// that currently have an active run (an execution_run row), ordered by id.
+// ExecutionsWithActiveRunOnCluster returns the ids of executions that
+// currently have an active run (an execution_run row) and run on cluster:
+// the executions whose own cluster is cluster, and -- phase 88 -- every
+// fan-out execution whose target list names it (a fan-out run mid-flight
+// holds the target's engines exactly as a single-cluster one does, which is
+// what the cluster delete guard and the Clusters page read this for).
+// JSON_CONTAINS matches the quoted name inside the fanout_targets array;
+// NULL (every ordinary execution) never contains anything. Ordered by id.
 func (r *Repository) ExecutionsWithActiveRunOnCluster(ctx context.Context, cluster string) ([]int64, error) {
+	// #nosec G201 -- no interpolation: a fixed statement with bound params.
 	rows, err := r.db.QueryContext(ctx,
-		"SELECT e.id FROM execution e JOIN execution_run r ON r.execution_id = e.id WHERE e.cluster = ? ORDER BY e.id",
-		cluster)
+		"SELECT e.id FROM execution e JOIN execution_run r ON r.execution_id = e.id"+
+			" WHERE e.cluster = ? OR JSON_CONTAINS(e.fanout_targets, JSON_QUOTE(?)) ORDER BY e.id",
+		cluster, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("mysql: executions with active run on cluster: %w", err)
 	}

@@ -353,3 +353,63 @@ func TestIngestHTTP_GlobalTokenStillReachesByocExecutions(t *testing.T) {
 		t.Errorf("global token push for byoc execution = %d, want 202", rec.Code)
 	}
 }
+
+// --- Fan-out ingest scoping (phase 88) ----------------------------------------
+
+// fanOutExecution creates a fan-out execution over targets with an active
+// run, and returns a valid batch for it.
+func (e ingestEnv) fanOutExecution(t *testing.T, targets ...string) metrics.Batch {
+	t.Helper()
+	ctx := context.Background()
+	exe, err := execution.New("fanout", 1)
+	if err != nil {
+		t.Fatalf("new execution: %v", err)
+	}
+	exe.FanOutTargets = targets
+	id, err := e.store.CreateExecution(ctx, exe)
+	if err != nil {
+		t.Fatalf("create execution: %v", err)
+	}
+	_ = e.store.StoreLoadProfile(ctx, id, false, []loadprofile.Entry{
+		{ScenarioID: e.scenarioID, Concurrency: 1, Rampup: 1, Engines: 1, Duration: 10},
+	})
+	runID, err := e.store.StartRun(ctx, id, "")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	return metrics.Batch{ExecutionID: id, ScenarioID: e.scenarioID, RunID: runID, Intervals: []metrics.Interval{{
+		Seq: 1, Timestamp: 1, Label: "probe", Concurrency: 2, Samples: 9, Succeeded: 9,
+		Latency: metrics.Histogram{0.01: 9},
+	}}}
+}
+
+// A fan-out target cluster's token speaks for the execution exactly as a
+// single-cluster match does: every target's engines must be able to push or
+// no fan-out run could ever complete.
+func TestIngestHTTP_ClusterTokenAcceptsFanOutTarget(t *testing.T) {
+	t.Parallel()
+	e := newByocEnv(t)
+	e.registerCluster(t, "eu-1", "tok-eu")
+	e.registerCluster(t, "us-1", "tok-us")
+	b := e.fanOutExecution(t, "eu-1", "us-1")
+
+	for _, token := range []string{"tok-eu", "tok-us"} {
+		if rec := postBatch(t, e.h, token, b); rec.Code != http.StatusAccepted {
+			t.Fatalf("cluster token %q fan-out push status = %d, want 202 (%s)", token, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// A cluster that is NOT a target still cannot speak for the execution: a
+// rival cluster's token is scoped to its own executions, fan-out or not.
+func TestIngestHTTP_ClusterTokenRejectsNonTargetCluster(t *testing.T) {
+	t.Parallel()
+	e := newByocEnv(t)
+	e.registerCluster(t, "eu-1", "tok-eu")
+	e.registerCluster(t, "rival", "tok-rival")
+	b := e.fanOutExecution(t, "eu-1")
+
+	if rec := postBatch(t, e.h, "tok-rival", b); rec.Code != http.StatusForbidden {
+		t.Fatalf("rival token fan-out push status = %d, want 403", rec.Code)
+	}
+}

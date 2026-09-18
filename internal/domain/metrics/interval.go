@@ -73,6 +73,15 @@ type Batch struct {
 	// duplicates and discard the rest of the run.
 	StreamID  string     `json:"stream_id,omitempty"`
 	Intervals []Interval `json:"intervals"`
+	// Cluster is the load origin of the pod that pushed this batch: the
+	// registered cluster's name, empty for the deployment default. It is
+	// stamped by the CONTROL PLANE from the authenticated cluster ingest
+	// token (phase 88), never by the sidecar -- a pod cannot name its own
+	// cluster -- so a client-supplied value is overwritten at the door. It
+	// is what lets a fan-out run's report say which share of the load came
+	// from where; without it, full shard duplication makes every cluster's
+	// shard indexes collide.
+	Cluster string `json:"cluster,omitempty"`
 	// Final marks the last batch a pod will send, so the control plane knows the
 	// pod finished rather than went silent.
 	Final bool `json:"final,omitempty"`

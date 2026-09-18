@@ -203,6 +203,32 @@ type Report struct {
 	Errors      []ErrorSignature `json:"errors,omitempty"`
 
 	Labels []LabelSummary `json:"labels,omitempty"`
+
+	// ClusterResults is the per-cluster breakdown of a fan-out run (phase
+	// 88): one row per target cluster that actually pushed measurements,
+	// with its share of the run's samples and failures. nil on every
+	// single-cluster report and on a fan-out report finalised after a
+	// control-plane restart (the tally is in-memory); the run-level fields
+	// above remain the run's whole truth either way -- these rows add the
+	// origin split, they never replace it. Every row carries the run's own
+	// outcome: under full shard duplication all clusters ran the identical
+	// shard set under one verdict, and no per-cluster verdict evidence
+	// (exit codes are per shard, and shard indexes repeat across clusters)
+	// exists to say otherwise.
+	ClusterResults []ClusterResult `json:"cluster_results,omitempty"`
+}
+
+// ClusterResult is one cluster's share of a fan-out run.
+type ClusterResult struct {
+	// Cluster is the load origin: the registered cluster's name, empty for
+	// the deployment default.
+	Cluster string `json:"cluster"`
+	// Outcome is the run's outcome (see Report.ClusterResults' own doc for
+	// why it is not per-cluster evidence).
+	Outcome taurus.Outcome `json:"outcome"`
+	// Samples and Failed are this cluster's share of the run's requests.
+	Samples int64 `json:"samples"`
+	Failed  int64 `json:"failed"`
 }
 
 // Meta is the run's identity and intent, without its measurements.

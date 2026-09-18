@@ -21,7 +21,7 @@ const reportColumns = `run_id, execution_id, scenario_id, engine, cluster, corre
 	requested_concurrency, requested_throughput, requested_duration_seconds,
 	achieved_concurrency, achieved_throughput, achieved_duration_seconds,
 	achieved_samples, achieved_failed, error_rate,
-	attribution_target, attribution_engine, attribution_unknown, latency, labels`
+	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results`
 
 // SaveReport stores a run's report. The first report saved for a run is the
 // one that survives -- saving again for the same run is a no-op, not a
@@ -51,7 +51,14 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 	if err != nil {
 		return fmt.Errorf("mysql: encode labels: %w", err)
 	}
-
+	// nil ClusterResults (every single-cluster report) stays NULL, the
+	// additive-column convention 0072 documents.
+	var clusterResults any
+	if rep.ClusterResults != nil {
+		if clusterResults, err = json.Marshal(rep.ClusterResults); err != nil {
+			return fmt.Errorf("mysql: encode cluster results: %w", err)
+		}
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -59,14 +66,14 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_report (`+reportColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rep.RunID, rep.ExecutionID, rep.ScenarioID, string(rep.Engine), rep.Cluster, rep.CorrelationID, string(rep.Outcome),
 		rep.StartedAt.UTC(), rep.EndedAt.UTC(),
 		rep.Requested.Concurrency, rep.Requested.Throughput, rep.Requested.DurationSeconds,
 		rep.Achieved.Concurrency, rep.Achieved.Throughput, rep.Achieved.DurationSeconds,
 		rep.Achieved.Samples, rep.Achieved.Failed, rep.ErrorRate,
 		rep.Attribution.Target, rep.Attribution.Engine, rep.Attribution.Unknown,
-		latency, labels,
+		latency, labels, clusterResults,
 	); err != nil {
 		if isDuplicateKey(err) {
 			// Someone else's finalisation already won for this run; nothing to
@@ -224,6 +231,7 @@ func scanReport(s rowScanner) (report.Report, error) {
 		rep             report.Report
 		engine, outcome string
 		latency, labels []byte
+		clusterResults  []byte // JSON array or NULL
 	)
 	if err := s.Scan(
 		&rep.RunID, &rep.ExecutionID, &rep.ScenarioID, &engine, &rep.Cluster, &rep.CorrelationID, &outcome,
@@ -232,7 +240,7 @@ func scanReport(s rowScanner) (report.Report, error) {
 		&rep.Achieved.Concurrency, &rep.Achieved.Throughput, &rep.Achieved.DurationSeconds,
 		&rep.Achieved.Samples, &rep.Achieved.Failed, &rep.ErrorRate,
 		&rep.Attribution.Target, &rep.Attribution.Engine, &rep.Attribution.Unknown,
-		&latency, &labels,
+		&latency, &labels, &clusterResults,
 	); err != nil {
 		return report.Report{}, err
 	}
@@ -243,6 +251,9 @@ func scanReport(s rowScanner) (report.Report, error) {
 	}
 	if err := decodeJSON(labels, &rep.Labels); err != nil {
 		return report.Report{}, fmt.Errorf("mysql: decode labels: %w", err)
+	}
+	if err := decodeJSON(clusterResults, &rep.ClusterResults); err != nil {
+		return report.Report{}, fmt.Errorf("mysql: decode cluster results: %w", err)
 	}
 	return rep, nil
 }

@@ -71,8 +71,8 @@ func (r *Repository) Absorb(ctx context.Context, b ports.ProgressBatch) error {
 	// not be overwritten by a later call that has none.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE report_progress_shard SET seq=?, finished=finished|?, exit_code=COALESCE(?, exit_code)
-		 WHERE run_id=? AND scenario_id=? AND shard_index=?`,
-		highest, boolToInt(b.Final), nullPtr(b.ExitCode), b.RunID, b.ScenarioID, b.ShardIndex); err != nil {
+		 WHERE run_id=? AND scenario_id=? AND cluster=? AND shard_index=?`,
+		highest, boolToInt(b.Final), nullPtr(b.ExitCode), b.RunID, b.ScenarioID, b.Cluster, b.ShardIndex); err != nil {
 		return fmt.Errorf("mysql: advance shard progress: %w", err)
 	}
 	return tx.Commit()
@@ -81,16 +81,18 @@ func (r *Repository) Absorb(ctx context.Context, b ports.ProgressBatch) error {
 // lockShard takes the shard's row for update and returns the sequence already
 // absorbed from the batch's stream.
 //
-// A shard is identified by (run, scenario, shard index): shard index alone is
-// a StatefulSet ordinal scoped to one scenario's own pods and repeats across
-// every scenario an execution bundles into one run.
+// A shard is identified by (run, scenario, cluster, shard index): shard index
+// alone is a StatefulSet ordinal scoped to one scenario's own pods and repeats
+// across every scenario an execution bundles into one run -- and, since
+// fan-out (phase 88), across every target cluster running the duplicated
+// shard set.
 func lockShard(ctx context.Context, tx *sql.Tx, b ports.ProgressBatch) (int64, error) {
 	// The insert makes the row exist so it can be locked; the select then takes
 	// the lock whether this call created it or another did.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO report_progress_shard (run_id, scenario_id, shard_index, stream_id, seq)
-		 VALUES (?,?,?,?,0) ON DUPLICATE KEY UPDATE run_id=run_id`,
-		b.RunID, b.ScenarioID, b.ShardIndex, b.StreamID); err != nil {
+		`INSERT INTO report_progress_shard (run_id, scenario_id, cluster, shard_index, stream_id, seq)
+		 VALUES (?,?,?,?,?,0) ON DUPLICATE KEY UPDATE run_id=run_id`,
+		b.RunID, b.ScenarioID, b.Cluster, b.ShardIndex, b.StreamID); err != nil {
 		return 0, fmt.Errorf("mysql: open shard progress: %w", err)
 	}
 
@@ -100,8 +102,8 @@ func lockShard(ctx context.Context, tx *sql.Tx, b ports.ProgressBatch) (int64, e
 	)
 	if err := tx.QueryRowContext(ctx,
 		`SELECT stream_id, seq FROM report_progress_shard
-		 WHERE run_id=? AND scenario_id=? AND shard_index=? FOR UPDATE`,
-		b.RunID, b.ScenarioID, b.ShardIndex).Scan(&streamID, &seq); err != nil {
+		 WHERE run_id=? AND scenario_id=? AND cluster=? AND shard_index=? FOR UPDATE`,
+		b.RunID, b.ScenarioID, b.Cluster, b.ShardIndex).Scan(&streamID, &seq); err != nil {
 		return 0, fmt.Errorf("mysql: lock shard progress: %w", err)
 	}
 
@@ -110,8 +112,8 @@ func lockShard(ctx context.Context, tx *sql.Tx, b ports.ProgressBatch) (int64, e
 	if streamID != b.StreamID {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE report_progress_shard SET stream_id=?, seq=0
-			 WHERE run_id=? AND scenario_id=? AND shard_index=?`,
-			b.StreamID, b.RunID, b.ScenarioID, b.ShardIndex); err != nil {
+			 WHERE run_id=? AND scenario_id=? AND cluster=? AND shard_index=?`,
+			b.StreamID, b.RunID, b.ScenarioID, b.Cluster, b.ShardIndex); err != nil {
 			return 0, fmt.Errorf("mysql: reset shard stream: %w", err)
 		}
 		return 0, nil
@@ -472,8 +474,8 @@ func scanSignatureProgress(rows *sql.Rows) ([]report.ErrorSignature, error) {
 // ShardStates returns each shard seen so far and its completion state.
 func (r *Repository) ShardStates(ctx context.Context, runID int64) ([]ports.ShardState, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT scenario_id, shard_index, finished, exit_code FROM report_progress_shard
-		 WHERE run_id=? ORDER BY scenario_id, shard_index`, runID)
+		`SELECT scenario_id, cluster, shard_index, finished, exit_code FROM report_progress_shard
+		 WHERE run_id=? ORDER BY scenario_id, cluster, shard_index`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +488,7 @@ func (r *Repository) ShardStates(ctx context.Context, runID int64) ([]ports.Shar
 			finished int
 			code     sql.NullInt64
 		)
-		if err := rows.Scan(&st.ScenarioID, &st.ShardIndex, &finished, &code); err != nil {
+		if err := rows.Scan(&st.ScenarioID, &st.Cluster, &st.ShardIndex, &finished, &code); err != nil {
 			return nil, err
 		}
 		st.Finished = finished != 0
