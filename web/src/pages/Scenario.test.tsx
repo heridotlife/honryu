@@ -278,6 +278,66 @@ describe('Scenario detail (phase 67b)', () => {
     expect(lastSearch).toBe('');
   });
 
+  it('advanced latest config: the create shape renders inside the Run tab', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/executions/22/config')) {
+        return json({
+          'multi-test': {
+            name: 'checkout-load-2-load',
+            project_id: 1,
+            execution_id: 22,
+            tests: [{ name: 'from-baseline', scenario_id: 42, concurrency: 10, rampup: 30, engines: 2, duration: 300 }],
+          },
+        });
+      }
+      return undefined;
+    });
+    await renderScenario();
+
+    // No mode chip (advanced entry), the guidance note stays, and the
+    // ALWAYS-visible inputs arrive as the create shape — with the run
+    // history right below inside the same tab.
+    expect(container!.querySelector('[data-testid="run-mode-chip"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="run-advanced-entry"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="run-create"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="run-create-start"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="run-edit"]')).toBeNull();
+    expect(container!.querySelector('#panel-run [data-testid="runs-table"]')).not.toBeNull();
+  });
+
+  it('grant-less session: no start inputs in the Run tab, the history still there', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url === '/api/me') {
+        return json({
+          subject: 'demo:carol',
+          name: 'Carol',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { scenario: ['list', 'read'] },
+          demo: true,
+        });
+      }
+      return undefined;
+    });
+    await renderScenario();
+
+    // The statement stays…
+    expect(container!.querySelector('[data-testid="run-resolved"]')).not.toBeNull();
+    // …but with neither execution:update (the config PUT) nor
+    // execution:create, NO form renders — and without run:create no
+    // plain Start either. The Run tab is not the form's hostage: the
+    // history table stays (phase 95's RBAC honesty).
+    expect(container!.querySelector('[data-testid="run-edit"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="run-create"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="run-create-start"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="run-start"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="calibrate-button"]')).toBeNull();
+    expect(container!.querySelector('#panel-run [data-testid="runs-table"]')).not.toBeNull();
+  });
+
   it('calibrate posts to the scenario-scoped trigger and links the job view on 201', async () => {
     stubFetch();
     overrides.push((method, url) => {
