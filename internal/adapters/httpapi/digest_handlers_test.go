@@ -316,3 +316,37 @@ func TestRBAC_DigestConfigRequiresProjectUpdate(t *testing.T) {
 		t.Fatalf("viewer delete config = %d, want 403", rec.Code)
 	}
 }
+
+// TestDigestGateNotConfigured pins the optional-service gate every digest
+// route shares: with no digest service wired, each route answers the 404
+// "not configured" before any parsing or authorization; with the service
+// wired, the same reads proceed past the gate -- the config GET answering
+// the resource 404 that means "off" (a different 404 than the gate's own),
+// the feed answering its empty array.
+func TestDigestGateNotConfigured(t *testing.T) {
+	t.Parallel()
+	h := httpapi.NewRouter(httpapi.Deps{})
+	for _, rt := range []struct{ method, path string }{
+		{http.MethodPut, "/api/projects/1/digest"},
+		{http.MethodGet, "/api/projects/1/digest"},
+		{http.MethodDelete, "/api/projects/1/digest"},
+		{http.MethodGet, "/api/projects/1/digests"},
+	} {
+		if rec := do(t, h, rt.method, rt.path); rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s (unwired) = %d, want 404", rt.method, rt.path, rec.Code)
+		} else if !strings.Contains(rec.Body.String(), "digests not configured") {
+			t.Errorf("%s %s (unwired) body = %s, want the not-configured reason", rt.method, rt.path, rec.Body.String())
+		}
+	}
+
+	// The wired twin: the gate passes and the handler answers -- a 404 with
+	// the RESOURCE's reason, not the gate's.
+	wired := newDigestRouter(t, fake.NewStore(), fake.NewObjectStore())
+	projectID := createProjectForWebhooks(t, wired, "digest-gate")
+	if rec := do(t, wired, http.MethodGet, "/api/projects/"+itoa(projectID)+"/digest"); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "not configured") {
+		t.Fatalf("wired get config = %d (%s), want the resource 404 that means off", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, wired, http.MethodGet, "/api/projects/"+itoa(projectID)+"/digests"); rec.Code != http.StatusOK {
+		t.Fatalf("wired feed = %d (%s), want 200 with the empty array", rec.Code, rec.Body.String())
+	}
+}
