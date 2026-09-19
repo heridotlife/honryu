@@ -115,6 +115,80 @@ export function buildModeTest(
   };
 }
 
+// --- Multi-scenario Simple rows (phase 91) -------------------------------
+// A Simple Load card states one row per scenario: each row is its own
+// mode entry with its own derivation -- no cross-scenario sharing, ever.
+
+/** One Simple Load-card row: a scenario's name plus its mode statement. */
+export interface ModeRowValue extends ModeFormValue {
+  /** The row's scenario name. Blank is legal: the flow derives one at
+   * submit (the test name for the first row, name-2, name-3, ...). */
+  name: string;
+}
+
+/** The Load card's initial shape: exactly the phase-90 single row. */
+export const initialModeRows: ModeRowValue[] = [{ ...initialModeForm, name: '' }];
+
+/** A row's errors: the mode statement's own two rules plus the row's
+ * name (duplicates within the card only -- the server owns the rest). */
+export interface ModeRowErrors extends ModeFormErrors {
+  name?: string;
+}
+
+/**
+ * One row's validation: qps > 0 and duration > 0 (the server's own input
+ * rules, stated per row), plus a duplicate-name check against the card's
+ * other rows -- two rows naming the same scenario would create two
+ * scenarios the operator cannot tell apart. Blank names are legal and
+ * derived at submit, so they never error here.
+ */
+export function validateModeRow(row: ModeRowValue, allRows: ModeRowValue[]): ModeRowErrors {
+  const e: ModeRowErrors = validateModeForm(row);
+  const trimmed = row.name.trim();
+  if (trimmed !== '' && allRows.some(other => other !== row && other.name.trim() === trimmed)) {
+    e.name = `another row already names this scenario`;
+  }
+  return e;
+}
+
+/** Every row's errors, in row order. */
+export function validateModeRows(rows: ModeRowValue[]): ModeRowErrors[] {
+  return rows.map(r => validateModeRow(r, rows));
+}
+
+/** The submit guard: valid when every row is. */
+export function modeRowsValid(rows: ModeRowValue[]): boolean {
+  return validateModeRows(rows).every(e => Object.keys(e).length === 0);
+}
+
+/**
+ * The scenario name a row submits under: its own trimmed name, else a
+ * derived one -- the test name for the first row (exactly what the
+ * single-scenario flow always created), name-2, name-3, ... for the
+ * rest, so a never-named multi-row card still yields distinct scenarios.
+ */
+export function scenarioName(row: ModeRowValue, index: number, testName: string): string {
+  const trimmed = row.name.trim();
+  if (trimmed !== '') {
+    return trimmed;
+  }
+  return index === 0 ? testName : `${testName}-${index + 1}`;
+}
+
+/**
+ * The tests[] array a multi-scenario Simple submit PUTs: one mode-shaped
+ * entry per row, each bound to its own scenario, in row order. Each row
+ * resolves independently server-side; nothing is shared or derived
+ * across rows.
+ */
+export function buildModeTests(
+  testName: string,
+  scenarioIds: number[],
+  rows: ModeRowValue[]
+): Array<ReturnType<typeof buildModeTest>> {
+  return rows.map((row, i) => buildModeTest(scenarioName(row, i, testName), scenarioIds[i], row));
+}
+
 /** Whole-second compact duration: 600 -> "10m", 5400 -> "1h 30m", 45 -> "45s". */
 export function formatModeDuration(seconds: number): string {
   if (seconds <= 0) {

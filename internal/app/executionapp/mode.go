@@ -115,6 +115,88 @@ func (s *Service) WithModeSources(m ModeSources) *Service {
 	return s
 }
 
+// ResolvedDiff is one entry's resolved numbers: the four fields a mode
+// derivation owns. A re-resolve reports the Before/After pair so the
+// caller can show exactly what changed.
+type ResolvedDiff struct {
+	Engines     int `json:"engines"`
+	Concurrency int `json:"concurrency"`
+	Rampup      int `json:"rampup"`
+	Throughput  int `json:"throughput"`
+}
+
+// ReResolveEntry is one config entry's re-resolution verdict: the entry's
+// identity, its stored numbers (Before), and the numbers just persisted
+// (After). Changed is false for advanced entries (never touched) and for
+// mode entries whose current calibration derives exactly what the stored
+// snapshot already held.
+type ReResolveEntry struct {
+	ScenarioID int64        `json:"scenario_id"`
+	Name       string       `json:"name"`
+	Mode       string       `json:"mode,omitempty"`
+	Before     ResolvedDiff `json:"before"`
+	After      ResolvedDiff `json:"after"`
+	Changed    bool         `json:"changed"`
+}
+
+// ReResolveResult is the whole config's re-resolution report, one entry
+// per stored config entry, in stored order.
+type ReResolveResult struct {
+	Entries []ReResolveEntry `json:"entries"`
+}
+
+func resolvedDiff(e loadprofile.Entry) ResolvedDiff {
+	return ResolvedDiff{Engines: e.Engines, Concurrency: e.Concurrency, Rampup: e.Rampup, Throughput: e.Throughput}
+}
+
+// ReResolveConfig re-runs the stored config's mode entries through the
+// CURRENT resolution chain and persists the refreshed config as a new
+// version (phase 91): a mode entry snapshots its derivation at PUT time,
+// so a later recalibration leaves it stale -- and nothing else in the
+// pipeline may re-derive at run time (compile's byte-identical
+// reproducibility contract). The stored profile goes back through
+// StoreConfig whole, so every existing guarantee applies unchanged:
+// entries without a mode are re-validated and re-persisted
+// byte-identically, mode entries re-resolve against the current
+// capacity-profile FanOut and latency hint, the engine limit still
+// guards, and the persist is the same atomic replace every config upload
+// is. A refusal (profile missing/stale) returns before anything is
+// persisted. The result echoes each entry's old and new resolved numbers
+// so the caller can show a diff.
+func (s *Service) ReResolveConfig(ctx context.Context, executionID int64) (ReResolveResult, error) {
+	stored, err := s.GetConfig(ctx, executionID)
+	if err != nil {
+		return ReResolveResult{}, err
+	}
+	before := make([]loadprofile.Entry, len(stored.Content.Tests))
+	copy(before, stored.Content.Tests)
+	// resolveModes mutates the tests slice in place, so the snapshot above
+	// must precede the store; StoreConfig re-reads nothing, and a refusal
+	// returns before the persist.
+	if err := s.StoreConfig(ctx, executionID, stored.Content); err != nil {
+		return ReResolveResult{}, err
+	}
+	// After comes from a fresh read, not the mutated slice: the report is
+	// what is now stored, which is what a later deploy will run.
+	after, err := s.GetConfig(ctx, executionID)
+	if err != nil {
+		return ReResolveResult{}, err
+	}
+	out := make([]ReResolveEntry, 0, len(after.Content.Tests))
+	for i, a := range after.Content.Tests {
+		entry := ReResolveEntry{
+			ScenarioID: a.ScenarioID, Name: a.Name, Mode: a.Mode,
+			After: resolvedDiff(a),
+		}
+		if i < len(before) {
+			entry.Before = resolvedDiff(before[i])
+			entry.Changed = entry.Before != entry.After
+		}
+		out = append(out, entry)
+	}
+	return ReResolveResult{Entries: out}, nil
+}
+
 // resolveModes fills every mode entry's derived numbers in place:
 // engines from capacity-profile fan-out, concurrency by Little's Law
 // from the calibration report's p95 (fallback: the configured hint),

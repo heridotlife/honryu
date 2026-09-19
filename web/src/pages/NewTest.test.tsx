@@ -750,3 +750,163 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
     expect(fieldset.textContent).toContain('Cluster registry unavailable');
   });
 });
+
+// Phase 91: multi-scenario Simple submits. The Load card's rows each
+// create their own scenario (shared request shape), and the config PUT
+// carries one mode-shaped entry per row -- no cross-row derivation
+// sharing. Blank names derive checkout-smoke / checkout-smoke-2 at
+// submit; the single-row pins above are the provenance round-trip.
+describe('NewTest Simple multi-scenario (phase 91)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return (
+      <div data-testid="probe" data-path={location.pathname} data-state={JSON.stringify(location.state ?? null)} />
+    );
+  }
+
+  /** Mounts the page; pass false when the test installed its own fetch
+   * stub first (stubFlowApi would replace it). */
+  async function renderWithProbe(useDefaultStub = true) {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    if (useDefaultStub) {
+      stubFlowApi();
+    }
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <MemoryRouter initialEntries={['/executions/new']}>
+          <SessionProvider>
+            <Routes>
+              <Route path="/executions/new" element={<NewTest />} />
+              <Route path="/executions/:id" element={<LocationProbe />} />
+            </Routes>
+          </SessionProvider>
+        </MemoryRouter>
+      );
+    });
+    await act(async () => {});
+  }
+
+  it('creates one scenario per row and PUTs one mode entry per scenario', async () => {
+    const scenarioPosts: string[] = [];
+    const fragmentPuts: string[] = [];
+    let nextScenarioID = 41;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url.endsWith('/api/me')) {
+          return json({
+            subject: 'demo:a',
+            name: 'a',
+            email: '',
+            global_roles: [],
+            tenants: {},
+            permissions: { '*': ['*'] },
+            demo: true,
+          });
+        }
+        if (method === 'GET' && url.endsWith('/api/projects')) {
+          return json([]);
+        }
+        if (method === 'POST' && url.endsWith('/api/projects')) {
+          return json({ id: 1, name: 'tests-checkout-smoke' });
+        }
+        if (method === 'POST' && url.endsWith('/api/scenarios')) {
+          scenarioPosts.push(String(init?.body));
+          nextScenarioID++;
+          return json({ id: nextScenarioID });
+        }
+        if (method === 'POST' && url.endsWith('/api/executions')) {
+          return json({ id: 9 });
+        }
+        if (method === 'PUT' && /\/api\/scenarios\/\d+\/requests$/.test(url)) {
+          fragmentPuts.push(url);
+          return json({});
+        }
+        if (method === 'PUT' && url.endsWith('/api/executions/9/config')) {
+          puts.push({ url, body: String(init?.body) });
+          return json({});
+        }
+        return json({ message: `no stub for ${method} ${url}` }, 500);
+      })
+    );
+    await renderWithProbe(false);
+
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
+    // A second row: soak at 60 rps for an hour. Row 1 keeps its defaults.
+    await click(container!.querySelector('[data-testid="mode-add-row"]')!);
+    await type(container!.querySelector('[data-testid="mode-row-1-qps"]') as HTMLInputElement, '60');
+    const modeSelect = container!.querySelector('[data-testid="mode-row-1-mode"]') as HTMLSelectElement;
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      selectSetter.call(modeSelect, 'soak');
+      modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await type(container!.querySelector('[data-testid="mode-row-1-duration"]') as HTMLInputElement, '1');
+    const unitSelect = container!.querySelector('[data-testid="mode-row-1-duration-unit"]') as HTMLSelectElement;
+    await act(async () => {
+      selectSetter.call(unitSelect, 'h');
+      unitSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await click(container!.querySelector('[data-testid="create-test"]')!);
+    await act(async () => {});
+
+    // One scenario per row, named by the submit-time derivation.
+    expect(scenarioPosts).toHaveLength(2);
+    expect(new URLSearchParams(scenarioPosts[0]).get('name')).toBe('checkout-smoke');
+    expect(new URLSearchParams(scenarioPosts[1]).get('name')).toBe('checkout-smoke-2');
+    // Each scenario got the shared request fragment.
+    expect(fragmentPuts).toEqual(['/api/scenarios/42/requests', '/api/scenarios/43/requests']);
+    // One mode entry per scenario, each stating only its own row.
+    expect(puts).toHaveLength(1);
+    const sent = JSON.parse(puts[0].body) as {
+      tests: Array<{
+        name: string;
+        scenario_id: number;
+        mode: string;
+        throughput: number;
+        duration: number;
+        concurrency: number;
+        engines: number;
+      }>;
+    };
+    expect(sent.tests).toHaveLength(2);
+    expect(sent.tests[0]).toEqual({
+      name: 'checkout-smoke',
+      scenario_id: 42,
+      mode: 'burst',
+      throughput: 100,
+      duration: 600,
+      concurrency: 0,
+      rampup: 0,
+      engines: 0,
+    });
+    expect(sent.tests[1].mode).toBe('soak');
+    expect(sent.tests[1].throughput).toBe(60);
+    expect(sent.tests[1].duration).toBe(3600);
+    expect(sent.tests[1].scenario_id).toBe(43);
+    // Landed on the execution page like every Simple submit.
+    expect(container!.querySelector('[data-testid="probe"]')?.getAttribute('data-path')).toBe('/executions/9');
+  });
+
+  it('keeps Create disabled while any row is invalid', async () => {
+    await renderWithProbe();
+    await type(container!.querySelector('input[placeholder="checkout-smoke"]') as HTMLInputElement, 'checkout-smoke');
+    await type(
+      container!.querySelector('input[placeholder="http://checkout.svc"]') as HTMLInputElement,
+      'http://checkout.svc'
+    );
+    await click(container!.querySelector('[data-testid="mode-add-row"]')!);
+    await type(container!.querySelector('[data-testid="mode-row-1-qps"]') as HTMLInputElement, '0');
+    expect((container!.querySelector('[data-testid="create-test"]') as HTMLButtonElement).disabled).toBe(true);
+    await type(container!.querySelector('[data-testid="mode-row-1-qps"]') as HTMLInputElement, '30');
+    expect((container!.querySelector('[data-testid="create-test"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+});

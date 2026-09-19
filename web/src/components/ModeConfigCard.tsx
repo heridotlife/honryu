@@ -1,17 +1,27 @@
-// The mode-aware configuration card (phase 90): renders a mode entry's
-// resolved numbers with the derivation note (Q8), and offers the Simple
+// The mode-aware configuration card (phase 90): renders the mode entries'
+// resolved numbers with their derivation notes (Q8), and offers the Simple
 // re-apply form — the "calibrate, then re-configure" loop's closing half.
-// Mounted like ExecutionConfigCard (idle executions); renders nothing for
-// a config with no mode provenance, so Advanced executions keep the
-// ordinary card untouched. The PUT goes through the same server
-// resolution as NewTest's Simple submit; a 409 surfaces inline with the
-// structured remediation.
+// Phase 91 adds the two halves the snapshot model needed: a Re-resolve
+// action (POST /config/re-resolve) that re-runs every mode entry against
+// the CURRENT calibration and shows the per-entry old → new diff, and
+// multi-entry rendering for multi-scenario Simple configs (the re-apply
+// form stays single-scenario and is hidden for multi-entry configs — its
+// PUT replaces the whole profile and would drop the other entries).
+// Mounted like ExecutionConfigCard (idle executions only — the same guard
+// the config edit has); renders nothing for a config with no mode
+// provenance, so Advanced executions keep the ordinary card untouched.
 import { useEffect, useState } from 'react';
 import Card, { CardHeader, CardTitle, CardContent } from './ui/Card';
 import Button from './ui/Button';
 import ActionErrorDetails from './ActionErrorDetails';
 import ModeForm from './ModeForm';
-import { getExecutionConfig, putExecutionConfig, type ConfigTest } from '../api/executionsConfig';
+import {
+  getExecutionConfig,
+  putExecutionConfig,
+  reResolveExecutionConfig,
+  type ConfigTest,
+  type ReResolveEntry,
+} from '../api/executionsConfig';
 import { getCapacityProfile } from '../api/calibration';
 import {
   buildModeTest,
@@ -37,48 +47,67 @@ function secondsToForm(seconds: number): Pick<ModeFormValue, 'duration' | 'unit'
   return { duration: Math.round(seconds / 60), unit: 'm' };
 }
 
+/** The four numbers a re-resolve can move, one diff cell's "old → new". */
+function diffCell(label: string, before: number, after: number): string {
+  return `${label} ${before} → ${after}`;
+}
+
 export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: Props) {
-  const [test, setTest] = useState<ConfigTest | null>(null);
+  const [tests, setTests] = useState<ConfigTest[] | null>(null);
+  const [singleTest, setSingleTest] = useState(false);
   const [projectId, setProjectId] = useState(0);
-  const [perPodQps, setPerPodQps] = useState<number | undefined>(undefined);
+  const [perPodQps, setPerPodQps] = useState<Record<number, number>>({});
   const [form, setForm] = useState<ModeFormValue | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<Record<string, unknown> | null>(null);
   const [appliedAt, setAppliedAt] = useState<string | null>(null);
+  // The re-resolve flow: idle (no button click yet) → confirming (the
+  // inline confirm bar) → the fetched diff replaces it.
+  const [confirming, setConfirming] = useState(false);
+  const [diff, setDiff] = useState<ReResolveEntry[] | null>(null);
 
   useEffect(() => {
     let alive = true;
-    setTest(null);
-    setPerPodQps(undefined);
+    setTests(null);
+    setPerPodQps({});
     setError(null);
     setErrorDetail(null);
     setAppliedAt(null);
+    setConfirming(false);
+    setDiff(null);
     getExecutionConfig(executionId)
       .then(cfg => {
         if (!alive) return;
         setProjectId(cfg.project_id);
-        const modeTest = cfg.tests.find(t => t.mode);
-        if (!modeTest) {
-          setTest(null);
+        const modeTests = cfg.tests.filter(t => t.mode);
+        if (modeTests.length === 0) {
+          setTests(null);
           return;
         }
-        setTest(modeTest);
+        setTests(modeTests);
+        // The re-apply form is the phase-90 single-scenario surface: it
+        // PUTs a one-test profile, so it must only appear when that IS the
+        // whole config — otherwise the PUT would silently drop the other
+        // entries.
+        setSingleTest(cfg.tests.length === 1);
         setForm({
-          mode: modeTest.mode as ModeFormValue['mode'],
-          qps: modeTest.throughput ?? 0,
-          ...secondsToForm(modeTest.duration),
+          mode: modeTests[0].mode as ModeFormValue['mode'],
+          qps: modeTests[0].throughput ?? 0,
+          ...secondsToForm(modeTests[0].duration),
         });
-        // Best-effort enrichment of the derivation note: the profile's
-        // per-pod rate. Absent (never calibrated under this key since,
-        // or fetch failed) degrades the note's wording, nothing else.
-        getCapacityProfile(modeTest.scenario_id, capacityKey)
-          .then(p => {
-            if (alive) setPerPodQps(p.per_pod_qps);
-          })
-          .catch(() => {
-            /* note degrades to the generic wording */
-          });
+        // Best-effort enrichment of each entry's derivation note: the
+        // profile's per-pod rate. Absent (never calibrated under this key
+        // since, or fetch failed) degrades the note's wording, nothing else.
+        for (const t of modeTests) {
+          getCapacityProfile(t.scenario_id, capacityKey)
+            .then(p => {
+              if (alive) setPerPodQps(prev => ({ ...prev, [t.scenario_id]: p.per_pod_qps }));
+            })
+            .catch(() => {
+              /* note degrades to the generic wording */
+            });
+        }
       })
       .catch((e: unknown) => {
         if (alive) setError(e instanceof ApiError ? e.message : 'failed to load config');
@@ -92,7 +121,8 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
   }, [executionId]);
 
   const apply = () => {
-    if (!form || !test || !modeFormValid(form)) {
+    const first = tests?.[0];
+    if (!form || !first || !modeFormValid(form)) {
       return;
     }
     setBusy(true);
@@ -105,18 +135,18 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
       name: `execution-${executionId}`,
       project_id: projectId,
       execution_id: executionId,
-      tests: [buildModeTest(test.name || 'test', test.scenario_id, form)],
+      tests: [buildModeTest(first.name || 'test', first.scenario_id, form)],
     };
     putExecutionConfig(executionId, cfg)
       .then(() => getExecutionConfig(executionId))
       .then(fresh => {
-        const modeTest = fresh.tests.find(t => t.mode);
-        if (modeTest) {
-          setTest(modeTest);
+        const modeTests = fresh.tests.filter(t => t.mode);
+        if (modeTests.length > 0) {
+          setTests(modeTests);
           setForm({
-            mode: modeTest.mode as ModeFormValue['mode'],
-            qps: modeTest.throughput ?? 0,
-            ...secondsToForm(modeTest.duration),
+            mode: modeTests[0].mode as ModeFormValue['mode'],
+            qps: modeTests[0].throughput ?? 0,
+            ...secondsToForm(modeTests[0].duration),
           });
         }
         setAppliedAt(new Date().toLocaleTimeString());
@@ -128,10 +158,44 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
       .finally(() => setBusy(false));
   };
 
-  if (error && !test) {
+  // Re-resolve re-runs the STORED statements through the current
+  // calibration server-side and answers with each entry's old/new numbers;
+  // the diff panel is the confirmation of what changed. A 409 (profile
+  // missing/stale since the save) surfaces inline with the structured
+  // remediation — nothing was persisted then.
+  const reResolve = () => {
+    setBusy(true);
+    setError(null);
+    setErrorDetail(null);
+    reResolveExecutionConfig(executionId)
+      .then(entries => {
+        setDiff(entries);
+        setConfirming(false);
+        return getExecutionConfig(executionId);
+      })
+      .then(fresh => {
+        const modeTests = fresh.tests.filter(t => t.mode);
+        if (modeTests.length > 0) {
+          setTests(modeTests);
+          setForm({
+            mode: modeTests[0].mode as ModeFormValue['mode'],
+            qps: modeTests[0].throughput ?? 0,
+            ...secondsToForm(modeTests[0].duration),
+          });
+        }
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof ApiError ? e.message : 'failed to re-resolve config');
+        setErrorDetail(errorDetails(e));
+        setConfirming(false);
+      })
+      .finally(() => setBusy(false));
+  };
+
+  if (error && !tests) {
     return null; // the ordinary config card surfaces load failures
   }
-  if (!test || !form) {
+  if (!tests || !form) {
     return null;
   }
 
@@ -144,7 +208,7 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
             className="ml-1 inline-flex items-center rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-medium text-sky-800 dark:bg-sky-900/30 dark:text-sky-300"
             data-testid="mode-config-chip"
           >
-            {modeChipLabel(test)}
+            {modeChipLabel(tests[0])}
           </span>
         </CardTitle>
         {appliedAt && <span className="text-caption text-slate-500">re-applied {appliedAt}</span>}
@@ -155,6 +219,9 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
             <tr className="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
               <th scope="col" className="px-3 py-2 font-medium">
                 Scenario
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                Mode
               </th>
               <th scope="col" className="px-3 py-2 font-medium">
                 Concurrency
@@ -174,35 +241,103 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td className="px-3 py-2">{test.scenario_id}</td>
-              <td className="px-3 py-2">{test.concurrency}</td>
-              <td className="px-3 py-2">{test.rampup}</td>
-              <td className="px-3 py-2">{test.engines}</td>
-              <td className="px-3 py-2">{test.throughput ?? 'unlimited'}</td>
-              <td className="px-3 py-2">{test.duration}s</td>
-            </tr>
+            {tests.map(t => (
+              <tr key={t.scenario_id} data-testid={`mode-config-row-${t.scenario_id}`}>
+                <td className="px-3 py-2">{t.scenario_id}</td>
+                <td className="px-3 py-2">{t.mode}</td>
+                <td className="px-3 py-2">{t.concurrency}</td>
+                <td className="px-3 py-2">{t.rampup}</td>
+                <td className="px-3 py-2">{t.engines}</td>
+                <td className="px-3 py-2">{t.throughput ?? 'unlimited'}</td>
+                <td className="px-3 py-2">{t.duration}s</td>
+              </tr>
+            ))}
           </tbody>
         </table>
-        <ul className="space-y-1" data-testid="mode-derivation">
-          {modeDerivationLines(test, perPodQps).map(line => (
-            <li key={line} className="text-caption text-slate-500 dark:text-slate-400">
-              {line}
-            </li>
-          ))}
-        </ul>
+        {tests.map(t => (
+          <ul key={t.scenario_id} className="space-y-1" data-testid="mode-derivation">
+            {modeDerivationLines(t, perPodQps[t.scenario_id]).map(line => (
+              <li key={line} className="text-caption text-slate-500 dark:text-slate-400">
+                {line}
+              </li>
+            ))}
+          </ul>
+        ))}
         <p className="text-caption text-slate-500 dark:text-slate-400">
           Resolved once, at save time — a later recalibration does not change a stored config.
         </p>
         {canUpdate && (
           <div className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-            <p className="text-caption font-medium text-slate-600 dark:text-slate-300">
-              Re-apply (re-resolves against the current calibration)
-            </p>
-            <ModeForm value={form} onChange={setForm} />
-            <Button onClick={apply} disabled={busy || !modeFormValid(form)} data-testid="mode-reapply">
-              {busy ? 'Applying…' : 'Re-apply simple config'}
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              {confirming ? (
+                <>
+                  <span className="text-caption text-slate-600 dark:text-slate-300">
+                    Re-resolve every mode entry against the current calibration?
+                  </span>
+                  <Button onClick={reResolve} disabled={busy} data-testid="mode-reresolve-confirm">
+                    {busy ? 'Re-resolving…' : 'Yes, re-resolve'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setConfirming(false)}
+                    disabled={busy}
+                    data-testid="mode-reresolve-cancel"
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={() => setConfirming(true)} disabled={busy} data-testid="mode-reresolve">
+                  Re-resolve against current calibration
+                </Button>
+              )}
+            </div>
+            {diff && (
+              <div
+                className="rounded-md border border-slate-200 p-3 dark:border-slate-700"
+                data-testid="mode-reresolve-diff"
+              >
+                <p className="text-caption font-medium text-slate-600 dark:text-slate-300">Re-resolved</p>
+                <ul className="mt-2 space-y-2">
+                  {diff.map(entry => (
+                    <li
+                      key={entry.scenario_id}
+                      className="text-caption text-slate-600 dark:text-slate-300"
+                      data-testid={`mode-reresolve-diff-${entry.scenario_id}`}
+                    >
+                      <span className="font-medium">scenario {entry.scenario_id}</span>
+                      {entry.mode ? ` (${entry.mode})` : ''} —{' '}
+                      {entry.changed ? (
+                        <span className="flex flex-col gap-0.5 sm:flex-row sm:flex-wrap sm:gap-x-4">
+                          <span>{diffCell('engines', entry.before.engines, entry.after.engines)}</span>
+                          <span>{diffCell('concurrency', entry.before.concurrency, entry.after.concurrency)}</span>
+                          <span>{diffCell('rampup', entry.before.rampup, entry.after.rampup)}</span>
+                          <span>{diffCell('throughput', entry.before.throughput, entry.after.throughput)}</span>
+                        </span>
+                      ) : (
+                        <span>unchanged</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {singleTest ? (
+              <>
+                <p className="text-caption font-medium text-slate-600 dark:text-slate-300">
+                  Re-apply (restates this scenario&rsquo;s mode, rate, and duration)
+                </p>
+                <ModeForm value={form} onChange={setForm} />
+                <Button onClick={apply} disabled={busy || !modeFormValid(form)} data-testid="mode-reapply">
+                  {busy ? 'Applying…' : 'Re-apply simple config'}
+                </Button>
+              </>
+            ) : (
+              <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="mode-reapply-unavailable">
+                Multi-scenario config: re-resolve refreshes every entry; restating one scenario&rsquo;s mode happens on
+                its own execution.
+              </p>
+            )}
           </div>
         )}
         {error && (

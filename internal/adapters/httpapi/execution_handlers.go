@@ -357,6 +357,35 @@ func (h *handlers) getExecutionConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cfg)
 }
 
+// reResolveExecutionConfig re-runs the stored config's mode entries
+// through the current mode-resolution chain (phase 91) and persists the
+// refreshed config as a new version. The same gate as the config PUT
+// (execution:update): this is a config write with a different source --
+// the stored statement instead of a request body. The response echoes
+// each entry's old and new resolved numbers so the UI can show a diff;
+// a capacity refusal is the PUT's own 409 envelope, with nothing
+// persisted.
+func (h *handlers) reResolveExecutionConfig(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt(r, "execution_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+	if err := h.authorizeExecution(r, id, rbac.ActionUpdate); err != nil {
+		respondError(w, err)
+		return
+	}
+	result, err := h.deps.Executions.ReResolveConfig(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "config re-resolved",
+		"entries": result.Entries,
+	})
+}
+
 // authorizeExecution loads an execution and verifies the caller may perform
 // action on it: ResourceExecution -- the resource Phase 20 finally puts to
 // work, where every route previously funneled through authorizeProject's

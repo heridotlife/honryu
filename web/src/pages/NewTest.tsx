@@ -13,8 +13,8 @@ import { useSession } from '../hooks/useSession';
 import { buildFragment, concurrencyEnginesWarning, stepError, flowSteps, type NewTestForm } from '../lib/newTestFlow';
 import { stagesToConfig, type StagesConfigJSON } from '../lib/stagesConfig';
 import ActionErrorDetails from '../components/ActionErrorDetails';
-import ModeForm from '../components/ModeForm';
-import { buildModeTest, initialModeForm, modeFormValid, type ModeFormValue } from '../lib/modeConfig';
+import ModeRowsForm from '../components/ModeRowsForm';
+import { buildModeTests, initialModeRows, modeRowsValid, scenarioName, type ModeRowValue } from '../lib/modeConfig';
 
 interface ProjectRef {
   id: number;
@@ -93,10 +93,12 @@ export default function NewTest() {
   const canCreate = can('execution', 'create');
   const [form, setForm] = useState<NewTestForm>(initialForm);
   // Phase 90: the Load card's Simple | Advanced toggle -- Simple (the
-  // default) states mode + rate + duration and lets the server resolve
-  // everything else; Advanced is the pre-phase-90 stage editor, verbatim.
+  // default) states mode + rate + duration per scenario and lets the
+  // server resolve everything else; Advanced is the pre-phase-90 stage
+  // editor, verbatim. Phase 91: Simple is multi-scenario -- one row per
+  // scenario, each its own mode entry resolved independently.
   const [loadTab, setLoadTab] = useState<'simple' | 'advanced'>('simple');
-  const [modeForm, setModeForm] = useState<ModeFormValue>(initialModeForm);
+  const [modeRows, setModeRows] = useState<ModeRowValue[]>(initialModeRows);
   const [stages, setStages] = useState<StageEditorState>(seedStage);
   const [stagesValid, setStagesValid] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -288,14 +290,29 @@ export default function NewTest() {
           });
       }
 
-      // Step 2: scenario (portable; no kind needed -- default).
+      // Step 2: scenarios (portable; no kind needed -- default). Simple
+      // mode creates one per Load-card row -- each row is its own scenario
+      // and its own mode entry; Advanced creates the one the stage rows
+      // share, exactly as before.
       setStep(flowSteps[1]);
-      const scenario = (await apiClient
-        .post<{ id: number }>('/scenarios', new URLSearchParams({ project_id: String(project.id), name: form.name }))
-        .catch((e: unknown) => {
-          throw stepError('create scenario', e);
-        })) as { id: number; scenario?: { id: number } };
-      const scenarioId = scenario.id ?? scenario.scenario?.id;
+      const createScenario = async (name: string): Promise<number> => {
+        const scenario = (await apiClient
+          .post<{ id: number }>('/scenarios', new URLSearchParams({ project_id: String(project.id), name }))
+          .catch((e: unknown) => {
+            throw stepError('create scenario', e);
+          })) as { id: number; scenario?: { id: number } };
+        return scenario.id ?? scenario.scenario?.id;
+      };
+      let scenarioIds: number[];
+      if (loadTab === 'simple') {
+        scenarioIds = [];
+        for (let i = 0; i < modeRows.length; i++) {
+          scenarioIds.push(await createScenario(scenarioName(modeRows[i], i, form.name)));
+        }
+      } else {
+        scenarioIds = [await createScenario(form.name)];
+      }
+      const scenarioId = scenarioIds[0];
 
       // Step 3: execution. fanout_targets rides the form only when the
       // operator checked targets -- the request every pre-fan-out client
@@ -313,17 +330,23 @@ export default function NewTest() {
         throw stepError('create execution', e);
       });
 
-      // Step 4: the requests fragment (G3, text/yaml verbatim).
+      // Step 4: the requests fragment (G3, text/yaml verbatim). Every
+      // scenario of the test carries the same request shape -- the Test
+      // definition card's method, target URL, and headers.
       setStep(flowSteps[3]);
-      await setScenarioRequests(scenarioId, buildFragment(form)).catch((e: unknown) => {
-        throw stepError('save requests fragment', e);
-      });
+      const fragment = buildFragment(form);
+      for (const sid of scenarioIds) {
+        await setScenarioRequests(sid, fragment).catch((e: unknown) => {
+          throw stepError('save requests fragment', e);
+        });
+      }
 
-      // Step 5: the load config (G7's JSON body). Simple mode PUTs the
-      // mode-shaped statement (mode + rate + duration) and the server
-      // resolves the rest; Advanced is the stage editor, unchanged --
-      // table mode byte-identical to the pre-editor flow, raw mode the
-      // verbatim escape hatch.
+      // Step 5: the load config (G7's JSON body). Simple mode PUTs one
+      // mode-shaped statement per Load-card row (mode + rate + duration,
+      // each row bound to its own scenario) and the server resolves each
+      // independently; Advanced is the stage editor, unchanged -- table
+      // mode byte-identical to the pre-editor flow, raw mode the verbatim
+      // escape hatch.
       setStep(flowSteps[4]);
       let cfg: StagesConfigJSON;
       try {
@@ -332,7 +355,7 @@ export default function NewTest() {
             name: `${form.name}-load`,
             project_id: project.id,
             execution_id: execution.id,
-            tests: [buildModeTest(form.name, scenarioId, modeForm)],
+            tests: buildModeTests(form.name, scenarioIds, modeRows),
           };
         } else if (stages.mode === 'table') {
           cfg = stagesToConfig(
@@ -574,7 +597,7 @@ export default function NewTest() {
         </CardHeader>
         <CardContent>
           {loadTab === 'simple' ? (
-            <ModeForm value={modeForm} onChange={setModeForm} />
+            <ModeRowsForm value={modeRows} onChange={setModeRows} />
           ) : (
             <StageEditor
               state={stages}
@@ -669,7 +692,7 @@ export default function NewTest() {
         {canCreate ? (
           <Button
             onClick={submit}
-            disabled={busy || (loadTab === 'simple' ? !modeFormValid(modeForm) : !stagesValid)}
+            disabled={busy || (loadTab === 'simple' ? !modeRowsValid(modeRows) : !stagesValid)}
             data-testid="create-test"
           >
             {busy ? `Working — ${step ?? '…'}` : 'Create test'}

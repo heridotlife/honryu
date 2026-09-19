@@ -201,6 +201,9 @@ var authzAuditTable = []authzEntry{
 		query: url.Values{"filename": {"data.csv"}}},
 	{method: "PUT", pattern: "/api/executions/{execution_id}/config", decision: "execution:update"},
 	{method: "GET", pattern: "/api/executions/{execution_id}/config", decision: "execution:read"},
+	// Phase 91: re-resolve is a config write with a different source (the
+	// stored statement, not a request body) -- the PUT's own gate.
+	{method: "POST", pattern: "/api/executions/{execution_id}/config/re-resolve", decision: "execution:update"},
 
 	{method: "POST", pattern: "/api/executions/{execution_id}/deploy", decision: "run:create"},
 	{method: "POST", pattern: "/api/executions/{execution_id}/trigger", decision: "run:create"},

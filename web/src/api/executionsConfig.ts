@@ -43,3 +43,35 @@ export async function getExecutionConfig(executionId: number): Promise<Execution
 export async function putExecutionConfig(executionId: number, cfg: ExecutionConfig): Promise<void> {
   await apiClient.putRaw(`/executions/${executionId}/config`, 'application/json', JSON.stringify(cfg));
 }
+
+// --- Re-resolve (phase 91) -------------------------------------------------
+
+/** One entry's resolved numbers — the four fields a mode derivation owns. */
+export interface ResolvedDiff {
+  engines: number;
+  concurrency: number;
+  rampup: number;
+  throughput: number;
+}
+
+/** One config entry's re-resolution verdict: identity + old/new numbers. */
+export interface ReResolveEntry {
+  scenario_id: number;
+  name: string;
+  /** Undefined for advanced entries (never touched). */
+  mode?: string;
+  before: ResolvedDiff;
+  after: ResolvedDiff;
+  changed: boolean;
+}
+
+/** POST /api/executions/{id}/config/re-resolve — re-run the stored mode
+ * entries against the current calibration, persisting the refresh as a
+ * new config version. Refusal (409) throws; nothing is persisted then. */
+export async function reResolveExecutionConfig(executionId: number): Promise<ReResolveEntry[]> {
+  const body = await apiClient.request<{ message: string; entries: ReResolveEntry[] }>(
+    `/executions/${executionId}/config/re-resolve`,
+    { method: 'POST' }
+  );
+  return body.entries;
+}

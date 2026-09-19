@@ -307,6 +307,9 @@ var routes = []Route{
 	{"DELETE", "/api/executions/{execution_id}/files", "executions", hf(func(h *handlers) http.HandlerFunc { return h.deleteExecutionFile })},
 	{"PUT", "/api/executions/{execution_id}/config", "executions", hf(func(h *handlers) http.HandlerFunc { return h.uploadExecutionConfig })},
 	{"GET", "/api/executions/{execution_id}/config", "executions", hf(func(h *handlers) http.HandlerFunc { return h.getExecutionConfig })},
+	// Phase 91: re-resolve the stored config's mode entries against the
+	// current calibration -- the explicit refresh a recalibration needs.
+	{"POST", "/api/executions/{execution_id}/config/re-resolve", "executions", hf(func(h *handlers) http.HandlerFunc { return h.reResolveExecutionConfig })},
 
 	{"POST", "/api/executions/{execution_id}/deploy", "lifecycle", hf(func(h *handlers) http.HandlerFunc { return h.deployExecution })},
 	{"POST", "/api/executions/{execution_id}/trigger", "lifecycle", hf(func(h *handlers) http.HandlerFunc { return h.triggerExecution })},
