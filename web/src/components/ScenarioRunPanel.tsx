@@ -18,20 +18,23 @@ import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
 import ActionErrorDetails from './ActionErrorDetails';
 import ModeForm from './ModeForm';
 import RunStatusBadge from './RunStatusBadge';
+import StartCountdown from './StartCountdown';
 import { getExecutionConfig, putExecutionConfig, type ConfigTest, type ExecutionConfig } from '../api/executionsConfig';
 import { getExecutionStatus, type ExecutionStatus, type Phase } from '../api/status';
 import { fanOutCapacity, getCapacityProfile } from '../api/calibration';
 import { useSession } from '../hooks/useSession';
+import { useStartFlow } from '../hooks/useStartFlow';
 import { formatRowTime } from '../lib/executionRow';
 import {
   buildModeTest,
+  initialModeForm,
   modeChipLabel,
   modeFormValid,
   secondsToModeForm,
   type LoadMode,
   type ModeFormValue,
 } from '../lib/modeConfig';
-import { ApiError, errorDetails } from '../api/client';
+import { ApiError, apiClient, errorDetails } from '../api/client';
 import type { ExecutionSummary } from '../api/generated';
 import type { Outcome } from '../api/reports';
 
@@ -84,9 +87,11 @@ const HOUSE_POD = { cpu: '500m', memory: '512Mi' } as const;
 export default function ScenarioRunPanel({
   scenarioId,
   scenarioName,
+  projectId,
   executions,
   executionsError,
   lastRun,
+  onExecutionsChanged,
   onOpenCalibration,
 }: ScenarioRunPanelProps) {
   const { can } = useSession();
@@ -95,6 +100,14 @@ export default function ScenarioRunPanel({
   // The engine every capacity read and a new execution would use: the
   // newest execution's (a calibration row names the engine it calibrated).
   const engine = defaultEngine(executions);
+  // The grants: the inline editor costs execution:update (the config PUT's
+  // verb); the Start flow costs run:create (the same verb the hub's Start
+  // charges, per phase 93's audit mapping); the create path
+  // execution:create. Declared before the early returns — every branch
+  // below reads some of them.
+  const canEdit = can('execution', 'update');
+  const canStart = can('run', 'create');
+  const canCreate = can('execution', 'create');
 
   // The latest execution's config: the whole profile round-trips on edit
   // (the PUT replaces it), so the panel keeps it whole and reads its own
@@ -122,6 +135,28 @@ export default function ScenarioRunPanel({
   // to no hint line, nothing else.
   const [perPodQps, setPerPodQps] = useState<number | null>(null);
   const [fanoutEngines, setFanoutEngines] = useState<number | null>(null);
+  // The qps helper line: only when the profile answered for this engine.
+  // Computed here (before the early returns) so the empty state shares it.
+  const qpsHint =
+    perPodQps != null && perPodQps > 0
+      ? `profile: ~${perPodQps} qps/pod${fanoutEngines != null ? `, ${fanoutEngines} engines` : ''}`
+      : undefined;
+
+  // The empty state's create form (never-run scenario): the same Simple
+  // statement, creating a NEW execution instead of editing an entry.
+  const [createForm, setCreateForm] = useState<ModeFormValue>(initialModeForm);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createErrorDetail, setCreateErrorDetail] = useState<Record<string, unknown> | null>(null);
+  const [createNeedsCalibration, setCreateNeedsCalibration] = useState(false);
+  // The freshly created execution that should begin the start flow as
+  // soon as the refetched list names it latest (see the effect below).
+  const [startAfterCreate, setStartAfterCreate] = useState<number | null>(null);
+
+  // The start flow's failure surface (message + ActionErrorDetails),
+  // separate from the editor's: different actions, different surfaces.
+  const [flowError, setFlowError] = useState<string | null>(null);
+  const [flowErrorDetail, setFlowErrorDetail] = useState<Record<string, unknown> | null>(null);
 
   /** Prefill the form from a config's entry for this scenario. */
   const prefill = (cfg: ExecutionConfig) => {
@@ -184,9 +219,10 @@ export default function ScenarioRunPanel({
     };
   }, [scenarioId, engine]);
 
-  // The fan-out half of the hint: the engine count at the form's CURRENT
-  // rate — restating the rate restates the fan-out.
-  const formQps = form?.qps ?? 0;
+  // The fan-out half of the hint: the engine count at the mounted form's
+  // CURRENT rate — restating the rate restates the fan-out. In the empty
+  // state the mounted form is the create form.
+  const formQps = form !== null ? form.qps : createForm.qps;
   useEffect(() => {
     if (perPodQps == null || !(formQps > 0)) {
       setFanoutEngines(null);
@@ -235,6 +271,80 @@ export default function ScenarioRunPanel({
     };
   }, [latestId]);
 
+  // Phase 93's one-click Start chain, verbatim: deploy → 10s countdown →
+  // trigger from idle; straight countdown when deployed; the page's status
+  // poll (above) is the phase-watch's single source of truth. The scenario
+  // page shares the hub's contract — begin is only ever called while a
+  // latest execution exists, so the hook's id is never the ?? 0 placeholder.
+  const startFlow = useStartFlow({
+    executionId: latestId ?? 0,
+    phase: status?.phase ?? null,
+    onStatus: s => setStatus(s),
+    onError: (message, details) => {
+      setFlowError(message);
+      setFlowErrorDetail(details);
+    },
+    onReset: () => {
+      setFlowError(null);
+      setFlowErrorDetail(null);
+    },
+  });
+  const startBusy = startFlow.step !== null;
+
+  // The create path's second half: the refetched list has named the new
+  // execution latest — begin the flow now, against the id the hook
+  // received on THIS render. Safe by construction: the create form only
+  // exists when no load execution existed, so the phase state the begin
+  // closure sees is null (never a stale 'deployed' from another id) and
+  // the flow takes the deploy-first path a brand-new execution needs.
+  useEffect(() => {
+    if (startAfterCreate !== null && latestId === startAfterCreate) {
+      setStartAfterCreate(null);
+      startFlow.begin();
+    }
+    // begin is stable per render by construction (step/phase closures);
+    // the watched pair is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startAfterCreate, latestId]);
+
+  // The empty state's create: the NewTest Simple payload for one existing
+  // scenario — POST /executions (form-encoded identity), then the config
+  // PUT with the single mode entry — and straight into the Start flow
+  // once the refetched list names the new execution latest. A 409 on the
+  // PUT leaves the execution created but unconfigured (said so below);
+  // the remediation is the Runs tab's Calibrate, then retry.
+  const createAndStart = () => {
+    if (!modeFormValid(createForm)) {
+      return;
+    }
+    setCreateBusy(true);
+    setCreateError(null);
+    setCreateErrorDetail(null);
+    setCreateNeedsCalibration(false);
+    apiClient
+      .post<{ id: number }>('/executions', new URLSearchParams({ project_id: String(projectId), name: scenarioName, engine }))
+      .then(execution =>
+        putExecutionConfig(execution.id, {
+          name: `${scenarioName}-load`,
+          project_id: projectId,
+          execution_id: execution.id,
+          tests: [buildModeTest(scenarioName, scenarioId, createForm)],
+        }).then(() => execution)
+      )
+      .then(execution => {
+        setStartAfterCreate(execution.id);
+        onExecutionsChanged();
+      })
+      .catch((e: unknown) => {
+        setCreateError(e instanceof ApiError ? e.message : 'failed to create the run');
+        setCreateErrorDetail(errorDetails(e));
+        if (e instanceof ApiError && e.status === 409) {
+          setCreateNeedsCalibration(true);
+        }
+      })
+      .finally(() => setCreateBusy(false));
+  };
+
   // Apply the restated run settings: the ONLY entry that changes is this
   // scenario's — it becomes a fresh mode entry (the exact shape NewTest's
   // Simple submit builds, zeros for the server to re-resolve eagerly)
@@ -279,15 +389,61 @@ export default function ScenarioRunPanel({
     );
   }
 
-  // Never run (or only ever calibrated): the create-and-start surface.
+  // Never run (or only ever calibrated): the create-and-start surface —
+  // the NewTest Simple statement for this one scenario, creating a NEW
+  // execution and going straight into the Start flow.
   if (executions !== null && latest === undefined) {
     return (
       <Card data-testid="run-empty">
-        <CardContent>
-          <p className="text-body-sm font-medium text-slate-900 dark:text-white">No runs yet</p>
-          <p className="text-caption mt-1 text-slate-500 dark:text-slate-400">
-            This scenario has no load execution. State its load below; saving creates one and starts it.
+        <CardHeader>
+          <CardTitle>Run this scenario</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-caption text-slate-500 dark:text-slate-400">
+            No runs yet — this scenario has never been bound to a load execution. State its load; creating the run
+            starts it immediately.
           </p>
+          {canCreate ? (
+            <>
+              <ModeForm value={createForm} onChange={setCreateForm} disabled={createBusy} qpsHint={qpsHint} />
+              <Button
+                onClick={createAndStart}
+                disabled={createBusy || !modeFormValid(createForm)}
+                className="active:scale-95"
+                data-testid="run-create-start"
+              >
+                {createBusy ? 'Creating…' : 'Create and start'}
+              </Button>
+            </>
+          ) : (
+            <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="run-no-create-permission">
+              Your role cannot create executions.
+            </p>
+          )}
+          {createError !== null && (
+            <div>
+              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                {createError}
+              </p>
+              <ActionErrorDetails details={createErrorDetail} />
+              {createNeedsCalibration && (
+                <p
+                  className="mt-2 text-caption text-slate-600 dark:text-slate-300"
+                  data-testid="run-calibrate-remediation"
+                >
+                  Calibrate this scenario first, then retry — the run was created but not configured.{' '}
+                  <button
+                    type="button"
+                    className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
+                    data-testid="run-calibrate-link"
+                    onClick={onOpenCalibration}
+                  >
+                    Go to the Runs tab’s Calibrate →
+                  </button>
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
     );
@@ -301,14 +457,6 @@ export default function ScenarioRunPanel({
   // only contains executions whose profile binds the scenario, so a found
   // entry is the normal case; a missing one means the config never saved).
   const entry: ConfigTest | undefined = config?.tests.find(t => t.scenario_id === scenarioId);
-  // The inline editor costs execution:update (the config PUT's verb); the
-  // Start flow's own grant is checked where the flow mounts (task 3).
-  const canEdit = can('execution', 'update');
-  // The qps helper line: only when the profile answered for this engine.
-  const qpsHint =
-    perPodQps != null && perPodQps > 0
-      ? `profile: ~${perPodQps} qps/pod${fanoutEngines != null ? `, ${fanoutEngines} engines` : ''}`
-      : undefined;
 
   return (
     <Card data-testid="run-panel">
@@ -406,11 +554,11 @@ export default function ScenarioRunPanel({
                     </span>
                   )}
                 </div>
-                <ModeForm value={form} onChange={setForm} disabled={editBusy} qpsHint={qpsHint} />
+                <ModeForm value={form} onChange={setForm} disabled={editBusy || startBusy} qpsHint={qpsHint} />
                 <div className="flex flex-wrap items-center gap-3">
                   <Button
                     onClick={applyEdit}
-                    disabled={editBusy || !modeFormValid(form)}
+                    disabled={editBusy || startBusy || !modeFormValid(form)}
                     className="active:scale-95"
                     data-testid="run-apply"
                   >
@@ -460,7 +608,76 @@ export default function ScenarioRunPanel({
             <span data-testid="run-last-started">started {formatRowTime(lastRun.startedAt)}</span>
           </p>
         )}
-        {/* The phase-93 start flow mounts here (task 3). */}
+        {/* The phase-93 start flow — the hub's Start composite, verbatim
+            contract: idle → deploy + countdown + trigger, deployed →
+            countdown + trigger, Cancel while in flight; while busy the
+            editor above is locked. Running offers no Start here (the hub
+            owns Stop); the panel links through instead. */}
+        <div
+          className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4 dark:border-slate-700"
+          role="group"
+          aria-label="Run controls"
+          aria-busy={startBusy}
+          data-testid="run-controls"
+        >
+          {startBusy ? (
+            startFlow.step === 'counting' ? (
+              <StartCountdown
+                seconds={startFlow.seconds}
+                onComplete={startFlow.countdownComplete}
+                onCancel={startFlow.cancel}
+              />
+            ) : (
+              <span className="inline-flex items-center gap-2" data-testid={`start-flow-${startFlow.step}`}>
+                <span className="text-body-sm font-medium text-slate-700 dark:text-slate-200">
+                  {startFlow.step === 'deploying' ? 'Deploying engines…' : 'Starting run…'}
+                </span>
+                {startFlow.step === 'deploying' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="active:scale-95"
+                    data-testid="start-flow-cancel"
+                    onClick={startFlow.cancel}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </span>
+            )
+          ) : status?.phase === 'running' ? (
+            <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="run-running-note">
+              A run is in progress —{' '}
+              <Link
+                to={`/executions/${latestId}`}
+                className="font-medium text-sky-600 underline dark:text-sky-400"
+              >
+                view execution #{latestId}
+              </Link>{' '}
+              to watch or stop it.
+            </p>
+          ) : (
+            canStart && (
+              <Button
+                data-testid="run-start"
+                variant="accent"
+                className="active:scale-95"
+                disabled={status === null || editBusy}
+                onClick={startFlow.begin}
+              >
+                Start
+              </Button>
+            )
+          )}
+          {flowError !== null && (
+            <div className="w-full">
+              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                {flowError}
+              </p>
+              <ActionErrorDetails details={flowErrorDetail} />
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

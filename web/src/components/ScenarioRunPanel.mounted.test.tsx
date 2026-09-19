@@ -65,8 +65,11 @@ const configFixture = {
 const mutable = {
   phase: 'idle' as 'idle' | 'deployed' | 'running',
   config: configFixture as unknown as Record<string, unknown>,
+  deployStatus: 200,
+  hangDeploy: false,
   deployCalls: 0,
   triggerCalls: 0,
+  putConfigStatus: 200,
 };
 
 let container: HTMLDivElement | null = null;
@@ -75,6 +78,7 @@ let calls: Array<{ method: string; url: string; body?: string }> = [];
 let overrides: Array<(method: string, url: string, body?: string) => Response | undefined> = [];
 const onExecutionsChanged = vi.fn();
 const onOpenCalibration = vi.fn();
+let lastOpts: RenderOpts = {};
 
 function stubFetch() {
   vi.stubGlobal(
@@ -107,7 +111,61 @@ function stubFetch() {
       if (url.endsWith('/api/executions/22/config') && method === 'GET') {
         return json({ 'multi-test': mutable.config });
       }
-      if (url.endsWith('/api/executions/22/status')) {
+      if (path === '/api/executions/22/deploy') {
+        mutable.deployCalls++;
+        if (mutable.hangDeploy) {
+          return new Promise<Response>(() => {});
+        }
+        if (mutable.deployStatus === 200) {
+          mutable.phase = 'deployed';
+        }
+        return json({ message: 'engines deploying' }, mutable.deployStatus);
+      }
+      if (path === '/api/executions/22/trigger') {
+        mutable.triggerCalls++;
+        mutable.phase = 'running';
+        return json({ message: 'run triggered' });
+      }
+      // The empty-state create path: POST /executions mints id 99, its
+      // config PUT is captured by the test, its lifecycle mirrors 22's.
+      if (path === '/api/executions' && method === 'POST') {
+        return json({ id: 99 }, 201);
+      }
+      if (path === '/api/executions/99/config' && method === 'PUT') {
+        if (mutable.putConfigStatus === 200) {
+          mutable.config = {
+            name: 'from-baseline-load',
+            project_id: 1,
+            execution_id: 99,
+            tests: [
+              { name: 'from-baseline', scenario_id: 42, concurrency: 12, rampup: 60, engines: 3, duration: 600, throughput: 100, mode: 'burst' },
+            ],
+          };
+        }
+        return json({ message: 'mode config refused: no profile' }, mutable.putConfigStatus);
+      }
+      if (path === '/api/executions/99/config' && method === 'GET') {
+        return json({ 'multi-test': mutable.config });
+      }
+      if (path === '/api/executions/99/deploy') {
+        mutable.deployCalls++;
+        if (mutable.hangDeploy) {
+          return new Promise<Response>(() => {});
+        }
+        if (mutable.deployStatus === 200) {
+          mutable.phase = 'deployed';
+        }
+        return json({ message: 'engines deploying' }, mutable.deployStatus);
+      }
+      if (path === '/api/executions/99/trigger') {
+        mutable.triggerCalls++;
+        mutable.phase = 'running';
+        return json({ message: 'run triggered' });
+      }
+      if (path === '/api/executions/99/status') {
+        return json({ phase: mutable.phase, pool_size: 0, status: [] });
+      }
+      if (path === '/api/executions/22/status') {
         return json({ phase: mutable.phase, pool_size: 0, status: [] });
       }
       if (path === '/api/scenarios/42/capacity-profile/fanout') {
@@ -137,6 +195,8 @@ interface RenderOpts {
 }
 
 async function renderPanel(opts: RenderOpts = {}) {
+  stubFetch();
+  lastOpts = opts;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -151,6 +211,31 @@ async function renderPanel(opts: RenderOpts = {}) {
             executions={opts.executions ?? executionsFixture}
             executionsError={null}
             lastRun={opts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
+            onExecutionsChanged={onExecutionsChanged}
+            onOpenCalibration={onOpenCalibration}
+          />
+        </SessionProvider>
+      </MemoryRouter>,
+    );
+  });
+  await act(async () => {});
+}
+
+/** The page's refetch, simulated: re-render with updated props (the page
+ *  keeps the panel mounted while its list reloads). */
+async function rerenderPanel(patch: Partial<RenderOpts> = {}) {
+  lastOpts = { ...lastOpts, ...patch };
+  await act(async () => {
+    root!.render(
+      <MemoryRouter>
+        <SessionProvider>
+          <ScenarioRunPanel
+            scenarioId={42}
+            scenarioName="from-baseline"
+            projectId={1}
+            executions={lastOpts.executions ?? executionsFixture}
+            executionsError={null}
+            lastRun={lastOpts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
             onExecutionsChanged={onExecutionsChanged}
             onOpenCalibration={onOpenCalibration}
           />
@@ -185,11 +270,28 @@ async function click(el: Element) {
   });
 }
 
+const advance = async (ms: number) => {
+  await act(async () => {
+    vi.advanceTimersByTime(ms);
+  });
+};
+
+const countdown = () => container!.querySelector('[data-testid="start-countdown"]');
+const remainingText = () => container!.querySelector('[data-testid="start-countdown-remaining"]')?.textContent ?? '';
+
 const byId = <T extends HTMLElement>(id: string) => container!.querySelector(`[data-testid="${id}"]`) as T;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  Object.assign(mutable, { phase: 'idle', config: configFixture, deployCalls: 0, triggerCalls: 0 });
+  Object.assign(mutable, {
+    phase: 'idle',
+    config: configFixture,
+    deployStatus: 200,
+    hangDeploy: false,
+    deployCalls: 0,
+    triggerCalls: 0,
+    putConfigStatus: 200,
+  });
 });
 
 afterEach(() => {
@@ -206,6 +308,7 @@ afterEach(() => {
   root = null;
   calls = [];
   overrides = [];
+  lastOpts = {};
   onExecutionsChanged.mockClear();
   onOpenCalibration.mockClear();
 });
@@ -445,5 +548,173 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     await renderPanel();
 
     expect(byId('mode-qps-hint')).toBeNull();
+  });
+});
+
+describe('ScenarioRunPanel — start flow and empty-state create', () => {
+  /** The common prefix: mount at clock 0, offset 500ms (the 10s status
+   * poll and the countdown's final tick stay half a second apart), click
+   * Start, let the deploy POST and its immediate status refresh land —
+   * the countdown is up at remaining=10. */
+  async function reachCountdown() {
+    await renderPanel();
+    await advance(500);
+    await click(byId('run-start'));
+    await act(async () => {});
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 10s');
+  }
+
+  it('offers Start (idle) and chains deploy → countdown → trigger', async () => {
+    await reachCountdown();
+
+    expect(mutable.deployCalls).toBe(1);
+    expect(mutable.triggerCalls).toBe(0);
+    expect(byId('run-controls').getAttribute('aria-busy')).toBe('true');
+
+    // The countdown runs out into the trigger; the flow hands control back
+    // (running note in place of the Start button).
+    await advance(10_000);
+    expect(mutable.triggerCalls).toBe(1);
+    expect(countdown()).toBeNull();
+    expect(byId('run-start')).toBeNull();
+    expect(byId('run-running-note')?.textContent).toContain('view execution #22');
+    expect(byId('run-controls').getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('deployed skips the deploy POST and opens the countdown directly', async () => {
+    mutable.phase = 'deployed';
+    await renderPanel();
+    await advance(500);
+
+    await click(byId('run-start'));
+
+    expect(countdown()).not.toBeNull();
+    expect(container!.querySelector('[data-testid="start-flow-deploying"]')).toBeNull();
+    expect(mutable.deployCalls).toBe(0);
+
+    await advance(10_000);
+    expect(mutable.triggerCalls).toBe(1);
+  });
+
+  it('cancel during the countdown returns the Start control without triggering', async () => {
+    await reachCountdown();
+
+    await click(byId('start-countdown-cancel'));
+
+    expect(countdown()).toBeNull();
+    expect(mutable.triggerCalls).toBe(0);
+    // Deployed by the earlier deploy: Start is back and enabled (the
+    // straight-countdown retry path).
+    expect((byId('run-start') as HTMLButtonElement).disabled).toBe(false);
+    expect(byId('run-controls').getAttribute('aria-busy')).toBe('false');
+
+    // The countdown's timer is dead: running out the original 10s fires
+    // nothing.
+    await advance(30_000);
+    expect(mutable.triggerCalls).toBe(0);
+  });
+
+  it('cancel during the deploying wait escapes, and busy locks the editor', async () => {
+    mutable.hangDeploy = true;
+    await renderPanel();
+    await advance(500);
+
+    // Editor is live before the flow.
+    expect((byId('mode-qps') as HTMLInputElement).disabled).toBe(false);
+    await click(byId('run-start'));
+
+    const status = byId('start-flow-deploying');
+    expect(status?.textContent).toContain('Deploying engines…');
+    // Busy disables editing: inputs locked, Apply dead.
+    expect((byId('mode-qps') as HTMLInputElement).disabled).toBe(true);
+    expect((byId('mode-select') as HTMLSelectElement).disabled).toBe(true);
+    expect((byId('run-apply') as HTMLButtonElement).disabled).toBe(true);
+
+    await click(status.querySelector('[data-testid="start-flow-cancel"]')!);
+    expect(byId('start-flow-deploying')).toBeNull();
+    expect((byId('mode-qps') as HTMLInputElement).disabled).toBe(false);
+    expect((byId('run-apply') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('never-run: create sends NewTest Simple\u2019s exact payload, then starts the new execution', async () => {
+    // Calibration-only history: no LOAD execution, so the create state
+    // renders — and the calibration row names the engine a new run uses.
+    await renderPanel({ executions: [executionsFixture[0]] });
+
+    // The create form prefills the Simple defaults and shows the hint.
+    expect((byId('mode-qps') as HTMLInputElement).value).toBe('100');
+    await click(byId('run-create-start'));
+
+    // POST /executions: form-encoded identity, engine from the newest
+    // row (the calibration row's gatling).
+    const post = calls.find(c => c.method === 'POST' && c.url.endsWith('/api/executions'))!;
+    expect(post.body).toBe('project_id=1&name=from-baseline&engine=gatling');
+
+    // PUT config: the single mode entry, byte-identical to NewTest Simple.
+    const put = calls.find(c => c.method === 'PUT' && c.url.endsWith('/api/executions/99/config'))!;
+    const body = JSON.parse(put.body as string);
+    expect(body.name).toBe('from-baseline-load');
+    expect(body.project_id).toBe(1);
+    expect(body.execution_id).toBe(99);
+    expect(JSON.stringify(body.tests[0])).toBe(
+      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'burst', qps: 100, duration: 10, unit: 'm' }))
+    );
+
+    // The panel asked the page to refetch; simulate the refetched list
+    // naming the new execution latest — the flow begins on its own.
+    expect(onExecutionsChanged).toHaveBeenCalledTimes(1);
+    const executions99: ExecutionSummary[] = [
+      { id: 99, name: 'from-baseline', project_id: 1, engine: 'gatling', kind: 'load', created_time: '2026-09-19T10:00:00Z' },
+    ];
+    await rerenderPanel({ executions: executions99 });
+
+    // Idle chain against the NEW id: deploy → countdown.
+    expect(mutable.deployCalls).toBe(1);
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 10s');
+
+    await advance(10_000);
+    expect(mutable.triggerCalls).toBe(1);
+  });
+
+  it('never-run create refused with 409: remediation copy and the Calibrate link', async () => {
+    mutable.putConfigStatus = 409;
+    await renderPanel({ executions: [] });
+
+    await click(byId('run-create-start'));
+
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('no profile');
+    // The honest half-state is named: the execution exists, unconfigured.
+    expect(byId('run-calibrate-remediation')?.textContent).toContain(
+      'the run was created but not configured'
+    );
+    await click(byId('run-calibrate-link'));
+    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+    // No flow began.
+    expect(mutable.deployCalls).toBe(0);
+    expect(countdown()).toBeNull();
+  });
+
+  it('never-run without the execution:create grant renders message-only', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/me')) {
+        return json({
+          subject: 'demo:carol',
+          name: 'Carol',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { scenario: ['list', 'read'] },
+          demo: true,
+        });
+      }
+      return undefined;
+    });
+    await renderPanel({ executions: [] });
+
+    expect(byId('run-create-start')).toBeNull();
+    expect(byId('run-no-create-permission')?.textContent).toContain('cannot create executions');
   });
 });
