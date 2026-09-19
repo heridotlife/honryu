@@ -129,3 +129,23 @@ Gates: go build/vet clean; go test 63 pkgs ok; gofmt+goimports empty;
 TestOpenAPIMatchesRoutes/RefsResolve/TagsMatchRouteGroups/SpecStructure
 all PASS (no routes touched); web tsc clean; vitest 73 files / 699 tests
 (679 baseline + 20). No push, no PR, no merge.
+
+## 2026-09-19 — phase 90 complete (simplified load modes, 4 commits)
+Branch feat/phase90-load-modes. Spec .cortex/2026-09-18-phase90-load-modes/.
+Commits 94b89d9 loadmode domain + eager resolution + migration 0074;
+c5aefe0 httpapi wire contract + 409 refusal matrix; d12e34f web
+Simple|Advanced toggle, ModeForm, ModeConfigCard, vitest 765/765; fc9c93d
+e2e + integration pins, mode.go 100% coverage. PR #379 merged all-16-green;
+main e30043e. Deployed :phase91 — build hiccup: helm user-values pinned
+grafana phase49, fixed with --reuse-values --set per tag. Live: SPA
+index-BQHM4gZv.js, migration 0074 applied (execution_scenario.mode
+VARCHAR(8) NULL). Design: 3 inputs — mode burst/ramp/soak, target_qps,
+duration; server derives concurrency via Little's Law on measured p95
+(floor 20, headroom 3.0), engines via FanOut, ramp policy burst 0 /
+ramp clamp d/5 60..600 / soak 60s warmup; mode rides as provenance; eager
+resolution in StoreConfig so compile never sees mode; no usable capacity
+profile means 409 with remediation. Deferred to future phases:
+multi-stage/staircase shapes, per-mode default criteria and SLOs,
+re-resolve-config action, multi-scenario Simple.
+Same day: dependabot sweep 34 to 0 — otel 1.45 bump, grpc excluded from
+module graph, 3 stale setagaya/go.mod alerts dismissed; PR #380 main 7944ddc.
