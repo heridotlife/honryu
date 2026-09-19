@@ -41,6 +41,13 @@ type scriptedStep struct {
 	exitCode          int
 	succeeded, failed int64
 	errors            []metrics.ErrorGroup
+	// latency is the response-time bucket (seconds) every one of the
+	// step's samples lands in. Zero keeps phase7's original fast-target
+	// 0.01s, so existing scripts are unchanged; phase90 plants a slow one
+	// (0.5s) so the calibration report's p95 -- which mode resolution
+	// reads back through the latency chain -- is distinguishable from the
+	// configured fallback hint.
+	latency float64
 }
 
 // scriptedIngest is the StepRunner's injected "hold" -- instead of actually
@@ -109,13 +116,17 @@ func (s *scriptedIngest) checkErr(t *testing.T) {
 // goroutine (the concurrent double-drive proof below).
 func ingestFinalNoFatal(client *http.Client, baseURL string, executionID, scenarioID, runID int64, step scriptedStep) error {
 	exitCode := step.exitCode
+	bucket := step.latency
+	if bucket == 0 {
+		bucket = 0.01
+	}
 	body, err := json.Marshal(metrics.Batch{
 		ExecutionID: executionID, ScenarioID: scenarioID, RunID: runID,
 		ShardIndex: 0, StreamID: "s0", Final: true, ExitCode: &exitCode,
 		Intervals: []metrics.Interval{{
 			Seq: 1, Timestamp: 1000, Label: "target-request",
 			Concurrency: 1, Samples: step.succeeded + step.failed, Succeeded: step.succeeded, Failed: step.failed,
-			Latency: metrics.Histogram{0.01: step.succeeded},
+			Latency: metrics.Histogram{bucket: step.succeeded},
 			Errors:  step.errors,
 		}},
 	})

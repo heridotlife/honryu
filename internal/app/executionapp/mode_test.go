@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,10 +27,17 @@ type stubCapacity struct {
 	profiles    map[capacityprofile.Key]capacityprofile.CapacityProfile
 	fingerprint string
 	asked       []capacityprofile.Key
+	// fanOutErr, when set, makes FanOut fail outright -- the transport
+	// branch resolution must propagate verbatim (a failing read is never a
+	// refusal with a remediation).
+	fanOutErr error
 }
 
 func (c *stubCapacity) FanOut(_ context.Context, key capacityprofile.Key, targetQPS float64) (capacityprofile.Result, error) {
 	c.asked = append(c.asked, key)
+	if c.fanOutErr != nil {
+		return capacityprofile.Result{}, c.fanOutErr
+	}
 	profile, ok := c.profiles[key]
 	if !ok {
 		return capacityprofile.FanOut(nil, targetQPS, ""), nil
@@ -513,5 +521,149 @@ func TestGetConfig_EchoesModeAndResolvedNumbers(t *testing.T) {
 	got := cfg.Content.Tests[0]
 	if got.Mode != "soak" || got.Engines != 4 || got.Concurrency != 375 || got.Rampup != 60 {
 		t.Fatalf("echoed entry = %+v, want soak/4/375/60", got)
+	}
+}
+
+// ModeResolutionError's message names both halves of the refusal -- the
+// fan-out status and the capacity key -- because the operator's
+// remediation depends on each ("calibrate scenario 7 first" reads
+// differently from "your criterion is too strict").
+func TestModeResolutionErrorMessage(t *testing.T) {
+	t.Parallel()
+	err := &executionapp.ModeResolutionError{
+		Status: capacityprofile.StatusNoProfile,
+		Key:    capacityprofile.Key{ScenarioID: 7, Engine: taurus.ExecutorJMeter, CPU: "500m", Memory: "512Mi"},
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		string(capacityprofile.StatusNoProfile), "7",
+		string(taurus.ExecutorJMeter), "500m", "512Mi",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() = %q, want it to name %q", msg, want)
+		}
+	}
+}
+
+// A mixed config: mode entries resolve in place while advanced entries in
+// the same PUT pass through untouched -- stating one scenario as a mode
+// never disturbs a hand-tuned sibling.
+func TestStoreConfig_MixedModeAndAdvancedEntries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	exec := execution.Execution{Engine: taurus.ExecutorJMeter}
+	e := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	coll, err := e.store.GetExecution(ctx, e.executionID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	secondID := seedScenario(t, e.store, "aux", coll.ProjectID)
+	jobID := seedCalibrationJob(t, e, exec)
+	e.capacity.profiles[modeTestKey(e.scenarioID, exec)] = *freshProfile(10, jobID)
+	seedCalibrationReport(t, e, jobID, 0.5)
+
+	advanced := loadprofile.Entry{ScenarioID: secondID, Concurrency: 5, Rampup: 45, Engines: 3, Duration: 120}
+	modeEntry := loadprofile.Entry{ScenarioID: e.scenarioID, Mode: "burst", Throughput: 20, Duration: 600}
+	if err := e.svc.StoreConfig(ctx, e.executionID, loadprofile.Profile{
+		ExecutionID: e.executionID, Tests: []loadprofile.Entry{advanced, modeEntry},
+	}); err != nil {
+		t.Fatalf("StoreConfig: %v", err)
+	}
+	entries, err := e.store.LoadProfileFor(ctx, e.executionID)
+	if err != nil {
+		t.Fatalf("LoadProfileFor: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("stored entries = %d, want 2", len(entries))
+	}
+	var gotAdvanced, gotMode *loadprofile.Entry
+	for i := range entries {
+		if entries[i].Mode == "" {
+			gotAdvanced = &entries[i]
+		} else {
+			gotMode = &entries[i]
+		}
+	}
+	if gotAdvanced == nil || gotMode == nil {
+		t.Fatalf("stored entries = %+v, want one advanced and one mode entry", entries)
+	}
+	if *gotAdvanced != advanced {
+		t.Errorf("advanced entry = %+v, want it byte-for-byte unchanged", *gotAdvanced)
+	}
+	// The mode sibling resolves exactly as the e2e pin proves end to end:
+	// 2 engines (20 rps / 10 per pod), ceil(20 * 0.5s * 3.0) = 30 VUs from
+	// the measured p95, burst ramp-up 0.
+	if gotMode.Engines != 2 || gotMode.Concurrency != 30 || gotMode.Rampup != 0 || gotMode.Mode != "burst" {
+		t.Errorf("mode entry = %+v, want engines 2 / concurrency 30 / rampup 0 / burst", *gotMode)
+	}
+}
+
+// A fan-out read that fails outright (the capacity source erroring, not
+// refusing) propagates verbatim and persists nothing: an infrastructure
+// fault must not masquerade as an operator refusal -- or as a stored
+// config.
+func TestStoreConfig_ModeFanOutErrorPropagates(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newModeEnv(t, execution.Execution{Engine: taurus.ExecutorJMeter}, 250*time.Millisecond, nil)
+	boom := errors.New("capacity store down")
+	e.capacity.fanOutErr = boom
+
+	if err := e.svc.StoreConfig(ctx, e.executionID, modeConfig(e, "burst", 100, 600)); !errors.Is(err, boom) {
+		t.Fatalf("StoreConfig err = %v, want the fan-out error verbatim", err)
+	}
+	if entries, err := e.store.LoadProfileFor(ctx, e.executionID); err != nil || len(entries) != 0 {
+		t.Fatalf("entries after fan-out error = %v (err %v), want none persisted", entries, err)
+	}
+}
+
+// Every break in the latency chain falls back to the configured hint
+// instead of failing the config: readers never wired (a service built
+// without the job/report collaborators), a profile whose job ledger row
+// is gone, and a settled report whose p95 never landed. Each case plants
+// a measured 0.5s that is unreachable in its own way, so the derived
+// concurrency (the floor, 20 -- not the 30 a 0.5s measurement gives)
+// proves the fallback actually served.
+func TestStoreConfig_ModeLatencyChainFallsBack(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	exec := execution.Execution{Engine: taurus.ExecutorJMeter}
+
+	// Unwired readers: capacity answers, but Jobs/Reports are nil, so the
+	// chain cannot even start.
+	e := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	jobID := seedCalibrationJob(t, e, exec)
+	e.capacity.profiles[modeTestKey(e.scenarioID, exec)] = *freshProfile(10, jobID)
+	seedCalibrationReport(t, e, jobID, 0.5)
+	halfWired := executionapp.NewService(e.store, fake.NewObjectStore(), 500).WithModeSources(executionapp.ModeSources{
+		Capacity: e.capacity, LatencyHint: 250 * time.Millisecond, DefaultEngine: taurus.ExecutorJMeter,
+	})
+	if err := halfWired.StoreConfig(ctx, e.executionID, modeConfig(e, "burst", 20, 600)); err != nil {
+		t.Fatalf("StoreConfig (unwired readers): %v", err)
+	}
+	if got := stored(t, e); got.Concurrency != 20 {
+		t.Errorf("unwired readers concurrency = %d, want 20 (hint fallback at the floor)", got.Concurrency)
+	}
+
+	// Dangling job: the profile's JobID points at a pruned ledger row.
+	e2 := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	e2.capacity.profiles[modeTestKey(e2.scenarioID, exec)] = *freshProfile(10, 999999)
+	if err := e2.svc.StoreConfig(ctx, e2.executionID, modeConfig(e2, "burst", 20, 600)); err != nil {
+		t.Fatalf("StoreConfig (dangling job): %v", err)
+	}
+	if got := stored(t, e2); got.Concurrency != 20 {
+		t.Errorf("dangling job concurrency = %d, want 20 (hint fallback at the floor)", got.Concurrency)
+	}
+
+	// Empty p95: the report exists but carries no 95th percentile.
+	e3 := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	jobID3 := seedCalibrationJob(t, e3, exec)
+	e3.capacity.profiles[modeTestKey(e3.scenarioID, exec)] = *freshProfile(10, jobID3)
+	seedCalibrationReport(t, e3, jobID3, 0)
+	if err := e3.svc.StoreConfig(ctx, e3.executionID, modeConfig(e3, "burst", 20, 600)); err != nil {
+		t.Fatalf("StoreConfig (empty p95): %v", err)
+	}
+	if got := stored(t, e3); got.Concurrency != 20 {
+		t.Errorf("empty p95 concurrency = %d, want 20 (hint fallback at the floor)", got.Concurrency)
 	}
 }
