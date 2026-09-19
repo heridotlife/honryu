@@ -24,6 +24,8 @@ import ClusterBadge from '../components/ui/ClusterBadge';
 import EngineBadge from '../components/ui/EngineBadge';
 import CopyLink from '../components/CopyLink';
 import ActionErrorDetails from '../components/ActionErrorDetails';
+import StartCountdown from '../components/StartCountdown';
+import { useStartFlow } from '../hooks/useStartFlow';
 import CalibrateScenarioModal from '../components/CalibrateScenarioModal';
 import CardTable, { type CardTableColumn } from '../components/CardTable';
 import type { ClusterResult } from '../api/reports';
@@ -61,19 +63,26 @@ function StatCard({ label, value, caption }: { label: string; value: string; cap
   );
 }
 
+/** The lifecycle verbs the hub can offer. 'start' (phase 93) is the
+ *  one-click composite: deploy → 10s countdown → trigger. */
+export type LifecycleAction = 'start' | 'deploy' | 'trigger' | 'stop' | 'purge';
+
 /**
  * Which lifecycle actions the hub offers, per phase and per engine
  * reachability. The matrix is the R2 contract: deploy when idle, trigger
  * when deployed (and engines reachable), stop while running, purge whenever
- * something is deployed or running. Disabled buttons say WHY.
+ * something is deployed or running. Phase 93: idle additionally offers the
+ * 'start' composite ahead of plain deploy — the simplified primary path;
+ * deploy-only stays as the advanced control. Disabled buttons say WHY.
  */
 export function phaseControls(
   phase: Phase | null,
   enginesReachable: boolean
-): Array<{ action: 'deploy' | 'trigger' | 'stop' | 'purge'; enabled: boolean }> {
+): Array<{ action: LifecycleAction; enabled: boolean }> {
   switch (phase) {
     case 'idle':
       return [
+        { action: 'start', enabled: true },
         { action: 'deploy', enabled: true },
         { action: 'trigger', enabled: false },
         { action: 'stop', enabled: false },
@@ -104,8 +113,10 @@ export function phaseControls(
   }
 }
 
-/** What each lifecycle action costs in RBAC terms — the audit table's row. */
+/** What each lifecycle action costs in RBAC terms — the audit table's row.
+ *  'start' chains deploy+trigger, so it costs exactly run:create. */
 const controlPermission = {
+  start: { resource: 'run', action: 'create' },
   deploy: { resource: 'run', action: 'create' },
   trigger: { resource: 'run', action: 'create' },
   stop: { resource: 'run', action: 'update' },
@@ -119,9 +130,9 @@ const controlPermission = {
  * a Deploy/Trigger/Stop/Delete button the server would 403.
  */
 export function gateControls(
-  controls: Array<{ action: 'deploy' | 'trigger' | 'stop' | 'purge'; enabled: boolean }>,
+  controls: Array<{ action: LifecycleAction; enabled: boolean }>,
   can: (resource: string, action: string) => boolean
-): Array<{ action: 'deploy' | 'trigger' | 'stop' | 'purge'; enabled: boolean }> {
+): Array<{ action: LifecycleAction; enabled: boolean }> {
   return controls.filter(({ action }) => {
     const perm = controlPermission[action];
     return can(perm.resource, perm.action);
@@ -814,6 +825,25 @@ export default function Execution() {
       .finally(() => setBusyAction(null));
   };
 
+  // Phase 93: the one-click Start chain (deploy → 10s countdown →
+  // trigger, orchestrated in useStartFlow). It shares this page's
+  // action-error surface (message + ActionErrorDetails) and pushes its
+  // refreshes through the same setStatus the poll feeds, so the flow's
+  // phase-watch reads one source of truth.
+  const startFlow = useStartFlow({
+    executionId,
+    phase: status?.phase ?? null,
+    onStatus: s => setStatus(s),
+    onError: (message, details) => {
+      setActionError(message);
+      setActionDetails(details);
+    },
+    onReset: () => {
+      setActionError(null);
+      setActionDetails(null);
+    },
+  });
+
   if (!validId) {
     return (
       <div className="space-y-4">
@@ -825,6 +855,16 @@ export default function Execution() {
 
   const enginesReachable = status?.status.every(s => s.engines_reachable) ?? false;
   const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
+  // Phase 93: the start composite renders outside the plain-button map —
+  // once a flow is in flight it stays mounted as the countdown/step
+  // status even while the underlying phase (and thus the controls row)
+  // shifts under it.
+  const startControl = controls.find(c => c.action === 'start') ?? null;
+  // Narrowed by the guard so runAction keeps its plain-verb signature.
+  const buttonControls = controls.filter(
+    (c): c is { action: Exclude<LifecycleAction, 'start'>; enabled: boolean } => c.action !== 'start'
+  );
+  const startBusy = startFlow.step !== null;
   // Phase 39's Calibrate action needs an engine to name (the backend rejects
   // an engineless calibration) and the session's execution:create. Phase 44:
   // only NORMAL executions offer it -- a calibrate_engine execution is
@@ -928,15 +968,67 @@ export default function Execution() {
                   caption="most recent sample"
                 />
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {controls.map(({ action, enabled }) => {
+              <div
+                className="flex flex-wrap items-center gap-2"
+                role="group"
+                aria-label="Lifecycle controls"
+                aria-busy={busyAction !== null || startBusy}
+              >
+                {/* Phase 93: the Start composite. Accent (the page's one
+                    primary CTA per phase 52's rule) while idle; while the
+                    flow runs it becomes the countdown (ui-ux-pro-max: a 10s
+                    wait is a countdown, never a spinner) or the step status,
+                    with Cancel as the exit until the trigger actually
+                    fires. active:scale-95 gives pressed feedback. */}
+                {startBusy ? (
+                  startFlow.step === 'counting' ? (
+                    <StartCountdown
+                      seconds={startFlow.seconds}
+                      onComplete={startFlow.countdownComplete}
+                      onCancel={startFlow.cancel}
+                    />
+                  ) : (
+                    <span
+                      className="inline-flex items-center gap-2"
+                      data-testid={`start-flow-${startFlow.step}`}
+                    >
+                      <span className="text-body-sm font-medium text-slate-700 dark:text-slate-200">
+                        {startFlow.step === 'deploying' ? 'Deploying engines…' : 'Starting run…'}
+                      </span>
+                      {startFlow.step === 'deploying' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="active:scale-95"
+                          data-testid="start-flow-cancel"
+                          onClick={startFlow.cancel}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                    </span>
+                  )
+                ) : (
+                  startControl && (
+                    <Button
+                      data-testid="lifecycle-start"
+                      variant="accent"
+                      className="active:scale-95"
+                      disabled={!startControl.enabled || busyAction !== null}
+                      onClick={startFlow.begin}
+                    >
+                      Start
+                    </Button>
+                  )
+                )}
+                {buttonControls.map(({ action, enabled }) => {
                   const isPurge = action === 'purge';
                   return (
                     <Button
                       key={action}
                       data-testid={`lifecycle-${action}`}
                       variant={isPurge ? 'destructive' : action === 'stop' ? 'outline' : 'primary'}
-                      disabled={!enabled || busyAction !== null}
+                      disabled={!enabled || busyAction !== null || startBusy}
                       onClick={() => {
                         if (!isPurge) {
                           // Any other action cancels a lingering armed purge:

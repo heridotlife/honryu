@@ -149,3 +149,24 @@ multi-stage/staircase shapes, per-mode default criteria and SLOs,
 re-resolve-config action, multi-scenario Simple.
 Same day: dependabot sweep 34 to 0 — otel 1.45 bump, grpc excluded from
 module graph, 3 stale setagaya/go.mod alerts dismissed; PR #380 main 7944ddc.
+
+## 2026-09-22 — phase 93 complete (one-click Start, 2 commits)
+Branch feat/phase93-one-click-start (spec lived in
+.cortex/2026-09-19-phase92-one-click-start/ — dir says 92, phase is 93).
+Web-only: Start composite on the idle hub chains deploy → phase-watch
+(rides the page's existing 10s status poll, one immediate post-deploy
+refresh) → 10s StartCountdown (ring + "Load test starts in Ns",
+aria-live polite at 10/5/1 only, aria-busy group, Cancel during
+deploy-wait and countdown, reduced-motion static text, active:scale-95)
+→ trigger; the trigger handler's bounded readiness wait (phase 24)
+covers residual lag, so no client reachability gate. Deploy-fail /
+mid-countdown flip / trigger-fail surface via ActionErrorDetails; all
+other controls disable while in flight; plain Deploy path untouched
+(phase-51 pins green). phaseControls idle gains RBAC-gated 'start'
+(run:create). Commits d5f8952 component+hook+wiring+tests, then
+Execution.start.test.tsx mounted suite. Gates: web tsc clean; vitest
+81 files / 795 tests (783 baseline + 12). Deviation: user brief said
+active:scale-95 was "used elsewhere in the repo" — it wasn't (nowhere
+in web/src); added it fresh on the new buttons. Not done: e2e
+boot-harness pin (spec marked optional; countdown needs timer control
+the boot harness lacks). No push, no PR, no merge.

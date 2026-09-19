@@ -33,9 +33,9 @@ describe('calibrationSpecLines', () => {
 // trigger unlocks (only once every engine is reachable). This is the
 // spec-critical surface, asserted without a DOM.
 describe('phaseControls', () => {
-  it('idle: only deploy is enabled', () => {
+  it('idle: start and deploy offered, the rest locked', () => {
     const c = Object.fromEntries(phaseControls('idle', false).map((x) => [x.action, x.enabled]));
-    expect(c).toEqual({ deploy: true, trigger: false, stop: false, purge: false });
+    expect(c).toEqual({ start: true, deploy: true, trigger: false, stop: false, purge: false });
   });
 
   it('deployed: trigger unlocks only when engines reachable; purge available', () => {
@@ -95,7 +95,8 @@ describe('gateControls', () => {
 
   it('tenant_editor and admin keep every control, with phase enablement preserved', () => {
     const gated = gateControls(phaseControls('idle', false), mapCan(editor));
-    expect(gated.map((c) => c.action)).toEqual(['deploy', 'trigger', 'stop', 'purge']);
+    expect(gated.map((c) => c.action)).toEqual(['start', 'deploy', 'trigger', 'stop', 'purge']);
+    expect(gated.find((c) => c.action === 'start')?.enabled).toBe(true);
     expect(gated.find((c) => c.action === 'deploy')?.enabled).toBe(true);
     expect(gateControls(phaseControls('running', true), mapCan({ '*': ['*'] })).length).toBe(4);
   });
