@@ -28,6 +28,7 @@ import {
   modeChipLabel,
   modeDerivationLines,
   modeFormValid,
+  secondsToModeForm,
   type ModeFormValue,
 } from '../lib/modeConfig';
 import { ApiError, errorDetails } from '../api/client';
@@ -39,13 +40,9 @@ interface Props {
   capacityKey: { engine: string; cpu: string; memory: string };
 }
 
-/** Seconds -> {duration, unit} for prefilling the re-apply form. */
-function secondsToForm(seconds: number): Pick<ModeFormValue, 'duration' | 'unit'> {
-  if (seconds >= 3600 && seconds % 3600 === 0) {
-    return { duration: seconds / 3600, unit: 'h' };
-  }
-  return { duration: Math.round(seconds / 60), unit: 'm' };
-}
+/** Seconds -> {duration, unit} for prefilling the re-apply form (the
+ *  shared inverse of durationSeconds, phase 94's extraction). */
+const secondsToForm = secondsToModeForm;
 
 /** The four numbers a re-resolve can move, one diff cell's "old → new". */
 function diffCell(label: string, before: number, after: number): string {
