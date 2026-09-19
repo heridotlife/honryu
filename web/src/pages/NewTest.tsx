@@ -10,15 +10,11 @@ import { apiClient, ApiError, errorDetails } from '../api/client';
 import { instantiateScenario, listTemplates, setScenarioRequests, type Template } from '../api/scenarios';
 import { listClusters, type Cluster } from '../api/clusters';
 import { useSession } from '../hooks/useSession';
-import {
-  buildFragment,
-  concurrencyEnginesWarning,
-  stepError,
-  flowSteps,
-  type NewTestForm,
-} from '../lib/newTestFlow';
+import { buildFragment, concurrencyEnginesWarning, stepError, flowSteps, type NewTestForm } from '../lib/newTestFlow';
 import { stagesToConfig, type StagesConfigJSON } from '../lib/stagesConfig';
 import ActionErrorDetails from '../components/ActionErrorDetails';
+import ModeForm from '../components/ModeForm';
+import { buildModeTest, initialModeForm, modeFormValid, type ModeFormValue } from '../lib/modeConfig';
 
 interface ProjectRef {
   id: number;
@@ -27,6 +23,16 @@ interface ProjectRef {
 
 const inputCls =
   'rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+
+/** The Load card's segmented toggle styling (StageEditor's tab convention). */
+const loadTabCls = (active: boolean) =>
+  [
+    'px-3 py-1.5 text-sm font-medium transition-colors',
+    'focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500',
+    active
+      ? 'bg-slate-200 text-slate-900 dark:bg-slate-700 dark:text-white'
+      : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800',
+  ].join(' ');
 
 /** The identity fields' element ids -- the error summary links to them. */
 const FIELD_IDS = { name: 'newtest-name', targetUrl: 'newtest-target-url' } as const;
@@ -86,6 +92,11 @@ export default function NewTest() {
   const { can } = useSession();
   const canCreate = can('execution', 'create');
   const [form, setForm] = useState<NewTestForm>(initialForm);
+  // Phase 90: the Load card's Simple | Advanced toggle -- Simple (the
+  // default) states mode + rate + duration and lets the server resolve
+  // everything else; Advanced is the pre-phase-90 stage editor, verbatim.
+  const [loadTab, setLoadTab] = useState<'simple' | 'advanced'>('simple');
+  const [modeForm, setModeForm] = useState<ModeFormValue>(initialModeForm);
   const [stages, setStages] = useState<StageEditorState>(seedStage);
   const [stagesValid, setStagesValid] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -129,7 +140,7 @@ export default function NewTest() {
   useEffect(() => {
     let alive = true;
     listClusters()
-      .then((cs) => {
+      .then(cs => {
         if (alive) setClusters(cs);
       })
       .catch(() => {
@@ -140,9 +151,9 @@ export default function NewTest() {
     };
   }, []);
 
-  const byocClusters = (clusters ?? []).filter((c) => c.origin === 'byoc');
+  const byocClusters = (clusters ?? []).filter(c => c.origin === 'byoc');
   const toggleFanOut = (name: string) => {
-    setFanOutTargets((prev) => {
+    setFanOutTargets(prev => {
       const next = new Set(prev);
       if (next.has(name)) {
         next.delete(name);
@@ -156,7 +167,7 @@ export default function NewTest() {
   useEffect(() => {
     let alive = true;
     listTemplates()
-      .then((t) => {
+      .then(t => {
         if (alive) setTemplates(t);
       })
       .catch(() => {
@@ -187,7 +198,7 @@ export default function NewTest() {
         throw stepError(flowSteps[0], e);
       });
       const wanted = `tests-${templateName.trim().toLowerCase().replace(/\s+/g, '-')}`;
-      const existing = (projects ?? []).find((p) => p.name === wanted);
+      const existing = (projects ?? []).find(p => p.name === wanted);
       if (existing) {
         project = existing;
       } else {
@@ -230,9 +241,9 @@ export default function NewTest() {
   // the authority.
   const warning =
     stages.mode === 'table'
-      ? (stages.rows.map((r) => concurrencyEnginesWarning(r.concurrency, r.engines)).find((w) => w !== null) ?? null)
+      ? (stages.rows.map(r => concurrencyEnginesWarning(r.concurrency, r.engines)).find(w => w !== null) ?? null)
       : null;
-  const set = (patch: Partial<NewTestForm>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<NewTestForm>) => setForm(f => ({ ...f, ...patch }));
   const setHeader = (i: number, hpatch: Partial<{ name: string; value: string }>) =>
     set({ headers: form.headers.map((h, j) => (j === i ? { ...h, ...hpatch } : h)) });
 
@@ -242,11 +253,9 @@ export default function NewTest() {
     targetUrl: FIELD_VALIDATORS.targetUrl(form.targetUrl),
   };
   /** The submit-failure summary's entries, in field order. */
-  const summaryEntries: ErrorSummaryEntry[] = (
-    Object.keys(FIELD_IDS) as Array<keyof typeof FIELD_IDS>
-  )
-    .filter((f) => fieldErrors[f] !== null)
-    .map((f) => ({ fieldId: FIELD_IDS[f], message: fieldErrors[f]! }));
+  const summaryEntries: ErrorSummaryEntry[] = (Object.keys(FIELD_IDS) as Array<keyof typeof FIELD_IDS>)
+    .filter(f => fieldErrors[f] !== null)
+    .map(f => ({ fieldId: FIELD_IDS[f], message: fieldErrors[f]! }));
 
   const submit = () => {
     fields.markSubmitted();
@@ -268,7 +277,7 @@ export default function NewTest() {
         throw stepError('resolve project', e);
       });
       const wanted = `tests-${form.name.trim().toLowerCase().replace(/\s+/g, '-')}`;
-      const existing = (projects ?? []).find((p) => p.name === wanted);
+      const existing = (projects ?? []).find(p => p.name === wanted);
       if (existing) {
         project = existing;
       } else {
@@ -300,11 +309,9 @@ export default function NewTest() {
       if (fanOutTargets.size > 0) {
         executionForm.set('fanout_targets', JSON.stringify([...fanOutTargets].sort()));
       }
-      const execution = await apiClient
-        .post<{ id: number }>('/executions', executionForm)
-        .catch((e: unknown) => {
-          throw stepError('create execution', e);
-        });
+      const execution = await apiClient.post<{ id: number }>('/executions', executionForm).catch((e: unknown) => {
+        throw stepError('create execution', e);
+      });
 
       // Step 4: the requests fragment (G3, text/yaml verbatim).
       setStep(flowSteps[3]);
@@ -312,22 +319,27 @@ export default function NewTest() {
         throw stepError('save requests fragment', e);
       });
 
-      // Step 5: the load config (G7's JSON body), shaped by the stage
-      // editor. Table mode is the guided path: the flow owns the test
-      // name and scenario binding (buildConfig's exact mapping), so the
-      // payload is byte-identical to the pre-editor flow. Raw mode is the
-      // escape hatch: submit the JSON as typed, patching only what the
-      // flow owns -- the wrapper ids always; scenario id and test name
-      // when the operator left them at their placeholder values.
+      // Step 5: the load config (G7's JSON body). Simple mode PUTs the
+      // mode-shaped statement (mode + rate + duration) and the server
+      // resolves the rest; Advanced is the stage editor, unchanged --
+      // table mode byte-identical to the pre-editor flow, raw mode the
+      // verbatim escape hatch.
       setStep(flowSteps[4]);
       let cfg: StagesConfigJSON;
       try {
-        if (stages.mode === 'table') {
+        if (loadTab === 'simple') {
+          cfg = {
+            name: `${form.name}-load`,
+            project_id: project.id,
+            execution_id: execution.id,
+            tests: [buildModeTest(form.name, scenarioId, modeForm)],
+          };
+        } else if (stages.mode === 'table') {
           cfg = stagesToConfig(
-            stages.rows.map((r) => ({ ...r, name: form.name, scenarioId })),
+            stages.rows.map(r => ({ ...r, name: form.name, scenarioId })),
             `${form.name}-load`,
             project.id,
-            execution.id,
+            execution.id
           );
         } else {
           cfg = JSON.parse(stages.rawJson) as StagesConfigJSON;
@@ -345,14 +357,27 @@ export default function NewTest() {
       } catch (e: unknown) {
         throw stepError(flowSteps[4], e);
       }
-      await apiClient
+      // A mode config's 409 (no usable capacity profile) must not strand
+      // the operator on this page: the execution exists and its page is
+      // where the Calibrate action lives. The error rides along as router
+      // state and the destination renders it.
+      const configErr = await apiClient
         .putRaw(`/executions/${execution.id}/config`, 'application/json', JSON.stringify(cfg))
-        .catch((e: unknown) => {
-          throw stepError(flowSteps[4], e);
-        });
+        .then(() => null)
+        .catch((e: unknown) => stepError(flowSteps[4], e));
 
-      // Done: land on the deep-linkable hub.
-      navigate(`/executions/${execution.id}`);
+      // Done: land on the deep-linkable hub -- carrying the config error
+      // (if any) for the banner there. Extracted here, while the ApiError
+      // (and its structured envelope) is still in hand; the banner renders
+      // plain strings.
+      navigate(`/executions/${execution.id}`, {
+        state: configErr
+          ? {
+              configError: configErr instanceof Error ? configErr.message : String(configErr),
+              configErrorDetail: errorDetails(configErr),
+            }
+          : undefined,
+      });
     };
 
     run()
@@ -385,7 +410,7 @@ export default function NewTest() {
                 id={FIELD_IDS.name}
                 className={`${inputCls} mt-1 w-full`}
                 value={form.name}
-                onChange={(e) => set({ name: e.target.value })}
+                onChange={e => set({ name: e.target.value })}
                 onBlur={() => fields.blur('name')}
                 aria-invalid={fields.visibleError('name', fieldErrors.name) !== null}
                 placeholder="checkout-smoke"
@@ -396,7 +421,11 @@ export default function NewTest() {
             </label>
             <label className="text-caption text-slate-600 dark:text-slate-300">
               Engine
-              <select className={`${inputCls} mt-1 w-full`} value={form.engine} onChange={(e) => set({ engine: e.target.value })}>
+              <select
+                className={`${inputCls} mt-1 w-full`}
+                value={form.engine}
+                onChange={e => set({ engine: e.target.value })}
+              >
                 <option value="jmeter">jmeter</option>
                 <option value="gatling">gatling</option>
                 <option value="k6">k6</option>
@@ -409,7 +438,7 @@ export default function NewTest() {
               id={FIELD_IDS.targetUrl}
               className={`${inputCls} mt-1 w-full`}
               value={form.targetUrl}
-              onChange={(e) => set({ targetUrl: e.target.value })}
+              onChange={e => set({ targetUrl: e.target.value })}
               onBlur={() => fields.blur('targetUrl')}
               aria-invalid={fields.visibleError('targetUrl', fieldErrors.targetUrl) !== null}
               placeholder="http://checkout.svc"
@@ -429,8 +458,20 @@ export default function NewTest() {
             <div className="mt-2 space-y-2">
               {form.headers.map((h, i) => (
                 <div key={i} className="flex gap-2">
-                  <input className={`${inputCls} flex-1`} value={h.name} onChange={(e) => setHeader(i, { name: e.target.value })} placeholder="X-Auth" aria-label="header name" />
-                  <input className={`${inputCls} flex-1`} value={h.value} onChange={(e) => setHeader(i, { value: e.target.value })} placeholder="token" aria-label="header value" />
+                  <input
+                    className={`${inputCls} flex-1`}
+                    value={h.name}
+                    onChange={e => setHeader(i, { name: e.target.value })}
+                    placeholder="X-Auth"
+                    aria-label="header name"
+                  />
+                  <input
+                    className={`${inputCls} flex-1`}
+                    value={h.value}
+                    onChange={e => setHeader(i, { value: e.target.value })}
+                    placeholder="token"
+                    aria-label="header value"
+                  />
                   <Button variant="ghost" onClick={() => set({ headers: form.headers.filter((_, j) => j !== i) })}>
                     ✕
                   </Button>
@@ -439,7 +480,10 @@ export default function NewTest() {
             </div>
           </div>
           {warning && (
-            <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/30 dark:text-amber-200" role="alert">
+            <p
+              className="rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+              role="alert"
+            >
               {warning}
             </p>
           )}
@@ -447,10 +491,15 @@ export default function NewTest() {
               cluster; any checked makes the execution fan-out (the full
               shard set runs on every checked cluster). Disabled -- with the
               reason stated -- when no BYOC cluster is registered. */}
-          <fieldset className="rounded-md border border-slate-200 p-3 dark:border-slate-700" data-testid="fanout-targets">
+          <fieldset
+            className="rounded-md border border-slate-200 p-3 dark:border-slate-700"
+            data-testid="fanout-targets"
+          >
             <legend className="text-caption px-1 text-slate-600 dark:text-slate-300">Run everywhere (fan-out)</legend>
             {clustersUnavailable ? (
-              <p className="text-caption text-slate-400">Cluster registry unavailable — the test will run on the deployment&apos;s default cluster.</p>
+              <p className="text-caption text-slate-400">
+                Cluster registry unavailable — the test will run on the deployment&apos;s default cluster.
+              </p>
             ) : clusters === null ? (
               <p className="text-caption text-slate-400">Loading clusters…</p>
             ) : byocClusters.length === 0 ? (
@@ -463,8 +512,11 @@ export default function NewTest() {
                   Check any cluster to run this test&apos;s full load there simultaneously.
                 </p>
                 <div className="flex flex-wrap gap-3">
-                  {byocClusters.map((c) => (
-                    <label key={c.name} className="flex items-center gap-1.5 text-sm text-slate-700 dark:text-slate-300">
+                  {byocClusters.map(c => (
+                    <label
+                      key={c.name}
+                      className="flex items-center gap-1.5 text-sm text-slate-700 dark:text-slate-300"
+                    >
                       <input
                         type="checkbox"
                         data-testid={`fanout-target-${c.name}`}
@@ -476,8 +528,12 @@ export default function NewTest() {
                   ))}
                 </div>
                 {fanOutTargets.size > 0 && (
-                  <p className="text-caption mt-2 text-slate-500 dark:text-slate-400" data-testid="fanout-targets-selected">
-                    {fanOutTargets.size} target{fanOutTargets.size === 1 ? '' : 's'} selected — engines multiply per target.
+                  <p
+                    className="text-caption mt-2 text-slate-500 dark:text-slate-400"
+                    data-testid="fanout-targets-selected"
+                  >
+                    {fanOutTargets.size} target{fanOutTargets.size === 1 ? '' : 's'} selected — engines multiply per
+                    target.
                   </p>
                 )}
               </>
@@ -486,16 +542,47 @@ export default function NewTest() {
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
-          <CardTitle>Load stages</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Load</CardTitle>
+          <div
+            role="group"
+            aria-label="load configuration mode"
+            className="inline-flex overflow-hidden rounded-lg border border-slate-300 dark:border-slate-700"
+            data-testid="load-tab"
+          >
+            <button
+              type="button"
+              aria-pressed={loadTab === 'simple'}
+              aria-label="switch to simple load"
+              data-testid="load-tab-simple"
+              onClick={() => setLoadTab('simple')}
+              className={loadTabCls(loadTab === 'simple')}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              aria-pressed={loadTab === 'advanced'}
+              aria-label="switch to advanced load"
+              data-testid="load-tab-advanced"
+              onClick={() => setLoadTab('advanced')}
+              className={loadTabCls(loadTab === 'advanced')}
+            >
+              Advanced
+            </button>
+          </div>
         </CardHeader>
         <CardContent>
-          <StageEditor
-            state={stages}
-            onStateChange={setStages}
-            configName={`${form.name}-load`}
-            onValidityChange={setStagesValid}
-          />
+          {loadTab === 'simple' ? (
+            <ModeForm value={modeForm} onChange={setModeForm} />
+          ) : (
+            <StageEditor
+              state={stages}
+              onStateChange={setStages}
+              configName={`${form.name}-load`}
+              onValidityChange={setStagesValid}
+            />
+          )}
         </CardContent>
       </Card>
       <Card>
@@ -516,12 +603,12 @@ export default function NewTest() {
                 <select
                   className={`${inputCls} mt-1 w-full`}
                   value={templateId}
-                  onChange={(e) => setTemplateId(e.target.value)}
+                  onChange={e => setTemplateId(e.target.value)}
                   aria-label="template picker"
                   data-testid="template-picker"
                 >
                   <option value="">Choose a template…</option>
-                  {templates.map((t) => (
+                  {templates.map(t => (
                     <option key={t.id} value={t.id}>
                       {t.name}
                     </option>
@@ -533,7 +620,7 @@ export default function NewTest() {
                 <input
                   className={`${inputCls} mt-1 w-full`}
                   value={templateName}
-                  onChange={(e) => setTemplateName(e.target.value)}
+                  onChange={e => setTemplateName(e.target.value)}
                   placeholder="checkout-baseline"
                   aria-label="template test name"
                 />
@@ -543,7 +630,7 @@ export default function NewTest() {
                 <input
                   className={`${inputCls} mt-1 w-full`}
                   value={templateTarget}
-                  onChange={(e) => setTemplateTarget(e.target.value)}
+                  onChange={e => setTemplateTarget(e.target.value)}
                   placeholder="https://httpbin.org (optional)"
                   aria-label="template target URL override"
                 />
@@ -552,7 +639,11 @@ export default function NewTest() {
           )}
           <div className="flex items-center gap-3">
             {canCreateScenario ? (
-              <Button onClick={createFromTemplate} disabled={templateBusy || !templateId} data-testid="create-from-template">
+              <Button
+                onClick={createFromTemplate}
+                disabled={templateBusy || !templateId}
+                data-testid="create-from-template"
+              >
                 {templateBusy ? `Working — ${templateStep ?? '…'}` : 'Create from template'}
               </Button>
             ) : (
@@ -576,7 +667,11 @@ export default function NewTest() {
       </Card>
       <div className="flex items-center gap-3">
         {canCreate ? (
-          <Button onClick={submit} disabled={busy || !stagesValid} data-testid="create-test">
+          <Button
+            onClick={submit}
+            disabled={busy || (loadTab === 'simple' ? !modeFormValid(modeForm) : !stagesValid)}
+            data-testid="create-test"
+          >
             {busy ? `Working — ${step ?? '…'}` : 'Create test'}
           </Button>
         ) : (

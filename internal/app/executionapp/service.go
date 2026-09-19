@@ -62,6 +62,10 @@ type Service struct {
 	repo       Repo
 	store      ports.ObjectStore
 	maxEngines int
+	// modes holds the simplified-mode resolution collaborators (phase
+	// 90); the zero value means "not wired" and leaves every mode entry
+	// refused while the advanced path is untouched.
+	modes ModeSources
 }
 
 // NewService wires a Service. maxEngines caps the total engines a execution's
@@ -227,7 +231,8 @@ func (s *Service) DeleteFile(ctx context.Context, executionID int64, filename st
 
 // StoreConfig validates and persists the execution configuration for a
 // execution: every scenario must exist and belong to the execution's project, and
-// the total engines must not exceed the configured limit.
+// the total engines must not exceed the configured limit. Mode entries
+// (phase 90) are resolved into ordinary numbers first -- see resolveModes.
 func (s *Service) StoreConfig(ctx context.Context, executionID int64, ec loadprofile.Profile) error {
 	coll, err := s.repo.GetExecution(ctx, executionID)
 	if err != nil {
@@ -235,6 +240,16 @@ func (s *Service) StoreConfig(ctx context.Context, executionID int64, ec loadpro
 	}
 	if ec.ExecutionID != executionID {
 		return ErrExecutionMismatch
+	}
+	// Mode resolution happens here, BEFORE Validate: a mode entry arrives
+	// stating only mode/throughput/duration, and the server fills
+	// concurrency/engines/ramp-up so Validate and the repository see an
+	// ordinary fully-resolved entry -- compile never learns a mode
+	// existed. A refusal (no usable capacity profile) returns before
+	// anything is persisted. Entries without a mode take the exact path
+	// this method always took.
+	if err := s.resolveModes(ctx, coll, ec.Tests); err != nil {
+		return err
 	}
 	if err := ec.Validate(); err != nil {
 		return err

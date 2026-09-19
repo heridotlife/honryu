@@ -230,7 +230,10 @@ func (s *Service) Create(ctx context.Context, name string, projectID int64, engi
 // the search's seed rate, holding at least spec.HoldSeconds. Concurrency
 // and rampup carry over from the source only as starting values -- every
 // search step re-derives them (stepConcurrency, stepRampupSeconds), so only
-// the scenario identity and a valid shape matter here.
+// the scenario identity and a valid shape matter here. The source's Mode
+// provenance is deliberately NOT carried (the fresh struct never copies
+// it): a mode is the source config's statement about how ITS numbers were
+// resolved, not a property of the calibration pod being minted here.
 func (s *Service) boundEntry(ctx context.Context, sourceExecutionID, scenarioID int64, spec calibration.Spec) (loadprofile.Entry, error) {
 	entries, err := s.repo.LoadProfileFor(ctx, sourceExecutionID)
 	if err != nil {

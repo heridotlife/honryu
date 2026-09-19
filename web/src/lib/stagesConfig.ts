@@ -6,7 +6,7 @@
 // csv_split), which is why throughput is inserted between engines and
 // duration rather than appended.
 
-/** One visual stage row. `throughput`/`csvSplit` omitted = their defaults. */
+/** One visual stage row. `throughput`/`csvSplit`/`mode` omitted = their defaults. */
 export interface StageRow {
   name: string;
   scenarioId: number;
@@ -18,6 +18,8 @@ export interface StageRow {
   duration: number;
   /** Split a CSV dataset across engines. Omitted/false = off. */
   csvSplit?: boolean;
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"). Omitted = advanced. */
+  mode?: string;
 }
 
 /** One tests[] entry on the wire (loadprofile.Entry's JSON shape). */
@@ -30,6 +32,8 @@ export interface StageTestJSON {
   throughput?: number;
   duration: number;
   csv_split?: boolean;
+  /** Phase 90 mode provenance; last field, mirroring Go's marshal order. */
+  mode?: string;
 }
 
 /** The wrapper the flow PUTs to /executions/{id}/config (buildConfig's shape). */
@@ -51,7 +55,7 @@ export function stagesToConfig(
   rows: StageRow[],
   name: string,
   projectId: number,
-  executionId: number,
+  executionId: number
 ): StagesConfigJSON {
   return {
     name,
@@ -71,6 +75,7 @@ export function stagesToConfig(
         ...(omitTp ? {} : { throughput: r.throughput }),
         duration: r.duration,
         ...(r.csvSplit ? { csv_split: true as const } : {}),
+        ...(r.mode ? { mode: r.mode } : {}),
       };
     }),
   };
@@ -115,7 +120,7 @@ const hasErrors = (e: StageRowErrors) => Object.keys(e).length > 0;
 
 /** Full Validate mirror over a row set: at least one row, every row clean. */
 export function stageRowsValid(rows: StageRow[]): boolean {
-  return rows.length > 0 && rows.every((r) => !hasErrors(validateStageRow(r)));
+  return rows.length > 0 && rows.every(r => !hasErrors(validateStageRow(r)));
 }
 
 /**
@@ -127,7 +132,7 @@ export function stageRowsValid(rows: StageRow[]): boolean {
 export function editableRowsValid(rows: StageRow[]): boolean {
   return (
     rows.length > 0 &&
-    rows.every((r) => {
+    rows.every(r => {
       const { scenarioId: _scenario, ...editable } = validateStageRow(r);
       return !hasErrors(editable);
     })
@@ -142,7 +147,7 @@ export function editableRowsValid(rows: StageRow[]): boolean {
  */
 export function configToStages(cfg: StagesConfigJSON): StageRow[] {
   const tests = Array.isArray(cfg?.tests) ? cfg.tests : [];
-  return tests.map((t) => ({
+  return tests.map(t => ({
     name: t.name,
     scenarioId: t.scenario_id,
     concurrency: t.concurrency,
@@ -151,5 +156,9 @@ export function configToStages(cfg: StagesConfigJSON): StageRow[] {
     throughput: t.throughput === 0 || t.throughput === undefined ? undefined : t.throughput,
     duration: t.duration,
     csvSplit: t.csv_split ? true : undefined,
+    // Phase 90: mode provenance MUST survive the round trip -- dropping
+    // it here would silently launder a mode config into an advanced one
+    // the moment an editor re-serialized it.
+    mode: t.mode || undefined,
   }));
 }

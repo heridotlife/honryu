@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/run"
@@ -31,18 +32,6 @@ var ErrRequestedQPSInvalid = errors.New("calibrationapp: requested QPS must be p
 var ErrStepRunNotStarted = errors.New("calibrationapp: triggered run is not reported as running")
 
 const (
-	// stepConcurrencyFloor is the least concurrency ever requested, so even
-	// the search's seed QPS keeps enough virtual users to actually reach it.
-	// It is also what the first attempt of a step runs at (see
-	// stepConcurrency): a light probe, deliberately not sized to the rate.
-	stepConcurrencyFloor = 20
-	// concurrencyHeadroom multiplies the Little's-Law minimum
-	// (requestedQPS * observedLatency) when a step is re-sized from a
-	// measured response time -- enough slack to absorb latency jitter
-	// without the gross over-provisioning that makes bzt's Constant
-	// Throughput Timer undershoot with mostly-idle threads (measured live:
-	// 400 VUs undershot 200 QPS by ~13%, 20 VUs held it within 1%).
-	concurrencyHeadroom = 3.0
 	// stepRampupSeconds is the warmup a step's run spends ramping to its
 	// full concurrency before the steady-state hold begins.
 	stepRampupSeconds = 5
@@ -271,45 +260,12 @@ func (r *StepRunner) triggerWhenReady(ctx context.Context, executionID int64) er
 }
 
 // stepConcurrency returns the virtual-user count a step at requestedQPS
-// should run with.
-//
-// With a measured response time (latencyHintSec > 0) it sizes by Little's
-// Law -- requestedQPS * latency is the minimum VUs to sustain the rate, times
-// concurrencyHeadroom for jitter -- so the thread count matches what the load
-// actually needs. This matters because bzt's Constant Throughput Timer
-// undershoots the target rate when given far more threads than the load needs
-// (they sit mostly idle and pace poorly): against a 2ms target, sizing 2
-// VUs/QPS put ~1000x too many threads in play and undershot the requested
-// rate by ~13%, enough to misread an un-saturated engine as saturated.
-//
-// Without a measurement yet (latencyHintSec == 0, the first attempt of a
-// step) it falls back to the generous stepConcurrencyPerQPS default -- see
-// that constant for why over-provisioning here is the safe direction, since
-// the RT-informed retry corrects it.
-//
-// Either way the result is floored at stepConcurrencyFloor so a low-QPS step
-// still has enough users to reach its rate.
+// should run with. Since phase 90 it delegates wholesale to
+// loadmode.Concurrency -- the Little's-Law sizing the calibration search's
+// retry and simplified-mode resolution share -- so the whole platform
+// reads one formula; see that function for the reasoning behind both
+// branches. Kept as a thin wrapper (rather than calling loadmode at the
+// use sites) so the cross-pin test can assert the delegation itself.
 func stepConcurrency(requestedQPS, latencyHintSec float64) int {
-	if latencyHintSec <= 0 {
-		// First attempt: a light probe at the floor, just enough to measure a
-		// representative response time cheaply. Deliberately NOT sized to the
-		// requested rate. Sizing an uninformed first guess to the rate is what
-		// caused two live failures: a high rate opened a storm of connections
-		// that tripped the target's connection limit (2000 VUs at 4000 QPS
-		// made httpbin's proxy close every connection), and at higher rates it
-		// would exhaust the pod's memory -- both before the response time that
-		// would size it correctly was even known. If the probe undershoots the
-		// rate the step is retried, and the retry sizes threads accurately from
-		// the probe's measured latency.
-		return stepConcurrencyFloor
-	}
-	// Retry: Little's Law from the measured response time, sized to what the
-	// load actually needs. No ceiling -- a genuinely slow target legitimately
-	// needs many threads, and this is sized from a real measurement, not a
-	// guess.
-	c := int(math.Ceil(requestedQPS * latencyHintSec * concurrencyHeadroom))
-	if c < stepConcurrencyFloor {
-		return stepConcurrencyFloor
-	}
-	return c
+	return loadmode.Concurrency(requestedQPS, latencyHintSec)
 }

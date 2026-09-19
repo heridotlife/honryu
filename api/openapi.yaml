@@ -637,6 +637,16 @@ components:
         engines: { type: integer }
         duration: { type: integer }
         csv_split: { type: boolean }
+        throughput: { type: integer }
+        mode:
+          type: string
+          enum: [burst, ramp, soak]
+          description: >-
+            Simplified-mode provenance (phase 90): the entry was stated as a
+            mode and resolved server-side before persisting. Absent = an
+            advanced entry. The stored row always carries fully-resolved
+            concurrency/engines/ramp-up; this field is how the config was
+            asked for, never an input the run pipeline reads.
     ExecutionSummary:
       type: object
       properties:
@@ -2562,6 +2572,18 @@ paths:
                       engines: { type: integer }
                       throughput: { type: integer }
                       csv_split: { type: boolean }
+                      mode:
+                        type: string
+                        enum: [burst, ramp, soak]
+                        description: >-
+                          Stating a mode (phase 90) makes this entry simple:
+                          send only mode, throughput (the target req/s), and
+                          duration -- the server resolves concurrency
+                          (Little's Law from the calibration report's p95),
+                          engines (capacity-profile fan-out), and ramp-up
+                          (mode policy) before validating and persisting.
+                          Values sent in those fields are overwritten.
+                          Entries without a mode are stored exactly as sent.
             description: |
               The execution configuration directly, using loadprofile.Profile's
               JSON tags. Reaches the same validation as the multipart upload.
@@ -2579,7 +2601,16 @@ paths:
       responses:
         '204': { $ref: '#/components/responses/NoContent' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            A mode entry the server cannot honestly resolve: no capacity
+            profile for the entry's scenario/engine/pod-size key, a stale
+            one, or a finding that engines are not the limit. The body's
+            details carry fanout_status, the capacity key, and a
+            remediation hint; nothing is persisted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/executions/{execution_id}/deploy:
     post:

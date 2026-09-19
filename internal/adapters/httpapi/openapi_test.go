@@ -273,3 +273,51 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Phase 90's wire documentation pins: the config PUT documents the
+// optional tests[].mode field and its 409 refusal, and LoadProfileEntry
+// (the entry shape GET serves) carries the mode provenance -- so the
+// spec cannot silently drop the simple-mode contract.
+func TestOpenAPIExecutionConfigMode(t *testing.T) {
+	t.Parallel()
+	doc := loadOpenAPI(t)
+	paths := pathsOf(t, doc)
+
+	item := paths["/api/executions/{execution_id}/config"]
+	put, ok := item["put"].(map[string]any)
+	if !ok {
+		t.Fatal("config PUT missing from the spec")
+	}
+
+	// tests[].mode on the JSON body.
+	reqBody, _ := put["requestBody"].(map[string]any)
+	jsonContent, _ := reqBody["content"].(map[string]any)
+	appJSON, _ := jsonContent["application/json"].(map[string]any)
+	schema, _ := appJSON["schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	tests, _ := props["tests"].(map[string]any)
+	items, _ := tests["items"].(map[string]any)
+	itemProps, _ := items["properties"].(map[string]any)
+	mode, _ := itemProps["mode"].(map[string]any)
+	if mode == nil {
+		t.Fatal("PUT tests[].mode not documented")
+	}
+	if enum, _ := mode["enum"].([]any); len(enum) != 3 {
+		t.Errorf("PUT tests[].mode enum = %v, want [burst ramp soak]", mode["enum"])
+	}
+
+	// The 409 refusal is documented on the PUT.
+	responses, _ := put["responses"].(map[string]any)
+	if responses["409"] == nil {
+		t.Error("PUT config does not document the 409 mode refusal")
+	}
+
+	// LoadProfileEntry carries mode (GET's echo contract).
+	components, _ := doc["components"].(map[string]any)
+	schemas, _ := components["schemas"].(map[string]any)
+	entry, _ := schemas["LoadProfileEntry"].(map[string]any)
+	entryProps, _ := entry["properties"].(map[string]any)
+	if entryProps["mode"] == nil {
+		t.Error("LoadProfileEntry does not document mode provenance")
+	}
+}

@@ -95,9 +95,19 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	scenarios := scenarioapp.NewService(store, obj).WithVersions(store)
 	calibrations := calibrationapp.NewService(store).WithFingerprint(scenarios)
 	router := httpapi.NewRouter(httpapi.Deps{
-		Projects:     projectapp.NewService(store),
-		Scenarios:    scenarios,
-		Executions:   executionapp.NewService(store, obj, 100),
+		Projects:  projectapp.NewService(store),
+		Scenarios: scenarios,
+		Executions: executionapp.NewService(store, obj, 100).
+			// Phase 90: mode sources wired the way cmd/api wires them, so a
+			// mode-shaped config PUT reaches the same RBAC gate (and the same
+			// resolution) as every other config upload.
+			WithModeSources(executionapp.ModeSources{
+				Capacity:      &modeStubCapacity{},
+				Jobs:          store,
+				Reports:       store,
+				LatencyHint:   250 * time.Millisecond,
+				DefaultEngine: taurus.ExecutorJMeter,
+			}),
 		Lifecycle:    lifecycle,
 		Tenants:      tenantapp.NewService(store, store, store),
 		Admin:        adminapp.NewService(store, sched, lifecycle).WithCampaigns(campaigns),
