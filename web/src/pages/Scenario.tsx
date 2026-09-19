@@ -1,5 +1,7 @@
-// /scenarios/:id -- the tabbed scenario detail (phase 67b). The "Runs" tab
-// (default) is the scenario's run history from GET
+// /scenarios/:id -- the tabbed scenario detail. The "Run" tab (first,
+// default, phase 94) is the run-settings surface: the scenario's latest
+// execution and its inline mode/qps/duration editor plus the one-click
+// Start flow. The "Runs" tab is the run history from GET
 // /api/scenarios/{id}/executions (67a, newest first): per row the newest
 // report's outcome/start/duration (the Home page's bounded per-execution
 // probe pattern -- the execution list payload carries identity only, so
@@ -7,7 +9,7 @@
 // posting to the 67a scenario-scoped trigger. The "Editor" tab is phase
 // 65's TaurusEditor page, moved over unchanged; ?tab=editor deep-links to
 // it (the template-instantiation flow lands there).
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Play } from 'lucide-react';
 import Breadcrumbs from '../components/Breadcrumbs';
@@ -15,6 +17,7 @@ import Button from '../components/ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import CardTable, { type CardTableColumn } from '../components/CardTable';
 import EmptyState from '../components/EmptyState';
+import ScenarioRunPanel, { latestLoadExecution } from '../components/ScenarioRunPanel';
 import ScenarioVersionHistory from '../components/ScenarioVersionHistory';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import TaurusEditor from '../components/TaurusEditor';
@@ -77,15 +80,17 @@ export default function Scenario() {
   const scenarioId = Number(id);
   const { can } = useSession();
   const [searchParams, setSearchParams] = useSearchParams();
-  // Runs is the default tab; ?tab=editor is the deep link (and the
-  // instantiation flow's landing).
-  const tab = searchParams.get('tab') === 'editor' ? 'editor' : 'runs';
+  // Run is the default tab (phase 94); ?tab= runs|editor are the deep
+  // links (the instantiation flow's landing is the editor).
+  const tabParam = searchParams.get('tab');
+  const tab = tabParam === 'runs' || tabParam === 'editor' ? tabParam : 'run';
 
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped when a version restore lands (phase 80) so the scenario refetch
-  // effect re-runs without changing the id.
+  // effect re-runs without changing the id, and when the Run panel asks
+  // for a list refresh (phase 94: it created a new execution).
   const [reloadKey, setReloadKey] = useState(0);
 
   const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
@@ -118,8 +123,10 @@ export default function Scenario() {
   // The run history (newest first is the 67a endpoint's contract, not this
   // page's job), then the bounded per-row probe: each execution's newest
   // report lands in the map as its own response arrives, so rows fill in
-  // progressively instead of waiting on the slowest.
-  useEffect(() => {
+  // progressively instead of waiting on the slowest. Phase 94: lifted into
+  // a callback so the Run panel can ask for a refetch after it creates an
+  // execution (reloadKey is its trigger).
+  const loadExecutions = useCallback(() => {
     let alive = true;
     setExecutions(null);
     setExecutionsError(null);
@@ -147,6 +154,8 @@ export default function Scenario() {
       alive = false;
     };
   }, [scenarioId]);
+
+  useEffect(() => loadExecutions(), [loadExecutions, reloadKey]);
 
   const triggerCalibration = async () => {
     setCalibrating(true);
@@ -178,6 +187,10 @@ export default function Scenario() {
   // Triggering calibration creates a run (calibration:create on the wire is
   // scenario:create for the scenario-scoped route -- the audit table's row).
   const mayCalibrate = can('scenario', 'create');
+
+  // The Run panel's execution: the newest non-calibration row, the same
+  // pick the panel itself makes (exported helper, one definition).
+  const latestExecution = latestLoadExecution(executions);
 
   // Phase 79: the Runs tab's column defs -- one source for the sm+ table
   // and the below-sm card list. The per-row status probe (runsInfo) closes
@@ -259,13 +272,34 @@ export default function Scenario() {
 
       <Tabs
         tabs={[
+          { id: 'run', label: 'Run' },
           { id: 'runs', label: 'Runs' },
           { id: 'editor', label: 'Editor' },
         ]}
         active={tab}
-        onChange={(next) => setSearchParams(next === 'runs' ? {} : { tab: next }, { replace: true })}
+        onChange={(next) => setSearchParams(next === 'run' ? {} : { tab: next }, { replace: true })}
         className="mt-2"
       />
+
+      {/* Phase 94: the run-settings surface, first and default — the
+          latest execution's statement (mode chip, resolved numbers) with
+          the inline editor and the one-click Start flow. */}
+      <TabPanel id="run" active={tab} className="space-y-4">
+        <ScenarioRunPanel
+          scenarioId={scenarioId}
+          scenarioName={scenario.name ?? `scenario ${scenarioId}`}
+          projectId={scenario.project_id ?? 0}
+          executions={executions}
+          executionsError={executionsError}
+          lastRun={
+            latestExecution?.id !== undefined && runsInfo[latestExecution.id] !== undefined
+              ? runsInfo[latestExecution.id]
+              : undefined
+          }
+          onExecutionsChanged={() => setReloadKey((k) => k + 1)}
+          onOpenCalibration={() => setSearchParams({ tab: 'runs' }, { replace: true })}
+        />
+      </TabPanel>
 
       <TabPanel id="runs" active={tab}>
         <div className="space-y-3">

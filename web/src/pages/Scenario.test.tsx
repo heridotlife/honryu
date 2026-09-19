@@ -8,9 +8,10 @@ import { PROJECT_STORAGE_KEY } from '../components/ProjectSwitcher';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-// The tabbed scenario detail (phase 67b): Runs (default, the 67a newest-first
-// history with per-row newest-report enrichment) and Editor (phase 65's
-// TaurusEditor page, unchanged), plus the scenario-scoped calibrate trigger.
+// The tabbed scenario detail: Run (first, default, phase 94 — the latest
+// execution's run settings), Runs (the 67a newest-first history with
+// per-row newest-report enrichment), and Editor (phase 65's TaurusEditor
+// page, unchanged), plus the scenario-scoped calibrate trigger.
 // Mounted with stubbed fetch (the house createRoot + act pattern); the
 // editor's requests fragment is stubbed because inactive tab panels stay in
 // the DOM (Tabs' contract), so TaurusEditor mounts and fetches regardless of
@@ -57,6 +58,20 @@ const report7 = {
   outcome: 'failed',
 };
 
+// The Run panel's own reads (phase 94): the latest execution's (22) load
+// config — this scenario's entry carries mode provenance — and its
+// lifecycle snapshot. Mounted even when the Run tab is inactive.
+const config22 = {
+  'multi-test': {
+    name: 'checkout-load-2-load',
+    project_id: 1,
+    execution_id: 22,
+    tests: [
+      { name: 'from-baseline', scenario_id: 42, concurrency: 48, rampup: 60, engines: 3, duration: 600, throughput: 200, mode: 'burst' },
+    ],
+  },
+};
+
 // The scenario's stored thresholds (phase 72): one p95 ceiling. Overridable
 // per test via `overrides`.
 let thresholdsFixture: unknown = [
@@ -101,6 +116,12 @@ function stubFetch() {
       }
       if (url.endsWith('/api/scenarios/42/executions')) {
         return json(executionsFixture);
+      }
+      if (url.endsWith('/api/executions/22/config')) {
+        return json(config22);
+      }
+      if (url.endsWith('/api/executions/22/status')) {
+        return json({ phase: 'idle', pool_size: 0, status: [] });
       }
       if (url.startsWith('/api/executions/22/reports')) {
         return json([report22]);
@@ -164,7 +185,7 @@ afterEach(() => {
 });
 
 describe('Scenario detail (phase 67b)', () => {
-  it('shows the header, breadcrumbs, and the Runs tab default with history newest-first', async () => {
+  it('shows the header, breadcrumbs, and the Run tab default with the Runs history present', async () => {
     stubFetch();
     await renderScenario();
 
@@ -180,14 +201,18 @@ describe('Scenario detail (phase 67b)', () => {
     );
     expect(crumbLinks).toEqual(['/scenarios']);
 
-    // Tabs render, Runs selected by default, Editor present but hidden
-    // (TabPanel keeps inactive panels in the DOM).
-    expect(container!.querySelector('#tab-runs')?.getAttribute('aria-selected')).toBe('true');
+    // Phase 94: Run is first and default; Runs and Editor are present but
+    // hidden (TabPanel keeps inactive panels in the DOM, so their content
+    // is still addressable below).
+    expect(container!.querySelector('#tab-run')?.getAttribute('aria-selected')).toBe('true');
+    expect(container!.querySelector('#tab-runs')?.getAttribute('aria-selected')).toBe('false');
     expect(container!.querySelector('#tab-editor')?.getAttribute('aria-selected')).toBe('false');
-    expect((container!.querySelector('#panel-editor') as HTMLElement).hidden).toBe(true);
+    expect((container!.querySelector('#panel-runs') as HTMLElement).hidden).toBe(true);
+    expect((container!.querySelector('#panel-run') as HTMLElement).hidden).toBe(false);
+    expect(container!.querySelector('[data-testid="run-mode-chip"]')?.textContent).toBe('burst · 200 rps · 10m');
 
-    // Runs table: wire order preserved (newest first), each row linking the
-    // existing run hub.
+    // Runs table (inactive panel, still in the DOM): wire order preserved
+    // (newest first), each row linking the existing run hub.
     const runLinks = Array.from(container!.querySelectorAll<HTMLAnchorElement>('a[data-testid^="run-link-"]'));
     expect(runLinks.map((a) => a.getAttribute('href'))).toEqual(['/executions/22', '/executions/7']);
 
