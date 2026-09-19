@@ -13,13 +13,24 @@
 // page hands over the shared list plus its newest-report probe.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import Button from './ui/Button';
 import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
 import ActionErrorDetails from './ActionErrorDetails';
+import ModeForm from './ModeForm';
 import RunStatusBadge from './RunStatusBadge';
-import { getExecutionConfig, type ConfigTest, type ExecutionConfig } from '../api/executionsConfig';
+import { getExecutionConfig, putExecutionConfig, type ConfigTest, type ExecutionConfig } from '../api/executionsConfig';
 import { getExecutionStatus, type ExecutionStatus, type Phase } from '../api/status';
+import { fanOutCapacity, getCapacityProfile } from '../api/calibration';
+import { useSession } from '../hooks/useSession';
 import { formatRowTime } from '../lib/executionRow';
-import { modeChipLabel } from '../lib/modeConfig';
+import {
+  buildModeTest,
+  modeChipLabel,
+  modeFormValid,
+  secondsToModeForm,
+  type LoadMode,
+  type ModeFormValue,
+} from '../lib/modeConfig';
 import { ApiError, errorDetails } from '../api/client';
 import type { ExecutionSummary } from '../api/generated';
 import type { Outcome } from '../api/reports';
@@ -66,14 +77,24 @@ export function defaultEngine(executions: ExecutionSummary[] | null): string {
   return executions?.[0]?.engine ?? 'jmeter';
 }
 
+/** The house pod size every calibration surface assumes (Execution.tsx's
+ *  capacityKey and CalibrateScenarioModal's prefill). */
+const HOUSE_POD = { cpu: '500m', memory: '512Mi' } as const;
+
 export default function ScenarioRunPanel({
   scenarioId,
+  scenarioName,
   executions,
   executionsError,
   lastRun,
+  onOpenCalibration,
 }: ScenarioRunPanelProps) {
+  const { can } = useSession();
   const latest = latestLoadExecution(executions);
   const latestId = latest?.id;
+  // The engine every capacity read and a new execution would use: the
+  // newest execution's (a calibration row names the engine it calibrated).
+  const engine = defaultEngine(executions);
 
   // The latest execution's config: the whole profile round-trips on edit
   // (the PUT replaces it), so the panel keeps it whole and reads its own
@@ -83,17 +104,53 @@ export default function ScenarioRunPanel({
   const [configErrorDetail, setConfigErrorDetail] = useState<Record<string, unknown> | null>(null);
   const [status, setStatus] = useState<ExecutionStatus | null>(null);
 
+  // The inline editor: the entry's mode statement, prefilled from the
+  // stored config and re-prefilled after every apply (the server's
+  // resolved numbers are the truth; the form only restates the ask).
+  const [form, setForm] = useState<ModeFormValue | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editErrorDetail, setEditErrorDetail] = useState<Record<string, unknown> | null>(null);
+  // 409 from a config write: the no-profile refusal whose remediation is
+  // the Calibrate action on this same page's Runs tab.
+  const [needsCalibration, setNeedsCalibration] = useState(false);
+  const [appliedAt, setAppliedAt] = useState<string | null>(null);
+
+  // The capacity hint's two halves: the profile's per-pod rate and the
+  // fan-out engine count at the form's current rate. Best-effort reads —
+  // absent (never calibrated for this engine, or fetch failed) degrades
+  // to no hint line, nothing else.
+  const [perPodQps, setPerPodQps] = useState<number | null>(null);
+  const [fanoutEngines, setFanoutEngines] = useState<number | null>(null);
+
+  /** Prefill the form from a config's entry for this scenario. */
+  const prefill = (cfg: ExecutionConfig) => {
+    const e = cfg.tests.find(t => t.scenario_id === scenarioId);
+    if (e?.mode !== undefined) {
+      setForm({ mode: e.mode as LoadMode, qps: e.throughput ?? 0, ...secondsToModeForm(e.duration) });
+    } else {
+      setForm(null);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     setConfig(null);
     setConfigError(null);
     setConfigErrorDetail(null);
+    setForm(null);
+    setEditError(null);
+    setEditErrorDetail(null);
+    setNeedsCalibration(false);
+    setAppliedAt(null);
     if (latestId === undefined) {
       return undefined;
     }
     getExecutionConfig(latestId)
       .then(cfg => {
-        if (alive) setConfig(cfg);
+        if (!alive) return;
+        setConfig(cfg);
+        prefill(cfg);
       })
       .catch((e: unknown) => {
         if (alive) {
@@ -104,7 +161,49 @@ export default function ScenarioRunPanel({
     return () => {
       alive = false;
     };
-  }, [latestId]);
+    // prefill is a pure closure over scenarioId; re-running on latestId is
+    // the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestId, scenarioId]);
+
+  // The profile read behind the hint line (and the no-profile refusal's
+  // remediation loop): one fetch per (scenario, engine).
+  useEffect(() => {
+    let alive = true;
+    setPerPodQps(null);
+    setFanoutEngines(null);
+    getCapacityProfile(scenarioId, { engine, ...HOUSE_POD })
+      .then(p => {
+        if (alive) setPerPodQps(p.per_pod_qps);
+      })
+      .catch(() => {
+        /* no profile for this key: no hint line */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [scenarioId, engine]);
+
+  // The fan-out half of the hint: the engine count at the form's CURRENT
+  // rate — restating the rate restates the fan-out.
+  const formQps = form?.qps ?? 0;
+  useEffect(() => {
+    if (perPodQps == null || !(formQps > 0)) {
+      setFanoutEngines(null);
+      return undefined;
+    }
+    let alive = true;
+    fanOutCapacity(scenarioId, { engine, ...HOUSE_POD }, formQps)
+      .then(fan => {
+        if (alive) setFanoutEngines(fan.status === 'ok' ? (fan.engines ?? null) : null);
+      })
+      .catch(() => {
+        if (alive) setFanoutEngines(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [scenarioId, engine, perPodQps, formQps]);
 
   // The lifecycle snapshot: one fetch on entry plus the 10s poll (the
   // execution hub's cadence). The start flow's phase-watch reads this
@@ -136,6 +235,42 @@ export default function ScenarioRunPanel({
     };
   }, [latestId]);
 
+  // Apply the restated run settings: the ONLY entry that changes is this
+  // scenario's — it becomes a fresh mode entry (the exact shape NewTest's
+  // Simple submit builds, zeros for the server to re-resolve eagerly)
+  // while every co-execution scenario's entry round-trips untouched. The
+  // PUT replaces the whole profile; dropping siblings would be data loss.
+  const applyEdit = () => {
+    const entry = config?.tests.find(t => t.scenario_id === scenarioId);
+    if (form === null || config === null || entry === undefined || latestId === undefined || !modeFormValid(form)) {
+      return;
+    }
+    setEditBusy(true);
+    setEditError(null);
+    setEditErrorDetail(null);
+    setNeedsCalibration(false);
+    const tests = config.tests.map(t =>
+      t.scenario_id === scenarioId
+        ? buildModeTest(t.name || scenarioName || `scenario ${scenarioId}`, scenarioId, form)
+        : t
+    );
+    putExecutionConfig(latestId, { ...config, tests })
+      .then(() => getExecutionConfig(latestId))
+      .then(fresh => {
+        setConfig(fresh);
+        prefill(fresh);
+        setAppliedAt(new Date().toLocaleTimeString());
+      })
+      .catch((e: unknown) => {
+        setEditError(e instanceof ApiError ? e.message : 'failed to apply run settings');
+        setEditErrorDetail(errorDetails(e));
+        if (e instanceof ApiError && e.status === 409) {
+          setNeedsCalibration(true);
+        }
+      })
+      .finally(() => setEditBusy(false));
+  };
+
   if (executionsError !== null) {
     return (
       <p className="text-sm text-red-600 dark:text-red-400" role="alert">
@@ -166,6 +301,14 @@ export default function ScenarioRunPanel({
   // only contains executions whose profile binds the scenario, so a found
   // entry is the normal case; a missing one means the config never saved).
   const entry: ConfigTest | undefined = config?.tests.find(t => t.scenario_id === scenarioId);
+  // The inline editor costs execution:update (the config PUT's verb); the
+  // Start flow's own grant is checked where the flow mounts (task 3).
+  const canEdit = can('execution', 'update');
+  // The qps helper line: only when the profile answered for this engine.
+  const qpsHint =
+    perPodQps != null && perPodQps > 0
+      ? `profile: ~${perPodQps} qps/pod${fanoutEngines != null ? `, ${fanoutEngines} engines` : ''}`
+      : undefined;
 
   return (
     <Card data-testid="run-panel">
@@ -245,6 +388,66 @@ export default function ScenarioRunPanel({
                 .
               </p>
             )}
+            {/* The inline editor: mode + rate + duration, the NewTest Simple
+                row's exact shape and validation (soak warning included).
+                Only the scenario's own entry restates; co-entries ride the
+                PUT untouched (see applyEdit). Hidden without the
+                execution:update grant. */}
+            {entry.mode !== undefined && form !== null && canEdit && (
+              <div
+                className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
+                data-testid="run-edit"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-caption font-medium text-slate-600 dark:text-slate-300">Run settings</p>
+                  {appliedAt && (
+                    <span className="text-caption text-slate-500 dark:text-slate-400" data-testid="run-applied-at">
+                      re-applied {appliedAt}
+                    </span>
+                  )}
+                </div>
+                <ModeForm value={form} onChange={setForm} disabled={editBusy} qpsHint={qpsHint} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    onClick={applyEdit}
+                    disabled={editBusy || !modeFormValid(form)}
+                    className="active:scale-95"
+                    data-testid="run-apply"
+                  >
+                    {editBusy ? 'Applying…' : 'Apply run settings'}
+                  </Button>
+                  <span className="text-caption text-slate-500 dark:text-slate-400">
+                    Saving re-resolves concurrency, engines, and ramp-up against the current calibration.
+                  </span>
+                </div>
+                {editError !== null && (
+                  <div>
+                    <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                      {editError}
+                    </p>
+                    <ActionErrorDetails details={editErrorDetail} />
+                    {/* The no-profile refusal's loop-closer: the Calibrate
+                        action lives on this same page's Runs tab. */}
+                    {needsCalibration && (
+                      <p
+                        className="mt-2 text-caption text-slate-600 dark:text-slate-300"
+                        data-testid="run-calibrate-remediation"
+                      >
+                        Calibrate this scenario first, then re-apply.{' '}
+                        <button
+                          type="button"
+                          className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
+                          data-testid="run-calibrate-link"
+                          onClick={onOpenCalibration}
+                        >
+                          Go to the Runs tab’s Calibrate →
+                        </button>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
         {lastRun != null && (
@@ -257,9 +460,7 @@ export default function ScenarioRunPanel({
             <span data-testid="run-last-started">started {formatRowTime(lastRun.startedAt)}</span>
           </p>
         )}
-        {/* The inline mode/qps/duration editor and the phase-93 start flow
-            grow here (tasks 2/3); scenarioName / projectId /
-            onExecutionsChanged / onOpenCalibration are their inputs. */}
+        {/* The phase-93 start flow mounts here (task 3). */}
       </CardContent>
     </Card>
   );

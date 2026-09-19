@@ -42,6 +42,16 @@ export function durationSeconds(v: ModeFormValue): number {
   return v.unit === 'h' ? v.duration * 3600 : v.duration * 60;
 }
 
+/** Seconds -> {duration, unit} for prefilling a form from a stored
+ *  entry: whole hours render as hours, everything else minutes. The
+ *  inverse of durationSeconds, for display round-trips only. */
+export function secondsToModeForm(seconds: number): Pick<ModeFormValue, 'duration' | 'unit'> {
+  if (seconds >= 3600 && seconds % 3600 === 0) {
+    return { duration: seconds / 3600, unit: 'h' };
+  }
+  return { duration: Math.round(seconds / 60), unit: 'm' };
+}
+
 /**
  * Client-side validation mirroring the server's input rules (qps > 0,
  * duration > 0); the resolved fields' rules (engines, concurrency) are the

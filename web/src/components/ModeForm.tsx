@@ -16,9 +16,14 @@ export interface ModeFormProps {
   onChange: (next: ModeFormValue) => void;
   /** Fires whenever submittability changes (the StageEditor convention). */
   onValidityChange?: (valid: boolean) => void;
+  /** Phase 94: locks every input (the Run panel does while a flow is busy). */
+  disabled?: boolean;
+  /** Phase 94: capacity hint line under the qps input ("profile: ~N qps/pod,
+   *  M engines"), shown only when the profile is available. */
+  qpsHint?: string;
 }
 
-export default function ModeForm({ value, onChange, onValidityChange }: ModeFormProps) {
+export default function ModeForm({ value, onChange, onValidityChange, disabled = false, qpsHint }: ModeFormProps) {
   const errors = validateModeForm(value);
   const valid = Object.keys(errors).length === 0;
   const soakWarning = soakTooShortWarning(value);
@@ -45,6 +50,7 @@ export default function ModeForm({ value, onChange, onValidityChange }: ModeForm
             aria-label="load mode"
             data-testid="mode-select"
             value={value.mode}
+            disabled={disabled}
             onChange={e => set({ mode: e.target.value as ModeFormValue['mode'] })}
           >
             {LOAD_MODES.map(m => (
@@ -64,9 +70,15 @@ export default function ModeForm({ value, onChange, onValidityChange }: ModeForm
             aria-label="target requests per second"
             data-testid="mode-qps"
             value={Number.isFinite(value.qps) ? value.qps : ''}
+            disabled={disabled}
             onChange={e => set({ qps: e.target.value === '' ? 0 : Number(e.target.value) })}
           />
           {errors.qps && <FieldError message={errors.qps} testId="mode-qps-error" />}
+          {qpsHint && (
+            <span className="mt-1 block text-slate-400" data-testid="mode-qps-hint">
+              {qpsHint}
+            </span>
+          )}
         </label>
         <label className="text-caption text-slate-600 dark:text-slate-300">
           Duration
@@ -78,6 +90,7 @@ export default function ModeForm({ value, onChange, onValidityChange }: ModeForm
               aria-label="duration"
               data-testid="mode-duration"
               value={Number.isFinite(value.duration) ? value.duration : ''}
+              disabled={disabled}
               onChange={e => set({ duration: e.target.value === '' ? 0 : Number(e.target.value) })}
             />
             <select
@@ -85,6 +98,7 @@ export default function ModeForm({ value, onChange, onValidityChange }: ModeForm
               aria-label="duration unit"
               data-testid="mode-duration-unit"
               value={value.unit}
+              disabled={disabled}
               onChange={e => set({ unit: e.target.value as ModeFormValue['unit'] })}
             >
               <option value="m">minutes</option>

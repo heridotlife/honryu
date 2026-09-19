@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScenarioRunPanel, { defaultEngine, latestLoadExecution } from './ScenarioRunPanel';
 import { SessionProvider } from '../hooks/useSession';
 import type { ExecutionSummary } from '../api/generated';
+import { buildModeTest } from '../lib/modeConfig';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -83,6 +84,9 @@ function stubFetch() {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : undefined;
       calls.push({ method, url, body });
+      // The capacity routes carry query params (?engine=…&cpu=…); match on
+      // the path so the stub is query-shape agnostic.
+      const path = url.split('?')[0];
       for (const override of overrides) {
         const got = override(method, url, body);
         if (got !== undefined) {
@@ -106,10 +110,13 @@ function stubFetch() {
       if (url.endsWith('/api/executions/22/status')) {
         return json({ phase: mutable.phase, pool_size: 0, status: [] });
       }
-      if (url.endsWith('/api/scenarios/42/capacity-profile')) {
+      if (path === '/api/scenarios/42/capacity-profile/fanout') {
+        return json({ status: 'ok', engines: 3 });
+      }
+      if (path === '/api/scenarios/42/capacity-profile') {
         return json({
           scenario_id: 42,
-          engine: 'jmeter',
+          engine: 'gatling',
           cpu: '500m',
           memory: '512Mi',
           per_pod_qps: 90,
@@ -118,9 +125,6 @@ function stubFetch() {
           calibrated_at: '2026-09-18T08:00:00Z',
           job_id: 5,
         });
-      }
-      if (url.endsWith('/api/scenarios/42/capacity-profile/fanout')) {
-        return json({ status: 'ok', engines: 3 });
       }
       return json({ message: `no stub for ${method} ${url}` }, 500);
     }),
@@ -156,6 +160,32 @@ async function renderPanel(opts: RenderOpts = {}) {
   });
   await act(async () => {});
 }
+
+/** Native value setter + input event (React's tracker ignores plain writes). */
+async function type(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/** The select flavour of the same (change event). */
+async function choose(el: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+async function click(el: Element) {
+  await act(async () => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+const byId = <T extends HTMLElement>(id: string) => container!.querySelector(`[data-testid="${id}"]`) as T;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -282,5 +312,138 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toBe('Failed to load runs.');
     expect(container!.querySelector('[data-testid="run-panel"]')).toBeNull();
+  });
+});
+
+describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
+  it('prefills the form from the stored entry and shows the capacity hint under the qps input', async () => {
+    stubFetch();
+    await renderPanel();
+
+    expect(byId('run-edit')).not.toBeNull();
+    expect((byId('mode-select') as HTMLSelectElement).value).toBe('burst');
+    expect((byId('mode-qps') as HTMLInputElement).value).toBe('200');
+    expect((byId('mode-duration') as HTMLInputElement).value).toBe('10');
+    expect((byId('mode-duration-unit') as HTMLSelectElement).value).toBe('m');
+
+    // The stubs' profile (90 qps/pod) and fan-out (3 engines at 200 qps).
+    expect(byId('mode-qps-hint')?.textContent).toBe('profile: ~90 qps/pod, 3 engines');
+  });
+
+  it('PUTs the restated entry byte-identical to NewTest Simple, co-entries untouched', async () => {
+    stubFetch();
+    await renderPanel();
+
+    // Restate: ramp, 500 qps, 1 hour.
+    await choose(byId('mode-select') as HTMLSelectElement, 'ramp');
+    await type(byId('mode-qps') as HTMLInputElement, '500');
+    await type(byId('mode-duration') as HTMLInputElement, '1');
+    await choose(byId('mode-duration-unit') as HTMLSelectElement, 'h');
+    await click(byId('run-apply'));
+
+    const put = calls.find(c => c.method === 'PUT' && c.url.endsWith('/api/executions/22/config'));
+    expect(put).toBeDefined();
+    const body = JSON.parse(put!.body as string);
+
+    // The edited entry is byte-identical to what NewTest's Simple submit
+    // builds for the same statement — same keys, same order, zeros for the
+    // eagerly re-resolved fields.
+    const edited = body.tests.find((t: { scenario_id: number }) => t.scenario_id === 42);
+    expect(JSON.stringify(edited)).toBe(
+      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'ramp', qps: 500, duration: 1, unit: 'h' }))
+    );
+
+    // The co-execution scenario's entry round-trips untouched.
+    const sibling = body.tests.find((t: { scenario_id: number }) => t.scenario_id === 7);
+    expect(sibling).toEqual(configFixture.tests[0]);
+
+    // The envelope keeps the execution's identity.
+    expect(body.name).toBe('checkout-load-2-load');
+    expect(body.project_id).toBe(1);
+    expect(body.execution_id).toBe(22);
+  });
+
+  it('carries NewTest validation: the soak warning appears for short soaks', async () => {
+    stubFetch();
+    await renderPanel();
+
+    await choose(byId('mode-select') as HTMLSelectElement, 'soak');
+    // 10 minutes: under the 30-minute soak guidance.
+    expect(byId('soak-warning')).not.toBeNull();
+    // Apply stays clickable (soft guidance, not a block) but a zero qps
+    // does block it.
+    expect((byId('run-apply') as HTMLButtonElement).disabled).toBe(false);
+    await type(byId('mode-qps') as HTMLInputElement, '0');
+    expect((byId('run-apply') as HTMLButtonElement).disabled).toBe(true);
+    expect(byId('mode-qps-error')).not.toBeNull();
+  });
+
+  it('surfaces a 409 no-profile refusal with the remediation loop to the Runs tab', async () => {
+    stubFetch();
+    overrides.push((method, url) => {
+      if (method === 'PUT' && url.endsWith('/api/executions/22/config')) {
+        return json(
+          {
+            message: 'executionapp: mode config refused: capacity profile status "no_profile" for scenario 42 on jmeter (500m CPU / 512Mi memory)',
+            details: {
+              fanout_status: 'no_profile',
+              hint: 'calibrate this scenario first (Runs tab → Calibrate), then re-apply',
+            },
+          },
+          409
+        );
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    await click(byId('run-apply'));
+
+    // The existing structured copy (message + hint via ActionErrorDetails)…
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('no_profile');
+    expect(container!.querySelector('[data-testid="action-error-details"] code')?.textContent).toContain(
+      'calibrate this scenario first'
+    );
+    // …plus the loop-closer: a jump to this page's Calibrate action.
+    const remediation = byId('run-calibrate-remediation');
+    expect(remediation?.textContent).toContain('Calibrate this scenario first');
+    await click(byId('run-calibrate-link'));
+    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the editor without the execution:update grant', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/me')) {
+        return json({
+          subject: 'demo:carol',
+          name: 'Carol',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { scenario: ['list', 'read'] },
+          demo: true,
+        });
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    // The statement stays; the editor is absent — no dead form.
+    expect(byId('run-resolved')).not.toBeNull();
+    expect(byId('run-edit')).toBeNull();
+  });
+
+  it('drops the hint when no profile exists for the engine', async () => {
+    stubFetch();
+    overrides.push((_method, url) => {
+      if (url.split('?')[0].endsWith('/api/scenarios/42/capacity-profile')) {
+        return json({ message: 'no profile' }, 404);
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    expect(byId('mode-qps-hint')).toBeNull();
   });
 });
