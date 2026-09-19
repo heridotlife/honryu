@@ -2612,6 +2612,72 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/executions/{execution_id}/config/re-resolve:
+    post:
+      tags: [executions]
+      summary: Re-resolve the stored config's mode entries
+      description: |
+        Phase 91: a stored mode entry snapshots its derivation at save
+        time; this action re-runs every mode entry through the CURRENT
+        resolution chain (capacity-profile fan-out, calibration-report
+        p95 with the configured fallback) and persists the refreshed
+        entries as a new config version -- the same validation, engine
+        limit, and atomic replace the config PUT applies. Entries without
+        a mode are re-persisted byte-identically. A capacity profile that
+        went missing or stale refuses the whole request with the PUT's
+        own 409 envelope and nothing is persisted. RBAC:
+        execution:update, the config PUT's own gate.
+      parameters: [{ $ref: '#/components/parameters/ExecutionID' }]
+      responses:
+        '200':
+          description: >-
+            The re-resolved config. entries[] echoes each entry's old and
+            new resolved numbers (engines/concurrency/rampup/throughput)
+            so the caller can show a diff; changed is false for advanced
+            entries and for mode entries whose current calibration
+            derives exactly the stored numbers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        scenario_id: { type: integer, format: int64 }
+                        name: { type: string }
+                        mode:
+                          type: string
+                          enum: [burst, ramp, soak]
+                        changed: { type: boolean }
+                        before:
+                          type: object
+                          properties:
+                            engines: { type: integer }
+                            concurrency: { type: integer }
+                            rampup: { type: integer }
+                            throughput: { type: integer }
+                        after:
+                          type: object
+                          properties:
+                            engines: { type: integer }
+                            concurrency: { type: integer }
+                            rampup: { type: integer }
+                            throughput: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            A mode entry whose capacity profile can no longer honestly
+            resolve (missing, stale, or refusing); the same envelope the
+            config PUT serves, with nothing persisted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/executions/{execution_id}/deploy:
     post:
       tags: [lifecycle]

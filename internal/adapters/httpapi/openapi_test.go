@@ -321,3 +321,38 @@ func TestOpenAPIExecutionConfigMode(t *testing.T) {
 		t.Error("LoadProfileEntry does not document mode provenance")
 	}
 }
+
+// TestOpenAPIExecutionConfigReResolve pins phase 91's re-resolve contract:
+// the route is documented with the per-entry before/after diff and the
+// same 409 refusal envelope the config PUT serves.
+func TestOpenAPIExecutionConfigReResolve(t *testing.T) {
+	t.Parallel()
+	doc := loadOpenAPI(t)
+
+	item, ok := pathsOf(t, doc)["/api/executions/{execution_id}/config/re-resolve"]
+	if !ok {
+		t.Fatal("re-resolve path missing from the spec")
+	}
+	post, ok := item["post"].(map[string]any)
+	if !ok {
+		t.Fatal("re-resolve POST missing from the spec")
+	}
+
+	responses, _ := post["responses"].(map[string]any)
+	if responses["409"] == nil {
+		t.Error("re-resolve does not document the 409 mode refusal")
+	}
+	ok200, _ := responses["200"].(map[string]any)
+	jsonContent, _ := ok200["content"].(map[string]any)
+	appJSON, _ := jsonContent["application/json"].(map[string]any)
+	schema, _ := appJSON["schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	entries, _ := props["entries"].(map[string]any)
+	items, _ := entries["items"].(map[string]any)
+	itemProps, _ := items["properties"].(map[string]any)
+	for _, field := range []string{"before", "after", "changed"} {
+		if itemProps[field] == nil {
+			t.Errorf("re-resolve entries[].%s not documented", field)
+		}
+	}
+}
