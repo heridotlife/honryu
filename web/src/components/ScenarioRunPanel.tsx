@@ -55,8 +55,6 @@ export interface ScenarioRunPanelProps {
   lastRun?: LastRunInfo | null;
   /** The panel created (or re-configured) an execution — refetch the list. */
   onExecutionsChanged: () => void;
-  /** Jump to the tab that hosts the Calibrate action (the Runs tab). */
-  onOpenCalibration: () => void;
 }
 
 /** Phase palette mirroring the execution hub's badge (idle grey, deployed
@@ -92,7 +90,6 @@ export default function ScenarioRunPanel({
   executionsError,
   lastRun,
   onExecutionsChanged,
-  onOpenCalibration,
 }: ScenarioRunPanelProps) {
   const { can } = useSession();
   const latest = latestLoadExecution(executions);
@@ -125,7 +122,7 @@ export default function ScenarioRunPanel({
   const [editError, setEditError] = useState<string | null>(null);
   const [editErrorDetail, setEditErrorDetail] = useState<Record<string, unknown> | null>(null);
   // 409 from a config write: the no-profile refusal whose remediation is
-  // the Calibrate action on this same page's Runs tab.
+  // the Calibrate action below the run history on this same tab.
   const [needsCalibration, setNeedsCalibration] = useState(false);
   const [appliedAt, setAppliedAt] = useState<string | null>(null);
 
@@ -312,7 +309,8 @@ export default function ScenarioRunPanel({
   // PUT with the single mode entry — and straight into the Start flow
   // once the refetched list names the new execution latest. A 409 on the
   // PUT leaves the execution created but unconfigured (said so below);
-  // the remediation is the Runs tab's Calibrate, then retry.
+  // the remediation is the Calibrate action below the run history, then
+  // retry.
   const createAndStart = () => {
     if (!modeFormValid(createForm)) {
       return;
@@ -431,15 +429,8 @@ export default function ScenarioRunPanel({
                   className="mt-2 text-caption text-slate-600 dark:text-slate-300"
                   data-testid="run-calibrate-remediation"
                 >
-                  Calibrate this scenario first, then retry — the run was created but not configured.{' '}
-                  <button
-                    type="button"
-                    className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
-                    data-testid="run-calibrate-link"
-                    onClick={onOpenCalibration}
-                  >
-                    Go to the Runs tab’s Calibrate →
-                  </button>
+                  Calibrate this scenario first, then retry — the run was created but not configured. The Calibrate
+                  action sits below the run history on this tab.
                 </p>
               )}
             </div>
@@ -575,21 +566,15 @@ export default function ScenarioRunPanel({
                     </p>
                     <ActionErrorDetails details={editErrorDetail} />
                     {/* The no-profile refusal's loop-closer: the Calibrate
-                        action lives on this same page's Runs tab. */}
+                        action sits below the run history on this same tab
+                        (phase 95 merged the old Runs tab into Run). */}
                     {needsCalibration && (
                       <p
                         className="mt-2 text-caption text-slate-600 dark:text-slate-300"
                         data-testid="run-calibrate-remediation"
                       >
-                        Calibrate this scenario first, then re-apply.{' '}
-                        <button
-                          type="button"
-                          className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
-                          data-testid="run-calibrate-link"
-                          onClick={onOpenCalibration}
-                        >
-                          Go to the Runs tab’s Calibrate →
-                        </button>
+                        Calibrate this scenario first, then re-apply — the Calibrate action sits below the run history
+                        on this tab.
                       </p>
                     )}
                   </div>

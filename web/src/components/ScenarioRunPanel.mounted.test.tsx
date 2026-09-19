@@ -77,7 +77,6 @@ let root: Root | null = null;
 let calls: Array<{ method: string; url: string; body?: string }> = [];
 let overrides: Array<(method: string, url: string, body?: string) => Response | undefined> = [];
 const onExecutionsChanged = vi.fn();
-const onOpenCalibration = vi.fn();
 let lastOpts: RenderOpts = {};
 
 function stubFetch() {
@@ -212,7 +211,6 @@ async function renderPanel(opts: RenderOpts = {}) {
             executionsError={null}
             lastRun={opts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
             onExecutionsChanged={onExecutionsChanged}
-            onOpenCalibration={onOpenCalibration}
           />
         </SessionProvider>
       </MemoryRouter>,
@@ -237,7 +235,6 @@ async function rerenderPanel(patch: Partial<RenderOpts> = {}) {
             executionsError={null}
             lastRun={lastOpts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
             onExecutionsChanged={onExecutionsChanged}
-            onOpenCalibration={onOpenCalibration}
           />
         </SessionProvider>
       </MemoryRouter>,
@@ -310,7 +307,6 @@ afterEach(() => {
   overrides = [];
   lastOpts = {};
   onExecutionsChanged.mockClear();
-  onOpenCalibration.mockClear();
 });
 
 describe('ScenarioRunPanel — latest execution surfacing', () => {
@@ -405,7 +401,6 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
               executionsError="Failed to load runs."
               lastRun={undefined}
               onExecutionsChanged={onExecutionsChanged}
-              onOpenCalibration={onOpenCalibration}
             />
           </SessionProvider>
         </MemoryRouter>,
@@ -481,7 +476,7 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     expect(byId('mode-qps-error')).not.toBeNull();
   });
 
-  it('surfaces a 409 no-profile refusal with the remediation loop to the Runs tab', async () => {
+  it('surfaces a 409 no-profile refusal with the remediation naming this tab’s Calibrate', async () => {
     stubFetch();
     overrides.push((method, url) => {
       if (method === 'PUT' && url.endsWith('/api/executions/22/config')) {
@@ -507,11 +502,13 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     expect(container!.querySelector('[data-testid="action-error-details"] code')?.textContent).toContain(
       'calibrate this scenario first'
     );
-    // …plus the loop-closer: a jump to this page's Calibrate action.
+    // …plus the loop-closer: the remediation names the Calibrate action
+    // that sits below the run history on this same tab (phase 95 merged
+    // the old Runs tab into Run — no tab jump left to make).
     const remediation = byId('run-calibrate-remediation');
     expect(remediation?.textContent).toContain('Calibrate this scenario first');
-    await click(byId('run-calibrate-link'));
-    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+    expect(remediation?.textContent).toContain('below the run history');
+    expect(byId('run-calibrate-link')).toBeNull();
   });
 
   it('hides the editor without the execution:update grant', async () => {
@@ -685,12 +682,13 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
     await click(byId('run-create-start'));
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('no profile');
-    // The honest half-state is named: the execution exists, unconfigured.
+    // The honest half-state is named: the execution exists, unconfigured;
+    // the remediation names this tab's Calibrate (no jump link left).
     expect(byId('run-calibrate-remediation')?.textContent).toContain(
       'the run was created but not configured'
     );
-    await click(byId('run-calibrate-link'));
-    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+    expect(byId('run-calibrate-remediation')?.textContent).toContain('below the run history');
+    expect(byId('run-calibrate-link')).toBeNull();
     // No flow began.
     expect(mutable.deployCalls).toBe(0);
     expect(countdown()).toBeNull();

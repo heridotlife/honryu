@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Scenario from './Scenario';
 import { SessionProvider } from '../hooks/useSession';
@@ -8,10 +8,11 @@ import { PROJECT_STORAGE_KEY } from '../components/ProjectSwitcher';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-// The tabbed scenario detail: Run (first, default, phase 94 — the latest
-// execution's run settings), Runs (the 67a newest-first history with
-// per-row newest-report enrichment), and Editor (phase 65's TaurusEditor
-// page, unchanged), plus the scenario-scoped calibrate trigger.
+// The tabbed scenario detail (phase 95): ONE Run tab — the latest
+// execution's run settings (phase 94) with the 67a newest-first history
+// and the scenario-scoped calibrate trigger below it — plus Editor
+// (phase 65's TaurusEditor page, unchanged). Stale ?tab=runs URLs
+// normalize to the default.
 // Mounted with stubbed fetch (the house createRoot + act pattern); the
 // editor's requests fragment is stubbed because inactive tab panels stay in
 // the DOM (Tabs' contract), so TaurusEditor mounts and fetches regardless of
@@ -80,6 +81,15 @@ let thresholdsFixture: unknown = [
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+// The URL under MemoryRouter: the ?tab=runs normalization test needs to
+// see the param actually leave the address bar, not just the right tab
+// light up.
+let lastSearch = 'unset';
+function LocationProbe() {
+  const location = useLocation();
+  lastSearch = location.search;
+  return null;
+}
 // Every (method, url) the page asked for, in order.
 let calls: Array<{ method: string; url: string }> = [];
 // Overrides applied on top of the default stub, keyed by test.
@@ -153,6 +163,7 @@ async function renderScenario(path = '/scenarios/42') {
     root!.render(
       <MemoryRouter initialEntries={[path]}>
         <SessionProvider>
+          <LocationProbe />
           <Routes>
             <Route path="/scenarios/:id" element={<Scenario />} />
           </Routes>
@@ -165,8 +176,11 @@ async function renderScenario(path = '/scenarios/42') {
 
 beforeEach(() => {
   // ?tab= rides the URL, but the shared project selection lives in
-  // localStorage -- reset it so nothing leaks between tests.
+  // localStorage -- reset it so nothing leaks between tests. The location
+  // probe re-fires on every render; reset it so a stale URL from the
+  // previous test can never satisfy an assertion.
   localStorage.removeItem(PROJECT_STORAGE_KEY);
+  lastSearch = 'unset';
 });
 
 afterEach(() => {
@@ -185,7 +199,7 @@ afterEach(() => {
 });
 
 describe('Scenario detail (phase 67b)', () => {
-  it('shows the header, breadcrumbs, and the Run tab default with the Runs history present', async () => {
+  it('shows the header, breadcrumbs, and the Run tab default with the history and Calibrate inside it', async () => {
     stubFetch();
     await renderScenario();
 
@@ -201,18 +215,23 @@ describe('Scenario detail (phase 67b)', () => {
     );
     expect(crumbLinks).toEqual(['/scenarios']);
 
-    // Phase 94: Run is first and default; Runs and Editor are present but
-    // hidden (TabPanel keeps inactive panels in the DOM, so their content
-    // is still addressable below).
+    // Phase 95: the final tab list is [Run, Editor] — Run first and
+    // default, the old Runs tab gone entirely (no tab id, no panel).
     expect(container!.querySelector('#tab-run')?.getAttribute('aria-selected')).toBe('true');
-    expect(container!.querySelector('#tab-runs')?.getAttribute('aria-selected')).toBe('false');
+    expect(container!.querySelector('#tab-runs')).toBeNull();
+    expect(container!.querySelector('#panel-runs')).toBeNull();
     expect(container!.querySelector('#tab-editor')?.getAttribute('aria-selected')).toBe('false');
-    expect((container!.querySelector('#panel-runs') as HTMLElement).hidden).toBe(true);
     expect((container!.querySelector('#panel-run') as HTMLElement).hidden).toBe(false);
+    expect((container!.querySelector('#panel-editor') as HTMLElement).hidden).toBe(true);
     expect(container!.querySelector('[data-testid="run-mode-chip"]')?.textContent).toBe('burst · 200 rps · 10m');
 
-    // Runs table (inactive panel, still in the DOM): wire order preserved
-    // (newest first), each row linking the existing run hub.
+    // Phase 95: the history table and the Calibrate control live INSIDE
+    // the Run panel now, below the start surface.
+    expect(container!.querySelector('#panel-run [data-testid="runs-table"]')).not.toBeNull();
+    expect(container!.querySelector('#panel-run [data-testid="calibrate-button"]')).not.toBeNull();
+
+    // Runs table (in the Run panel): wire order preserved (newest first),
+    // each row linking the existing run hub.
     const runLinks = Array.from(container!.querySelectorAll<HTMLAnchorElement>('a[data-testid^="run-link-"]'));
     expect(runLinks.map((a) => a.getAttribute('href'))).toEqual(['/executions/22', '/executions/7']);
 
@@ -234,6 +253,9 @@ describe('Scenario detail (phase 67b)', () => {
     await renderScenario('/scenarios/42?tab=editor');
 
     expect(container!.querySelector('#tab-editor')?.getAttribute('aria-selected')).toBe('true');
+    // The deep link keeps its param — Run is the only canonical no-param
+    // address (see the normalization test below).
+    expect(lastSearch).toBe('?tab=editor');
     const panel = container!.querySelector('#panel-editor') as HTMLElement;
     expect(panel.hidden).toBe(false);
     // Phase 65's editor, byte-for-byte the same surface: the fragment
@@ -241,6 +263,19 @@ describe('Scenario detail (phase 67b)', () => {
     expect(panel.textContent).toContain('Requests');
     expect(panel.textContent).toContain('Up to date');
     expect(panel.querySelector('.cm-editor')).not.toBeNull();
+  });
+
+  it('normalizes a stale ?tab=runs to the default Run tab with a clean URL', async () => {
+    stubFetch();
+    await renderScenario('/scenarios/42?tab=runs');
+
+    // Phase 95: the stale id lands on Run (the default), the param leaves
+    // the address bar entirely — old bookmarks must not sit on a dead tab
+    // id — and the Runs content is right there in the Run panel.
+    expect(container!.querySelector('#tab-run')?.getAttribute('aria-selected')).toBe('true');
+    expect((container!.querySelector('#panel-run') as HTMLElement).hidden).toBe(false);
+    expect(container!.querySelector('#panel-run [data-testid="runs-table"]')).not.toBeNull();
+    expect(lastSearch).toBe('');
   });
 
   it('calibrate posts to the scenario-scoped trigger and links the job view on 201', async () => {
