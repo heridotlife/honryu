@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import Breadcrumbs from '../components/Breadcrumbs';
 import Button from '../components/ui/Button';
@@ -13,7 +13,7 @@ import TaurusEditor from '../components/TaurusEditor';
 import CapacityPanel, { isCalibrationExecution } from '../components/CapacityPanel';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
 import type { LiveSeriesPoint } from '../lib/liveSeries';
-import { deployExecution, purgeExecution, stopExecution, triggerExecution } from '../api/lifecycle';
+import { stopExecution } from '../api/lifecycle';
 import { useSession } from '../hooks/useSession';
 import ExecutionConfigCard from '../components/ExecutionConfigCard';
 import ModeConfigCard from '../components/ModeConfigCard';
@@ -63,71 +63,54 @@ function StatCard({ label, value, caption }: { label: string; value: string; cap
   );
 }
 
-/** The lifecycle verbs the hub can offer. 'start' (phase 93) is the
- *  one-click composite: deploy → 10s countdown → trigger. */
-export type LifecycleAction = 'start' | 'deploy' | 'trigger' | 'stop' | 'purge';
+/** The lifecycle verbs the hub offers — phase 93's simplification:
+ *  exactly two. 'start' is the one-click composite (deploy → 10s countdown
+ *  → trigger from idle; straight countdown → trigger when the engines
+ *  already sit deployed). 'stop' halts a running execution. */
+export type LifecycleAction = 'start' | 'stop';
 
 /**
- * Which lifecycle actions the hub offers, per phase and per engine
- * reachability. The matrix is the R2 contract: deploy when idle, trigger
- * when deployed (and engines reachable), stop while running, purge whenever
- * something is deployed or running. Phase 93: idle additionally offers the
- * 'start' composite ahead of plain deploy — the simplified primary path;
- * deploy-only stays as the advanced control. Disabled buttons say WHY.
+ * Which lifecycle buttons the hub offers, per phase — phase 93's
+ * simplified contract. Start when idle (deploy-first chain) or deployed
+ * (countdown → trigger directly: a finished run's engines may sit
+ * deployed until the idle TTL reaps them, and triggering them is exactly
+ * the trigger). Stop while running. Engine readiness is NOT a client
+ * gate: the server's trigger-side readiness wait owns it, so an
+ * unreachable engine surfaces as the trigger's own honest error. A null
+ * phase (status not loaded yet) offers both verbs disabled — nothing
+ * clickable, but not the read-only message either. The separate
+ * Deploy/Trigger/Purge buttons are gone from the hub: Start is the only
+ * way in, Stop the only way out.
  */
-export function phaseControls(
-  phase: Phase | null,
-  enginesReachable: boolean
-): Array<{ action: LifecycleAction; enabled: boolean }> {
+export function phaseControls(phase: Phase | null): Array<{ action: LifecycleAction; enabled: boolean }> {
   switch (phase) {
     case 'idle':
-      return [
-        { action: 'start', enabled: true },
-        { action: 'deploy', enabled: true },
-        { action: 'trigger', enabled: false },
-        { action: 'stop', enabled: false },
-        { action: 'purge', enabled: false },
-      ];
     case 'deployed':
-      return [
-        { action: 'deploy', enabled: false },
-        { action: 'trigger', enabled: enginesReachable },
-        { action: 'stop', enabled: false },
-        { action: 'purge', enabled: true },
-      ];
+      return [{ action: 'start', enabled: true }];
     case 'running':
-      return [
-        { action: 'deploy', enabled: false },
-        { action: 'trigger', enabled: false },
-        { action: 'stop', enabled: true },
-        { action: 'purge', enabled: true },
-      ];
+      return [{ action: 'stop', enabled: true }];
     default:
       // Status not loaded yet: nothing to click.
       return [
-        { action: 'deploy', enabled: false },
-        { action: 'trigger', enabled: false },
+        { action: 'start', enabled: false },
         { action: 'stop', enabled: false },
-        { action: 'purge', enabled: false },
       ];
   }
 }
 
 /** What each lifecycle action costs in RBAC terms — the audit table's row.
- *  'start' chains deploy+trigger, so it costs exactly run:create. */
+ *  'start' chains deploy+trigger, so it costs exactly run:create; 'stop'
+ *  is the single run:update verb it always was. */
 const controlPermission = {
   start: { resource: 'run', action: 'create' },
-  deploy: { resource: 'run', action: 'create' },
-  trigger: { resource: 'run', action: 'create' },
   stop: { resource: 'run', action: 'update' },
-  purge: { resource: 'run', action: 'delete' },
 } as const;
 
 /**
  * Phase says WHEN a control is offered; the session says WHETHER this
  * caller may have it at all (phase 20, AC14). A tenant_viewer holds
  * run:read/list only, so every control drops out — the UI must not render
- * a Deploy/Trigger/Stop/Delete button the server would 403.
+ * a Start/Stop button the server would 403.
  */
 export function gateControls(
   controls: Array<{ action: LifecycleAction; enabled: boolean }>,
@@ -701,22 +684,9 @@ export default function Execution() {
   // The structured half of the last action error (phase 24): quota
   // numbers / remediation hint when the server's envelope carried them.
   const [actionDetails, setActionDetails] = useState<Record<string, unknown> | null>(null);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  // Purge is the one control that tears engines and pods down (run:delete),
-  // so its button is destructive-styled and two-step: the first click arms
-  // it (label becomes "Confirm purge?"), the second click executes. Arming
-  // decays after six seconds, and Escape or moving focus away disarms --
-  // an armed state must never outlive the operator's attention.
-  const [purgeArmed, setPurgeArmed] = useState(false);
-  const disarmTimer = useRef<number | null>(null);
-  const disarmPurge = () => {
-    setPurgeArmed(false);
-    if (disarmTimer.current !== null) {
-      clearTimeout(disarmTimer.current);
-      disarmTimer.current = null;
-    }
-  };
-  useEffect(() => disarmPurge, []);
+  // The in-flight direct mutation: 'stop', the hub's one remaining
+  // plain verb (phase 93) — Start's steps live in useStartFlow below.
+  const [busyAction, setBusyAction] = useState<'stop' | null>(null);
   const [reports, setReports] = useState<Report[] | null>(null);
   const [logsScenario, setLogsScenario] = useState<number | null>(null);
   const [logText, setLogText] = useState<string>('');
@@ -726,7 +696,7 @@ export default function Execution() {
   const [calibrateFor, setCalibrateFor] = useState<number | null>(null);
   // The live stream (SSE subscribe, event window, per-second recompute)
   // lives in the hook; this page keeps only the rolling numbers it feeds.
-  const { series, connected, stats, reset: resetLive } = useLiveSeries(executionId, validId);
+  const { series, connected, stats } = useLiveSeries(executionId, validId);
   const [pct, setPct] = useState<LivePercentile>('95');
 
   useEffect(() => {
@@ -794,32 +764,29 @@ export default function Execution() {
     };
   }, [executionId, logsScenario, validId]);
 
-  const runAction = (action: 'deploy' | 'trigger' | 'stop' | 'purge') => {
-    setBusyAction(action);
+  // Phase 93: the hub's one remaining direct mutation — Stop. Deploy and
+  // trigger live inside useStartFlow's Start composite; purge left the
+  // hub with the two-button simplification (the idle TTL reaps engines;
+  // purgeExecution stays exported in api/lifecycle for the API and its
+  // tests).
+  const runStop = () => {
+    setBusyAction('stop');
     setActionError(null);
     setActionDetails(null);
-    const fn = { deploy: deployExecution, trigger: triggerExecution, stop: stopExecution, purge: purgeExecution }[
-      action
-    ];
-    fn(executionId)
-      .then(message => {
+    stopExecution(executionId)
+      .then(() => {
         setActionError(null);
         setActionDetails(null);
         // The mutation succeeded; refresh the snapshot immediately rather
         // than waiting for the next poll tick.
         getExecutionStatus(executionId).then(s => setStatus(s));
-        if (action === 'purge') {
-          // Purged: the hub's live view resets to the idle snapshot.
-          resetLive();
-        }
-        void message;
       })
       .catch((err: unknown) => {
         // A 409/429 surfaces the server's message verbatim -- that is the
         // whole point of the typed ApiError, not a generic failure string.
         // Phase 24: keep the structured details (quota numbers, hint) for
         // the second render line instead of flattening to message only.
-        setActionError(err instanceof ApiError ? err.message : `${action} failed.`);
+        setActionError(err instanceof ApiError ? err.message : 'stop failed.');
         setActionDetails(errorDetails(err));
       })
       .finally(() => setBusyAction(null));
@@ -853,17 +820,13 @@ export default function Execution() {
     );
   }
 
-  const enginesReachable = status?.status.every(s => s.engines_reachable) ?? false;
-  const controls = gateControls(phaseControls(status?.phase ?? null, enginesReachable), can);
-  // Phase 93: the start composite renders outside the plain-button map —
-  // once a flow is in flight it stays mounted as the countdown/step
-  // status even while the underlying phase (and thus the controls row)
-  // shifts under it.
+  const controls = gateControls(phaseControls(status?.phase ?? null), can);
+  // Phase 93's two-button model: Start (idle or deployed) and Stop
+  // (running). While a Start flow is in flight the Start button yields
+  // to the countdown/step status, which stays mounted even as the
+  // underlying phase (and thus the controls row) shifts under it.
   const startControl = controls.find(c => c.action === 'start') ?? null;
-  // Narrowed by the guard so runAction keeps its plain-verb signature.
-  const buttonControls = controls.filter(
-    (c): c is { action: Exclude<LifecycleAction, 'start'>; enabled: boolean } => c.action !== 'start'
-  );
+  const stopControl = controls.find(c => c.action === 'stop') ?? null;
   const startBusy = startFlow.step !== null;
   // Phase 39's Calibrate action needs an engine to name (the backend rejects
   // an engineless calibration) and the session's execution:create. Phase 44:
@@ -974,12 +937,15 @@ export default function Execution() {
                 aria-label="Lifecycle controls"
                 aria-busy={busyAction !== null || startBusy}
               >
-                {/* Phase 93: the Start composite. Accent (the page's one
-                    primary CTA per phase 52's rule) while idle; while the
-                    flow runs it becomes the countdown (ui-ux-pro-max: a 10s
-                    wait is a countdown, never a spinner) or the step status,
-                    with Cancel as the exit until the trigger actually
-                    fires. active:scale-95 gives pressed feedback. */}
+                {/* Phase 93: Start — the composite and the hub's only
+                    way in (deploy → 10s countdown → trigger from idle;
+                    straight countdown when already deployed). Accent: the
+                    page's one primary CTA (phase 52's rule). While the
+                    flow runs it becomes the countdown (ui-ux-pro-max: a
+                    10s wait is a countdown, never a spinner) or the step
+                    status, with Cancel as the exit until the trigger
+                    actually fires. active:scale-95 gives pressed
+                    feedback. */}
                 {startBusy ? (
                   startFlow.step === 'counting' ? (
                     <StartCountdown
@@ -1021,56 +987,20 @@ export default function Execution() {
                     </Button>
                   )
                 )}
-                {buttonControls.map(({ action, enabled }) => {
-                  const isPurge = action === 'purge';
-                  return (
-                    <Button
-                      key={action}
-                      data-testid={`lifecycle-${action}`}
-                      variant={isPurge ? 'destructive' : action === 'stop' ? 'outline' : 'primary'}
-                      disabled={!enabled || busyAction !== null || startBusy}
-                      onClick={() => {
-                        if (!isPurge) {
-                          // Any other action cancels a lingering armed purge:
-                          // the operator has moved on, so must the button.
-                          disarmPurge();
-                          runAction(action);
-                          return;
-                        }
-                        if (!purgeArmed) {
-                          // First click: arm. A 6s window keeps the confirm
-                          // deliberate without a modal; nothing is sent yet.
-                          setPurgeArmed(true);
-                          if (disarmTimer.current !== null) {
-                            clearTimeout(disarmTimer.current);
-                          }
-                          disarmTimer.current = window.setTimeout(() => {
-                            disarmTimer.current = null;
-                            setPurgeArmed(false);
-                          }, 6_000);
-                          return;
-                        }
-                        // Second click while armed: actually purge.
-                        disarmPurge();
-                        runAction('purge');
-                      }}
-                      onBlur={isPurge ? disarmPurge : undefined}
-                      onKeyDown={
-                        isPurge
-                          ? e => {
-                              if (e.key === 'Escape') disarmPurge();
-                            }
-                          : undefined
-                      }
-                    >
-                      {busyAction === action
-                        ? 'Working…'
-                        : isPurge && purgeArmed
-                          ? 'Confirm purge?'
-                          : action.charAt(0).toUpperCase() + action.slice(1)}
-                    </Button>
-                  );
-                })}
+                {/* Phase 93's other half: Stop, the hub's only direct
+                    mutation — offered enabled solely while running; while
+                    the status is still loading it renders disabled. */}
+                {stopControl && (
+                  <Button
+                    data-testid="lifecycle-stop"
+                    variant="outline"
+                    className="active:scale-95"
+                    disabled={!stopControl.enabled || busyAction !== null || startBusy}
+                    onClick={runStop}
+                  >
+                    {busyAction === 'stop' ? 'Working…' : 'Stop'}
+                  </Button>
+                )}
                 {controls.length === 0 && (
                   <p className="text-sm text-slate-500 dark:text-slate-400">
                     Your role is read-only here: no lifecycle controls.

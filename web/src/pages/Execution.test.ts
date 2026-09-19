@@ -29,33 +29,29 @@ describe('calibrationSpecLines', () => {
   });
 });
 
-// R2's control matrix: which actions the hub offers per phase, and when
-// trigger unlocks (only once every engine is reachable). This is the
-// spec-critical surface, asserted without a DOM.
+// Phase 93's simplified control matrix: exactly two verbs. Start when
+// idle or deployed (the composite picks deploy-first vs straight
+// countdown by phase), Stop while running, nothing clickable before the
+// status loads. Deploy/Trigger/Purge as separate hub buttons are gone.
+// Asserted without a DOM.
 describe('phaseControls', () => {
-  it('idle: start and deploy offered, the rest locked', () => {
-    const c = Object.fromEntries(phaseControls('idle', false).map((x) => [x.action, x.enabled]));
-    expect(c).toEqual({ start: true, deploy: true, trigger: false, stop: false, purge: false });
+  it('idle offers Start only — no deploy/trigger/purge entries at all', () => {
+    expect(phaseControls('idle')).toEqual([{ action: 'start', enabled: true }]);
   });
 
-  it('deployed: trigger unlocks only when engines reachable; purge available', () => {
-    const blocked = Object.fromEntries(phaseControls('deployed', false).map((x) => [x.action, x.enabled]));
-    expect(blocked.trigger).toBe(false);
-    expect(blocked.purge).toBe(true);
-
-    const ready = Object.fromEntries(phaseControls('deployed', true).map((x) => [x.action, x.enabled]));
-    expect(ready.trigger).toBe(true);
-    expect(ready.deploy).toBe(false);
+  it('deployed offers Start only (straight countdown → trigger; no purge)', () => {
+    expect(phaseControls('deployed')).toEqual([{ action: 'start', enabled: true }]);
   });
 
-  it('running: stop and purge enabled, everything else locked', () => {
-    const c = Object.fromEntries(phaseControls('running', true).map((x) => [x.action, x.enabled]));
-    expect(c).toEqual({ deploy: false, trigger: false, stop: true, purge: true });
+  it('running offers Stop only', () => {
+    expect(phaseControls('running')).toEqual([{ action: 'stop', enabled: true }]);
   });
 
-  it('null phase (not loaded): nothing enabled', () => {
-    const c = Object.fromEntries(phaseControls(null, false).map((x) => [x.action, x.enabled]));
-    expect(Object.values(c).every((v) => v === false)).toBe(true);
+  it('null phase (not loaded): both verbs present but nothing clickable', () => {
+    expect(phaseControls(null)).toEqual([
+      { action: 'start', enabled: false },
+      { action: 'stop', enabled: false },
+    ]);
   });
 });
 
@@ -85,28 +81,28 @@ describe('gateControls', () => {
 
   it('tenant_viewer renders no lifecycle control in any phase (AC14)', () => {
     for (const phase of ['idle', 'deployed', 'running', null] as const) {
-      expect(gateControls(phaseControls(phase, true), mapCan(viewer))).toEqual([]);
+      expect(gateControls(phaseControls(phase), mapCan(viewer))).toEqual([]);
     }
   });
 
   it('campaign_manager sees the plan but cannot change it (AC10)', () => {
-    expect(gateControls(phaseControls('running', true), mapCan(campaignManager))).toEqual([]);
+    expect(gateControls(phaseControls('running'), mapCan(campaignManager))).toEqual([]);
   });
 
-  it('tenant_editor and admin keep every control, with phase enablement preserved', () => {
-    const gated = gateControls(phaseControls('idle', false), mapCan(editor));
-    expect(gated.map((c) => c.action)).toEqual(['start', 'deploy', 'trigger', 'stop', 'purge']);
-    expect(gated.find((c) => c.action === 'start')?.enabled).toBe(true);
-    expect(gated.find((c) => c.action === 'deploy')?.enabled).toBe(true);
-    expect(gateControls(phaseControls('running', true), mapCan({ '*': ['*'] })).length).toBe(4);
+  it('tenant_editor and admin keep every offered control, with phase enablement preserved', () => {
+    const gated = gateControls(phaseControls('idle'), mapCan(editor));
+    expect(gated).toEqual([{ action: 'start', enabled: true }]);
+    expect(gateControls(phaseControls('running'), mapCan({ '*': ['*'] }))).toEqual([
+      { action: 'stop', enabled: true },
+    ]);
   });
 
   it('partial grants keep only the controls they cover', () => {
-    // Someone who may start but never stop: deploy+trigger survive, stop/purge drop.
-    const canStartOnly = (resource: string) => resource === 'run';
-    const partialCan = (resource: string, action: string) => canStartOnly(resource) && action === 'create';
-    const gated = gateControls(phaseControls('deployed', true), partialCan);
-    expect(gated.map((c) => c.action)).toEqual(['deploy', 'trigger']);
+    // Someone who may start but never stop: Start survives in the startable
+    // phases, Stop drops out of running.
+    const partialCan = (resource: string, action: string) => resource === 'run' && action === 'create';
+    expect(gateControls(phaseControls('deployed'), partialCan)).toEqual([{ action: 'start', enabled: true }]);
+    expect(gateControls(phaseControls('running'), partialCan)).toEqual([]);
   });
 });
 

@@ -1,6 +1,9 @@
 // Phase 93: the one-click Start orchestration — the chain the spec draws:
 // POST deploy → wait for phase 'deployed' → 10s countdown (StartCountdown)
-// → POST trigger. Pure web chaining of the two existing endpoints; the
+// → POST trigger. Already deployed (a finished run's engines, or a manual
+// stop's): no deploy POST at all — straight to the countdown, because
+// trigger-on-deployed is exactly the trigger. Pure web chaining of the
+// two existing endpoints; the
 // trigger handler's own bounded readiness wait (TriggerReadyPoll/Timeout,
 // phase 24) covers any residual scheduling lag after the countdown, which
 // is exactly why the client does not poll engines-reachable before firing.
@@ -23,9 +26,9 @@ export const START_COUNTDOWN_SECONDS = 10;
 
 export interface UseStartFlowArgs {
   executionId: number;
-  /** The page's current phase — the deploy-completion signal and the mid-countdown flip watch. */
+  /** The page's current phase — the already-deployed shortcut at begin, the deploy-completion signal, and the mid-countdown flip watch. */
   phase: Phase | null;
-  /** Pushes a fresh status snapshot into the page's state (the immediate post-mutation refresh, runAction's pattern). */
+  /** Pushes a fresh status snapshot into the page's state (the immediate post-mutation refresh, runStop's pattern). */
   onStatus: (s: ExecutionStatus) => void;
   /** Surfaces a failure exactly where runAction's errors go (message + ActionErrorDetails payload). */
   onError: (message: string, details: Record<string, unknown> | null) => void;
@@ -48,12 +51,19 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
     [onError]
   );
 
-  /** Start clicked on the idle control set. No-op if a flow is already in flight. */
+  /** Start clicked. Idle: deploy first, then the phase-watch effect
+   *  below opens the countdown on 'deployed'. Already deployed: skip the
+   *  deploy POST entirely — straight to the countdown (trigger on
+   *  deployed IS the trigger). No-op if a flow is already in flight. */
   const begin = useCallback(() => {
     if (step !== null) {
       return;
     }
     onReset();
+    if (phase === 'deployed') {
+      setStep('counting');
+      return;
+    }
     setStep('deploying');
     const run = ++runRef.current;
     deployExecution(executionId)
@@ -78,7 +88,7 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
         }
         fail(err, 'start failed: deploy did not complete.');
       });
-  }, [step, executionId, onReset, onStatus, fail]);
+  }, [step, phase, executionId, onReset, onStatus, fail]);
 
   /** The countdown ran out: fire the trigger. No cancel from here on — the door is open. */
   const countdownComplete = useCallback(() => {
@@ -125,10 +135,10 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
     }
   }, [step, phase, onError]);
 
-  /** The operator's exit: back to the idle control set, no trigger fired,
-   *  stale API responses invalidated. Engines already deploying keep
-   *  deploying — cancel never rolls a deploy back, exactly like walking
-   *  away from the Deploy button always did. */
+  /** The operator's exit: back to the phase's control set, no trigger
+   *  fired, stale API responses invalidated. Engines already deploying
+   *  keep deploying — cancel never rolls a deploy back; the idle TTL
+   *  reaps them if nothing runs. */
   const cancel = useCallback(() => {
     runRef.current++;
     setStep(null);

@@ -448,12 +448,15 @@ describe('Execution copy-link (mounted)', () => {
 
 // Phase 24: the action-error block surfaces the structured details envelope
 // when the failing response carried one (429 quota refusal), and stays a
-// single message line when it did not. The fetch stub is swapped after
-// mount because runAction fetches at click time.
+// single message line when it did not. Phase 93: Stop is the hub's one
+// direct mutation, so it is the vehicle here; the Start flow's own error
+// surfacing (deploy/trigger failures) is covered in
+// Execution.start.test.tsx. The fetch stub is swapped after mount because
+// the mutation fetches at click time.
 describe('Execution action-error details (mounted)', () => {
-  const clickTrigger = async () => {
-    const btn = Array.from(container!.querySelectorAll('button')).find(b => b.textContent === 'Trigger');
-    expect(btn).toBeDefined();
+  const clickStop = async () => {
+    const btn = container!.querySelector('[data-testid="lifecycle-stop"]');
+    expect(btn).not.toBeNull();
     await act(async () => {
       btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -461,11 +464,11 @@ describe('Execution action-error details (mounted)', () => {
   };
 
   it('renders the hint code line and the quota numbers under the message', async () => {
-    await renderExecution('deployed');
+    await renderExecution('running');
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).endsWith('/api/executions/5/trigger')) {
+        if (String(input).endsWith('/api/executions/5/stop')) {
           return json(
             {
               message: 'reservation would exceed tenant quota',
@@ -485,7 +488,7 @@ describe('Execution action-error details (mounted)', () => {
       })
     );
 
-    await clickTrigger();
+    await clickStop();
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('reservation would exceed tenant quota');
     const details = container!.querySelector('[data-testid="action-error-details"]');
@@ -493,214 +496,51 @@ describe('Execution action-error details (mounted)', () => {
     expect(details?.textContent).toContain('used 0 / ceiling 1 — requested 2');
   });
 
-  it('renders a 409 with details (engines finished) as message plus hint line', async () => {
-    await renderExecution('deployed');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).endsWith('/api/executions/5/trigger')) {
-          return json(
-            {
-              message: 'run: engines already finished, redeploy before triggering: 3 orphaned shard completion(s)',
-              details: {
-                orphaned_completions: 3,
-                hint: 'purge the execution and redeploy before triggering',
-              },
-            },
-            409
-          );
-        }
-        return json({ message: 'no stub' }, 500);
-      })
-    );
-
-    await clickTrigger();
-
-    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('engines already finished');
-    expect(container!.querySelector('[data-testid="action-error-details"] code')?.textContent).toBe(
-      'purge the execution and redeploy before triggering'
-    );
-  });
-
   it('message-only failures keep the single alert line (no details node)', async () => {
-    await renderExecution('deployed');
+    await renderExecution('running');
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).endsWith('/api/executions/5/trigger')) {
+        if (String(input).endsWith('/api/executions/5/stop')) {
           return json({ message: 'execution not found' }, 404);
         }
         return json({ message: 'no stub' }, 500);
       })
     );
 
-    await clickTrigger();
+    await clickStop();
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('execution not found');
     expect(container!.querySelector('[data-testid="action-error-details"]')).toBeNull();
   });
 });
 
-// Phase 49: Purge tears engines and pods down, so it is destructive-styled
-// and two-step -- first click arms ("Confirm purge?"), second click fires.
-// Nothing is sent while armed; Escape, blur, six seconds, or any other
-// lifecycle action disarms. A disabled Purge can never arm.
-describe('Execution purge confirm (mounted)', () => {
-  const purgeBtn = () => container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
-
-  const label = () => purgeBtn().textContent ?? '';
-
-  const clickPurge = async () => {
-    await act(async () => {
-      purgeBtn().click();
-    });
-    await act(async () => {});
-  };
-
-  /** Renders a deployed execution (Purge enabled) and swaps in a fetch stub
-   * that records every URL, answering the purge POST -- the same
-   * stub-after-mount pattern the action-error tests use. */
-  const renderArmedable = async (calls: string[]) => {
-    await renderExecution('deployed', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        calls.push(url);
-        if (url.endsWith('/api/executions/5/purge')) {
-          return json({ message: 'purged' });
-        }
-        if (url.endsWith('/api/executions/5/status')) {
-          return json(statusFixture('idle'));
-        }
-        return json({ message: 'no stub' }, 500);
-      })
-    );
-  };
-
-  const purgeCalls = (calls: string[]) => calls.filter(u => u.endsWith('/api/executions/5/purge'));
-
-  it('first click arms without sending anything; second click fires the purge', async () => {
-    const calls: string[] = [];
-    await renderArmedable(calls);
-    expect(label()).toBe('Purge');
-
-    await clickPurge();
-    expect(label()).toBe('Confirm purge?');
-    expect(purgeCalls(calls)).toHaveLength(0);
-
-    await clickPurge();
-    expect(purgeCalls(calls)).toHaveLength(1);
-  });
-
-  it('Escape disarms; the next click re-arms instead of purging', async () => {
-    const calls: string[] = [];
-    await renderArmedable(calls);
-
-    await clickPurge();
-    expect(label()).toBe('Confirm purge?');
-
-    await act(async () => {
-      purgeBtn().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
-    expect(label()).toBe('Purge');
-
-    await clickPurge();
-    expect(label()).toBe('Confirm purge?');
-    expect(purgeCalls(calls)).toHaveLength(0);
-  });
-
-  it('blur disarms', async () => {
-    const calls: string[] = [];
-    await renderArmedable(calls);
-
-    await clickPurge();
-    expect(label()).toBe('Confirm purge?');
-
-    await act(async () => {
-      purgeBtn().dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    });
-    expect(label()).toBe('Purge');
-    expect(purgeCalls(calls)).toHaveLength(0);
-  });
-
-  it('the armed state decays after six seconds', async () => {
-    const calls: string[] = [];
-    await renderArmedable(calls);
-
-    // Fake timers must be live before the arming click so the disarm
-    // timeout is created under their control.
-    vi.useFakeTimers();
-    try {
-      await clickPurge();
-      expect(label()).toBe('Confirm purge?');
-
-      await act(async () => {
-        vi.advanceTimersByTime(6_000);
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-    expect(label()).toBe('Purge');
-    expect(purgeCalls(calls)).toHaveLength(0);
-  });
-
-  it('a disabled Purge never arms and never sends', async () => {
-    const calls: string[] = [];
-    // Idle: phaseControls gates every action off, Purge included.
-    await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] }, calls);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        calls.push(String(input));
-        return json({ message: 'no stub' }, 500);
-      })
-    );
-
-    expect(purgeBtn().disabled).toBe(true);
-    // HTMLElement.click() is spec'd to do nothing on a disabled control --
-    // the browser-level guarantee the two-step flow leans on.
-    await act(async () => {
-      purgeBtn().click();
-    });
-    expect(label()).toBe('Purge');
-    expect(calls.some(u => u.endsWith('/api/executions/5/purge'))).toBe(false);
-  });
-});
-
-// Phase 51 audit follow-up: the audit finding claimed the hub's lifecycle
-// controls were "all neutral". They are not -- Deploy and Trigger wear the
-// primary sky→cyan gradient (Button's default variant, wired explicitly in
-// the controls map), Stop keeps the neutral outline, Purge reads red at
-// rest. The wiring predates the audit; this pins it so a Button refactor
-// cannot silently drop the accent distinction. Test-only: no visual change.
-describe('Execution lifecycle button variants (phase 51)', () => {
-  it('paints Trigger and Deploy with the primary gradient, Stop outline, Purge red', async () => {
-    // running: stop + purge are the rendered pair.
+// Phase 51 audit follow-up, re-pinned for phase 93's two-button hub:
+// Start wears the accent (amber — the page's ONE primary CTA, phase 52's
+// rule), Stop keeps the neutral outline. The wiring predates the audit;
+// this pins it so a Button refactor cannot silently drop the accent
+// distinction. Test-only: no visual change.
+describe('Execution lifecycle button variants (phase 51/93)', () => {
+  it('paints Start accent (amber) and Stop outline', async () => {
+    // running: Stop is the rendered control.
     await renderExecution('running');
     const stop = container!.querySelector('[data-testid="lifecycle-stop"]') as HTMLButtonElement;
-    const purge = container!.querySelector('[data-testid="lifecycle-purge"]') as HTMLButtonElement;
     expect(stop.className).toContain('border-slate-300');
-    expect(stop.className).not.toContain('from-sky-500');
+    expect(stop.className).not.toContain('bg-amber-600');
     expect(stop.className).not.toContain('text-red-600');
-    expect(purge.className).toContain('text-red-600');
-    expect(purge.className).toContain('border-red-600');
-    expect(purge.className).not.toContain('from-sky-500');
 
-    // idle: Deploy is the offered action (primary accent).
+    // idle: Start is the offered action (accent amber — not the sky
+    // gradient, not red).
     await renderExecution('idle');
-    const deploy = container!.querySelector('[data-testid="lifecycle-deploy"]') as HTMLButtonElement;
-    expect(deploy.className).toContain('bg-gradient-to-r');
-    expect(deploy.className).toContain('from-sky-500');
-    expect(deploy.className).not.toContain('text-red-600');
+    const start = container!.querySelector('[data-testid="lifecycle-start"]') as HTMLButtonElement;
+    expect(start.className).toContain('bg-amber-600');
+    expect(start.className).not.toContain('from-sky-500');
+    expect(start.className).not.toContain('text-red-600');
 
-    // deployed: Trigger renders even while locked until engines report
-    // reachable -- the variant is on the wiring, not the enabled state.
+    // deployed: Start again — the straight-countdown entry.
     await renderExecution('deployed');
-    const trigger = container!.querySelector('[data-testid="lifecycle-trigger"]') as HTMLButtonElement;
-    expect(trigger.className).toContain('bg-gradient-to-r');
-    expect(trigger.className).toContain('from-sky-500');
-    expect(trigger.className).not.toContain('text-red-600');
+    const startAgain = container!.querySelector('[data-testid="lifecycle-start"]') as HTMLButtonElement;
+    expect(startAgain.className).toContain('bg-amber-600');
   });
 });
 
