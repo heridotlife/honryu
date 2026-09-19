@@ -77,7 +77,6 @@ let root: Root | null = null;
 let calls: Array<{ method: string; url: string; body?: string }> = [];
 let overrides: Array<(method: string, url: string, body?: string) => Response | undefined> = [];
 const onExecutionsChanged = vi.fn();
-const onOpenCalibration = vi.fn();
 let lastOpts: RenderOpts = {};
 
 function stubFetch() {
@@ -212,7 +211,6 @@ async function renderPanel(opts: RenderOpts = {}) {
             executionsError={null}
             lastRun={opts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
             onExecutionsChanged={onExecutionsChanged}
-            onOpenCalibration={onOpenCalibration}
           />
         </SessionProvider>
       </MemoryRouter>,
@@ -237,7 +235,6 @@ async function rerenderPanel(patch: Partial<RenderOpts> = {}) {
             executionsError={null}
             lastRun={lastOpts.lastRun ?? { outcome: 'passed', startedAt: '2026-09-17T12:30:00Z' }}
             onExecutionsChanged={onExecutionsChanged}
-            onOpenCalibration={onOpenCalibration}
           />
         </SessionProvider>
       </MemoryRouter>,
@@ -310,7 +307,6 @@ afterEach(() => {
   overrides = [];
   lastOpts = {};
   onExecutionsChanged.mockClear();
-  onOpenCalibration.mockClear();
 });
 
 describe('ScenarioRunPanel — latest execution surfacing', () => {
@@ -352,7 +348,7 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
     expect(calls.some(c => c.url.endsWith('/api/executions/7/config'))).toBe(false);
   });
 
-  it('renders an advanced entry read-only — no mode chip, guidance instead', async () => {
+  it('renders an advanced entry: no mode chip, the guidance note, and the CREATE shape below', async () => {
     stubFetch();
     // Serve a config whose entry for scenario 42 has no mode provenance.
     mutable.config = {
@@ -369,6 +365,15 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
     expect(note?.querySelector('a')?.getAttribute('href')).toBe('/executions/22');
     // The resolved numbers still show.
     expect(container!.querySelector('[data-testid="run-resolved"]')?.textContent).toContain('unlimited');
+    // Phase 95: the inputs are ALWAYS there for a session that can run —
+    // an advanced latest gets the CREATE shape (new run = new execution,
+    // expected) instead of a dead panel. Its submit is the start path,
+    // so the plain Start control is absent.
+    expect(byId('run-create')).not.toBeNull();
+    expect(byId('run-create-start')).not.toBeNull();
+    expect((byId('mode-qps') as HTMLInputElement).value).toBe('100');
+    expect(byId('run-edit')).toBeNull();
+    expect(byId('run-start')).toBeNull();
   });
 
   it('shows the empty state when the scenario has no load execution at all', async () => {
@@ -405,7 +410,6 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
               executionsError="Failed to load runs."
               lastRun={undefined}
               onExecutionsChanged={onExecutionsChanged}
-              onOpenCalibration={onOpenCalibration}
             />
           </SessionProvider>
         </MemoryRouter>,
@@ -481,7 +485,7 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     expect(byId('mode-qps-error')).not.toBeNull();
   });
 
-  it('surfaces a 409 no-profile refusal with the remediation loop to the Runs tab', async () => {
+  it('surfaces a 409 no-profile refusal with the remediation naming this tab’s Calibrate', async () => {
     stubFetch();
     overrides.push((method, url) => {
       if (method === 'PUT' && url.endsWith('/api/executions/22/config')) {
@@ -507,14 +511,16 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     expect(container!.querySelector('[data-testid="action-error-details"] code')?.textContent).toContain(
       'calibrate this scenario first'
     );
-    // …plus the loop-closer: a jump to this page's Calibrate action.
+    // …plus the loop-closer: the remediation names the Calibrate action
+    // that sits below the run history on this same tab (phase 95 merged
+    // the old Runs tab into Run — no tab jump left to make).
     const remediation = byId('run-calibrate-remediation');
     expect(remediation?.textContent).toContain('Calibrate this scenario first');
-    await click(byId('run-calibrate-link'));
-    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+    expect(remediation?.textContent).toContain('below the run history');
+    expect(byId('run-calibrate-link')).toBeNull();
   });
 
-  it('hides the editor without the execution:update grant', async () => {
+  it('hides every form shape without update-or-create grants — the statement stays', async () => {
     stubFetch();
     overrides.push((_method, url) => {
       if (url.endsWith('/api/me')) {
@@ -532,9 +538,15 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     });
     await renderPanel();
 
-    // The statement stays; the editor is absent — no dead form.
+    // The statement stays; NEITHER form shape mounts — phase 95's hide
+    // rule is "cannot PUT the config (execution:update) AND cannot create
+    // an execution (execution:create)" — and without run:create there is
+    // no plain Start either. No dead form, no dead button.
     expect(byId('run-resolved')).not.toBeNull();
     expect(byId('run-edit')).toBeNull();
+    expect(byId('run-create')).toBeNull();
+    expect(byId('run-create-start')).toBeNull();
+    expect(byId('run-start')).toBeNull();
   });
 
   it('drops the hint when no profile exists for the engine', async () => {
@@ -548,6 +560,83 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     await renderPanel();
 
     expect(byId('mode-qps-hint')).toBeNull();
+  });
+});
+
+describe('ScenarioRunPanel — always-visible inputs (phase 95)', () => {
+  it('create-only session on a mode entry: the create shape, not a dead panel', async () => {
+    stubFetch();
+    // execution:create + run:create but NOT execution:update: the mode
+    // entry cannot be PUT in place, so the unified form falls to the
+    // create shape — starting a run forks to a fresh execution (the
+    // honest path when restating the entry is not granted).
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/me')) {
+        return json({
+          subject: 'demo:dave',
+          name: 'Dave',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { execution: ['create'], run: ['create'] },
+          demo: true,
+        });
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    // The mode-entry statement is intact — chip and resolved numbers…
+    expect(container!.querySelector('[data-testid="run-mode-chip"]')?.textContent).toBe('burst · 200 rps · 10m');
+    expect(byId('run-resolved')).not.toBeNull();
+    // …but the edit form needs execution:update: the create shape
+    // renders instead, and its submit is the start path (no plain Start).
+    expect(byId('run-edit')).toBeNull();
+    expect(byId('run-create')).not.toBeNull();
+    expect(byId('run-create-start')).not.toBeNull();
+    expect((byId('mode-qps') as HTMLInputElement).value).toBe('100');
+    expect(byId('run-start')).toBeNull();
+  });
+
+  it('advanced latest with the old execution DEPLOYED: create+start deploys the NEW execution', async () => {
+    // The stale-phase pin. The create form now renders alongside a
+    // latest execution, so the flow that auto-begins when the refetched
+    // list names the new run latest must not inherit the OLD execution's
+    // 'deployed' — that would skip the new execution's deploy POST and
+    // trigger undeployed engines straight from the countdown.
+    mutable.config = {
+      name: 'checkout-load-2-load',
+      project_id: 1,
+      execution_id: 22,
+      tests: [{ name: 'from-baseline', scenario_id: 42, concurrency: 10, rampup: 30, engines: 2, duration: 300 }],
+    };
+    mutable.phase = 'deployed';
+    await renderPanel();
+    await advance(500);
+
+    await click(byId('run-create-start'));
+
+    // Create: POST /executions, then the config PUT on the new id.
+    expect(calls.some(c => c.method === 'POST' && c.url.endsWith('/api/executions'))).toBe(true);
+    expect(calls.some(c => c.method === 'PUT' && c.url.endsWith('/api/executions/99/config'))).toBe(true);
+    expect(onExecutionsChanged).toHaveBeenCalledTimes(1);
+
+    // The refetched list names 99 latest — the flow begins on its own…
+    const executions99: ExecutionSummary[] = [
+      { id: 99, name: 'from-baseline', project_id: 1, engine: 'gatling', kind: 'load', created_time: '2026-09-19T10:00:00Z' },
+    ];
+    await rerenderPanel({ executions: executions99 });
+
+    // …and takes the deploy-first path: /executions/99/deploy fires even
+    // though execution 22 was 'deployed' when Create and start was
+    // clicked (the stale snapshot would have opened the countdown with
+    // deployCalls === 0).
+    expect(mutable.deployCalls).toBe(1);
+    expect(calls.some(c => c.method === 'POST' && c.url.endsWith('/api/executions/99/deploy'))).toBe(true);
+    expect(countdown()).not.toBeNull();
+
+    await advance(10_000);
+    expect(mutable.triggerCalls).toBe(1);
   });
 });
 
@@ -685,12 +774,13 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
     await click(byId('run-create-start'));
 
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('no profile');
-    // The honest half-state is named: the execution exists, unconfigured.
+    // The honest half-state is named: the execution exists, unconfigured;
+    // the remediation names this tab's Calibrate (no jump link left).
     expect(byId('run-calibrate-remediation')?.textContent).toContain(
       'the run was created but not configured'
     );
-    await click(byId('run-calibrate-link'));
-    expect(onOpenCalibration).toHaveBeenCalledTimes(1);
+    expect(byId('run-calibrate-remediation')?.textContent).toContain('below the run history');
+    expect(byId('run-calibrate-link')).toBeNull();
     // No flow began.
     expect(mutable.deployCalls).toBe(0);
     expect(countdown()).toBeNull();

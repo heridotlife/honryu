@@ -1,14 +1,16 @@
-// /scenarios/:id -- the tabbed scenario detail. The "Run" tab (first,
-// default, phase 94) is the run-settings surface: the scenario's latest
-// execution and its inline mode/qps/duration editor plus the one-click
-// Start flow. The "Runs" tab is the run history from GET
-// /api/scenarios/{id}/executions (67a, newest first): per row the newest
-// report's outcome/start/duration (the Home page's bounded per-execution
-// probe pattern -- the execution list payload carries identity only, so
-// status is one ?limit=1 reports call per row), and the Calibrate control
-// posting to the 67a scenario-scoped trigger. The "Editor" tab is phase
-// 65's TaurusEditor page, moved over unchanged; ?tab=editor deep-links to
-// it (the template-instantiation flow lands there).
+// /scenarios/:id -- the tabbed scenario detail. Phase 95 merged the old
+// Runs tab into "Run" (the first, default tab): the run-settings surface
+// -- the scenario's latest execution with its inline mode/qps/duration
+// editor and the one-click Start flow (phase 94) -- with the run history
+// below it, from GET /api/scenarios/{id}/executions (67a, newest first):
+// per row the newest report's outcome/start/duration (the Home page's
+// bounded per-execution probe pattern -- the execution list payload
+// carries identity only, so status is one ?limit=1 reports call per row) --
+// and then the Calibrate control posting to the 67a scenario-scoped
+// trigger. Stale ?tab=runs links normalize to the no-param default. The
+// "Editor" tab is phase 65's TaurusEditor page, moved over unchanged;
+// ?tab=editor deep-links to it (the template-instantiation flow lands
+// there).
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Play } from 'lucide-react';
@@ -80,10 +82,20 @@ export default function Scenario() {
   const scenarioId = Number(id);
   const { can } = useSession();
   const [searchParams, setSearchParams] = useSearchParams();
-  // Run is the default tab (phase 94); ?tab= runs|editor are the deep
-  // links (the instantiation flow's landing is the editor).
+  // Phase 95: ONE Run tab -- the default. ?tab=editor is the only deep
+  // link left (the instantiation flow's landing is the editor); the old
+  // ?tab=runs and any other stale id fall back to the default.
   const tabParam = searchParams.get('tab');
-  const tab = tabParam === 'runs' || tabParam === 'editor' ? tabParam : 'run';
+  const tab = tabParam === 'editor' ? 'editor' : 'run';
+
+  // A stale ?tab=runs (or any unknown id) must not survive in the URL:
+  // replace it with the no-param default so Run is the canonical address
+  // and old bookmarks land on it, not on a dead tab id.
+  useEffect(() => {
+    if (tabParam !== null && tabParam !== 'editor') {
+      setSearchParams({}, { replace: true });
+    }
+  }, [tabParam, setSearchParams]);
 
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [loading, setLoading] = useState(true);
@@ -192,7 +204,7 @@ export default function Scenario() {
   // pick the panel itself makes (exported helper, one definition).
   const latestExecution = latestLoadExecution(executions);
 
-  // Phase 79: the Runs tab's column defs -- one source for the sm+ table
+  // Phase 79: the run history's column defs -- one source for the sm+ table
   // and the below-sm card list. The per-row status probe (runsInfo) closes
   // over the renders: unknown = fetch in flight (…), null = the probe
   // failed or the run never finalised (—), else the badge.
@@ -273,7 +285,6 @@ export default function Scenario() {
       <Tabs
         tabs={[
           { id: 'run', label: 'Run' },
-          { id: 'runs', label: 'Runs' },
           { id: 'editor', label: 'Editor' },
         ]}
         active={tab}
@@ -281,9 +292,10 @@ export default function Scenario() {
         className="mt-2"
       />
 
-      {/* Phase 94: the run-settings surface, first and default — the
-          latest execution's statement (mode chip, resolved numbers) with
-          the inline editor and the one-click Start flow. */}
+      {/* Phase 95: ONE Run tab -- the start surface (phase 94's panel:
+          the latest execution's statement with the inline editor and the
+          one-click Start flow) with the run history below it, then the
+          Calibrate action -- the old Runs tab's content, moved in. */}
       <TabPanel id="run" active={tab} className="space-y-4">
         <ScenarioRunPanel
           scenarioId={scenarioId}
@@ -297,53 +309,13 @@ export default function Scenario() {
               : undefined
           }
           onExecutionsChanged={() => setReloadKey((k) => k + 1)}
-          onOpenCalibration={() => setSearchParams({ tab: 'runs' }, { replace: true })}
         />
-      </TabPanel>
 
-      <TabPanel id="runs" active={tab}>
+        {/* Run history: the 67a newest-first list (phase 79's CardTable --
+            the sm+ table keeps the exact pre-phase markup and testids;
+            below sm the same columns render as run cards). */}
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-body-sm font-semibold text-slate-900 dark:text-white">Run history</h2>
-            {mayCalibrate && (
-              <Button
-                variant="secondary"
-                size="sm"
-                data-testid="calibrate-button"
-                onClick={triggerCalibration}
-                disabled={calibrating}
-              >
-                {calibrating ? 'Calibrating…' : 'Calibrate'}
-              </Button>
-            )}
-          </div>
-
-          {/* On 201 the 67a trigger returns the job with both ids; the
-              execution hub is the calibration job view the existing flow
-              uses (CapacityPanel mounts there for calibrate_engine
-              executions, and CalibrateScenarioModal navigates to the same
-              place). */}
-          {job !== null && (
-            <p
-              className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-body-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-200"
-              data-testid="calibration-pending"
-            >
-              Calibration job #{job.id} queued — phase {job.phase ?? 'pending'}.{' '}
-              <Link
-                to={`/executions/${job.execution_id}`}
-                data-testid="calibration-job-link"
-                className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
-              >
-                View calibration job →
-              </Link>
-            </p>
-          )}
-          {calibrationError !== null && (
-            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-              {calibrationError}
-            </p>
-          )}
-
+          <h2 className="text-body-sm font-semibold text-slate-900 dark:text-white">Run history</h2>
           {executionsError !== null ? (
             <p className="text-sm text-red-600 dark:text-red-400" role="alert">
               {executionsError}
@@ -359,7 +331,7 @@ export default function Scenario() {
               {/* Phase 76: the shared empty state. The one primary action
                   triggers the existing per-scenario run flow (the 67a
                   calibration trigger -- the same CTA as the Calibrate
-                  button above): it creates a real run bound to this
+                  control below): it creates a real run bound to this
                   scenario. It is a Button, deliberately not a Link into
                   /executions/, so the e2e harness's run-row selector can
                   never match it (pinned in Scenario.test). Hidden without
@@ -379,10 +351,6 @@ export default function Scenario() {
             </Card>
           ) : (
             <Card padding="none">
-              {/* Phase 79: shared CardTable -- the sm+ table keeps the exact
-                  pre-phase markup and testids; below sm the same columns
-                  render as run cards (run link as title, status badge with
-                  its run-status-* testid in the value slot). */}
               <CardTable
                 tableTestId="runs-table"
                 columns={runColumns}
@@ -395,6 +363,47 @@ export default function Scenario() {
             </Card>
           )}
         </div>
+
+        {/* Calibrate: the 67a scenario-scoped trigger. On 201 it returns
+            the job with both ids; the execution hub is the calibration
+            job view the existing flow uses (CapacityPanel mounts there
+            for calibrate_engine executions, and CalibrateScenarioModal
+            navigates to the same place). */}
+        {(mayCalibrate || job !== null || calibrationError !== null) && (
+          <div className="space-y-3">
+            {mayCalibrate && (
+              <Button
+                variant="secondary"
+                size="sm"
+                data-testid="calibrate-button"
+                onClick={triggerCalibration}
+                disabled={calibrating}
+              >
+                {calibrating ? 'Calibrating…' : 'Calibrate'}
+              </Button>
+            )}
+            {job !== null && (
+              <p
+                className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-body-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-200"
+                data-testid="calibration-pending"
+              >
+                Calibration job #{job.id} queued — phase {job.phase ?? 'pending'}.{' '}
+                <Link
+                  to={`/executions/${job.execution_id}`}
+                  data-testid="calibration-job-link"
+                  className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
+                >
+                  View calibration job →
+                </Link>
+              </p>
+            )}
+            {calibrationError !== null && (
+              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                {calibrationError}
+              </p>
+            )}
+          </div>
+        )}
       </TabPanel>
 
       {/* The editor tab: phase 65's requests editor, plus the phase 72

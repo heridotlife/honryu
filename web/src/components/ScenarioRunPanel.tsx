@@ -1,9 +1,12 @@
-// Phase 94: the scenario page's Run panel — the run-settings half of a
-// scenario. A scenario is the script (steps, thresholds); mode / target
+// Phase 94/95: the scenario page's Run panel — the run-settings half of
+// a scenario. A scenario is the script (steps, thresholds); mode / target
 // qps / duration are RUN settings that already live in the execution
 // config (execution_scenario + mode migration 0074), so this panel
 // surfaces the scenario's most recent execution and its config entry —
-// it never duplicates run settings into the scenario document.
+// it never duplicates run settings into the scenario document. Phase 95
+// made the inputs ALWAYS visible: exactly one form shape (prefilled edit
+// when the latest has this scenario's mode entry and the session may PUT
+// it; create shape otherwise) renders for every session that can run.
 //
 // The executions list is the phase-67a scenario-scoped route the page
 // already fetched (newest first, identity + kind on every row): the
@@ -55,8 +58,6 @@ export interface ScenarioRunPanelProps {
   lastRun?: LastRunInfo | null;
   /** The panel created (or re-configured) an execution — refetch the list. */
   onExecutionsChanged: () => void;
-  /** Jump to the tab that hosts the Calibrate action (the Runs tab). */
-  onOpenCalibration: () => void;
 }
 
 /** Phase palette mirroring the execution hub's badge (idle grey, deployed
@@ -92,7 +93,6 @@ export default function ScenarioRunPanel({
   executionsError,
   lastRun,
   onExecutionsChanged,
-  onOpenCalibration,
 }: ScenarioRunPanelProps) {
   const { can } = useSession();
   const latest = latestLoadExecution(executions);
@@ -115,7 +115,15 @@ export default function ScenarioRunPanel({
   const [config, setConfig] = useState<ExecutionConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configErrorDetail, setConfigErrorDetail] = useState<Record<string, unknown> | null>(null);
-  const [status, setStatus] = useState<ExecutionStatus | null>(null);
+  // The lifecycle snapshot, KEYED BY EXECUTION ID: the guarded read
+  // below hands null unless the snapshot's id IS the current latest, so
+  // a stale phase from a previous latest (an 'deployed' that would skip
+  // a brand-new execution's deploy POST) can never speak for the
+  // current one — phase 95's create form now renders alongside an
+  // existing latest, and the flow it begins on the flip render reads
+  // this guard, not a reset effect that has not flushed yet.
+  const [statusSnapshot, setStatusSnapshot] = useState<{ id: number; status: ExecutionStatus } | null>(null);
+  const status = statusSnapshot !== null && statusSnapshot.id === latestId ? statusSnapshot.status : null;
 
   // The inline editor: the entry's mode statement, prefilled from the
   // stored config and re-prefilled after every apply (the server's
@@ -125,7 +133,7 @@ export default function ScenarioRunPanel({
   const [editError, setEditError] = useState<string | null>(null);
   const [editErrorDetail, setEditErrorDetail] = useState<Record<string, unknown> | null>(null);
   // 409 from a config write: the no-profile refusal whose remediation is
-  // the Calibrate action on this same page's Runs tab.
+  // the Calibrate action below the run history on this same tab.
   const [needsCalibration, setNeedsCalibration] = useState(false);
   const [appliedAt, setAppliedAt] = useState<string | null>(null);
 
@@ -241,23 +249,20 @@ export default function ScenarioRunPanel({
     };
   }, [scenarioId, engine, perPodQps, formQps]);
 
-  // The lifecycle snapshot: one fetch on entry plus the 10s poll (the
-  // execution hub's cadence). The start flow's phase-watch reads this
-  // same state, so the panel — like the hub — has one source of truth.
+  // The lifecycle snapshot's feed: one fetch on entry plus the 10s poll
+  // (the execution hub's cadence). The start flow's phase-watch reads the
+  // guarded `status` above, so the panel — like the hub — has one source
+  // of truth; a snapshot for an id that is no longer latest simply stops
+  // being read.
   useEffect(() => {
     if (latestId === undefined) {
-      setStatus(null);
       return undefined;
     }
     let alive = true;
-    // A different execution is now the latest: stale phase state must not
-    // survive the switch (an 'deployed' from the old id would skip the
-    // new id's deploy).
-    setStatus(null);
     const load = () => {
       getExecutionStatus(latestId)
         .then(s => {
-          if (alive) setStatus(s);
+          if (alive) setStatusSnapshot({ id: latestId, status: s });
         })
         .catch(() => {
           /* phase stays unknown; Start renders disabled */
@@ -279,7 +284,7 @@ export default function ScenarioRunPanel({
   const startFlow = useStartFlow({
     executionId: latestId ?? 0,
     phase: status?.phase ?? null,
-    onStatus: s => setStatus(s),
+    onStatus: s => setStatusSnapshot({ id: latestId ?? 0, status: s }),
     onError: (message, details) => {
       setFlowError(message);
       setFlowErrorDetail(details);
@@ -293,10 +298,11 @@ export default function ScenarioRunPanel({
 
   // The create path's second half: the refetched list has named the new
   // execution latest — begin the flow now, against the id the hook
-  // received on THIS render. Safe by construction: the create form only
-  // exists when no load execution existed, so the phase state the begin
-  // closure sees is null (never a stale 'deployed' from another id) and
-  // the flow takes the deploy-first path a brand-new execution needs.
+  // received on THIS render. Safe by the id-keyed snapshot: the guarded
+  // `status` read is null on this render (the new id has no snapshot
+  // yet), so the flow takes the deploy-first path a brand-new execution
+  // needs — even when the previous latest was 'deployed' (phase 95: the
+  // create form also renders alongside an existing latest).
   useEffect(() => {
     if (startAfterCreate !== null && latestId === startAfterCreate) {
       setStartAfterCreate(null);
@@ -312,7 +318,8 @@ export default function ScenarioRunPanel({
   // PUT with the single mode entry — and straight into the Start flow
   // once the refetched list names the new execution latest. A 409 on the
   // PUT leaves the execution created but unconfigured (said so below);
-  // the remediation is the Runs tab's Calibrate, then retry.
+  // the remediation is the Calibrate action below the run history, then
+  // retry.
   const createAndStart = () => {
     if (!modeFormValid(createForm)) {
       return;
@@ -389,6 +396,45 @@ export default function ScenarioRunPanel({
     );
   }
 
+  // The create shape's shared surface (phase 95's unification): the same
+  // ModeForm + Create-and-start + failure trio mounts in the empty state
+  // (never run) and — when the latest is advanced or un-PUTtable — inside
+  // the statement card. Grants on this path: the form needs
+  // execution:create (POST /executions + its config PUT); the chained
+  // start additionally costs run:create on the wire — the same verb the
+  // plain Start charges — and the flow surfaces its refusal honestly if
+  // the session holds only the create half.
+  const createSurface = (
+    <>
+      <ModeForm value={createForm} onChange={setCreateForm} disabled={createBusy || startBusy} qpsHint={qpsHint} />
+      <Button
+        onClick={createAndStart}
+        disabled={createBusy || startBusy || !modeFormValid(createForm)}
+        className="active:scale-95"
+        data-testid="run-create-start"
+      >
+        {createBusy ? 'Creating…' : 'Create and start'}
+      </Button>
+      {createError !== null && (
+        <div>
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {createError}
+          </p>
+          <ActionErrorDetails details={createErrorDetail} />
+          {createNeedsCalibration && (
+            <p
+              className="mt-2 text-caption text-slate-600 dark:text-slate-300"
+              data-testid="run-calibrate-remediation"
+            >
+              Calibrate this scenario first, then retry — the run was created but not configured. The Calibrate
+              action sits below the run history on this tab.
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  );
+
   // Never run (or only ever calibrated): the create-and-start surface —
   // the NewTest Simple statement for this one scenario, creating a NEW
   // execution and going straight into the Start flow.
@@ -404,45 +450,11 @@ export default function ScenarioRunPanel({
             starts it immediately.
           </p>
           {canCreate ? (
-            <>
-              <ModeForm value={createForm} onChange={setCreateForm} disabled={createBusy} qpsHint={qpsHint} />
-              <Button
-                onClick={createAndStart}
-                disabled={createBusy || !modeFormValid(createForm)}
-                className="active:scale-95"
-                data-testid="run-create-start"
-              >
-                {createBusy ? 'Creating…' : 'Create and start'}
-              </Button>
-            </>
+            createSurface
           ) : (
             <p className="text-sm text-slate-500 dark:text-slate-400" data-testid="run-no-create-permission">
               Your role cannot create executions.
             </p>
-          )}
-          {createError !== null && (
-            <div>
-              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-                {createError}
-              </p>
-              <ActionErrorDetails details={createErrorDetail} />
-              {createNeedsCalibration && (
-                <p
-                  className="mt-2 text-caption text-slate-600 dark:text-slate-300"
-                  data-testid="run-calibrate-remediation"
-                >
-                  Calibrate this scenario first, then retry — the run was created but not configured.{' '}
-                  <button
-                    type="button"
-                    className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
-                    data-testid="run-calibrate-link"
-                    onClick={onOpenCalibration}
-                  >
-                    Go to the Runs tab’s Calibrate →
-                  </button>
-                </p>
-              )}
-            </div>
           )}
         </CardContent>
       </Card>
@@ -457,6 +469,23 @@ export default function ScenarioRunPanel({
   // only contains executions whose profile binds the scenario, so a found
   // entry is the normal case; a missing one means the config never saved).
   const entry: ConfigTest | undefined = config?.tests.find(t => t.scenario_id === scenarioId);
+
+  // The unified inputs (phase 95): exactly ONE form shape renders, picked
+  // by what the latest holds and what the session grants.
+  // - Edit shape (prefilled, Apply = the config PUT): the latest has THIS
+  //   scenario's simplified-mode entry AND the session holds
+  //   execution:update — the PUT's verb.
+  // - Create shape (Create and start = POST /executions + its config PUT
+  //   + the phase-93 flow): every other case where the session holds
+  //   execution:create — an advanced latest (mode undefined) or a mode
+  //   entry this session cannot PUT. New run = new execution; forking the
+  //   history is expected (the advanced note points in-place edits at
+  //   the execution page).
+  // - No form at all: a session with NEITHER execution:update NOR
+  //   execution:create — the statement above and the run history below
+  //   stay (RBAC honesty: no dead form).
+  const showEdit = entry?.mode !== undefined && form !== null && canEdit;
+  const showCreate = !showEdit && canCreate;
 
   return (
     <Card data-testid="run-panel">
@@ -536,12 +565,12 @@ export default function ScenarioRunPanel({
                 .
               </p>
             )}
-            {/* The inline editor: mode + rate + duration, the NewTest Simple
-                row's exact shape and validation (soak warning included).
-                Only the scenario's own entry restates; co-entries ride the
-                PUT untouched (see applyEdit). Hidden without the
-                execution:update grant. */}
-            {entry.mode !== undefined && form !== null && canEdit && (
+            {/* The unified inputs (see showEdit/showCreate above). Edit
+                shape: mode + rate + duration, the NewTest Simple row's
+                exact shape and validation (soak warning included). Only
+                the scenario's own entry restates; co-entries ride the PUT
+                untouched (see applyEdit). Costs execution:update. */}
+            {showEdit && (
               <div
                 className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
                 data-testid="run-edit"
@@ -575,25 +604,37 @@ export default function ScenarioRunPanel({
                     </p>
                     <ActionErrorDetails details={editErrorDetail} />
                     {/* The no-profile refusal's loop-closer: the Calibrate
-                        action lives on this same page's Runs tab. */}
+                        action sits below the run history on this same tab
+                        (phase 95 merged the old Runs tab into Run). */}
                     {needsCalibration && (
                       <p
                         className="mt-2 text-caption text-slate-600 dark:text-slate-300"
                         data-testid="run-calibrate-remediation"
                       >
-                        Calibrate this scenario first, then re-apply.{' '}
-                        <button
-                          type="button"
-                          className="font-medium text-sky-600 underline focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-sky-400"
-                          data-testid="run-calibrate-link"
-                          onClick={onOpenCalibration}
-                        >
-                          Go to the Runs tab’s Calibrate →
-                        </button>
+                        Calibrate this scenario first, then re-apply — the Calibrate action sits below the run history
+                        on this tab.
                       </p>
                     )}
                   </div>
                 )}
+              </div>
+            )}
+            {/* Create shape: the always-visible inputs when the edit shape
+                is not available — advanced latest, or a mode entry this
+                session cannot PUT. Costs execution:create (+ run:create
+                when the chained start fires). */}
+            {showCreate && (
+              <div
+                className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
+                data-testid="run-create"
+              >
+                <p className="text-caption font-medium text-slate-600 dark:text-slate-300">New run</p>
+                <p className="text-caption text-slate-500 dark:text-slate-400">
+                  {entry.mode === undefined
+                    ? 'State the load for a fresh run — creating it starts it immediately. The latest run’s advanced config stays as it is (new run = new execution).'
+                    : `Your role cannot restate execution #${latestId}’s config — creating a run states its load on a fresh execution instead.`}
+                </p>
+                {createSurface}
               </div>
             )}
           </>
@@ -657,7 +698,12 @@ export default function ScenarioRunPanel({
               to watch or stop it.
             </p>
           ) : (
-            canStart && (
+            // While the create shape is the active form, its submit IS the
+            // start path (create + start); the plain Start would target the
+            // latest as-is, which this path deliberately replaces. Without
+            // the create shape the plain Start keeps its phase-93 contract.
+            canStart &&
+            !showCreate && (
               <Button
                 data-testid="run-start"
                 variant="accent"
