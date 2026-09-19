@@ -243,3 +243,189 @@ describe('ModeConfigCard (phase 90)', () => {
     expect(details?.textContent).toContain('calibrate this scenario first');
   });
 });
+
+// Phase 91: the Re-resolve action. The button confirms inline, POSTs
+// /config/re-resolve, and the answer's per-entry old → new numbers render
+// as the diff; a 409 surfaces the structured remediation; multi-entry
+// configs render every mode row but keep the single-scenario re-apply
+// form hidden (its PUT would drop the other entries).
+describe('ModeConfigCard re-resolve (phase 91)', () => {
+  const multiModeCfg = {
+    'multi-test': {
+      name: 'p91',
+      project_id: 3,
+      execution_id: 7,
+      tests: [
+        {
+          name: 'checkout',
+          scenario_id: 5,
+          concurrency: 375,
+          rampup: 0,
+          engines: 4,
+          throughput: 500,
+          duration: 600,
+          mode: 'burst',
+        },
+        {
+          name: 'search',
+          scenario_id: 6,
+          concurrency: 30,
+          rampup: 60,
+          engines: 1,
+          throughput: 50,
+          duration: 3600,
+          mode: 'soak',
+        },
+      ],
+    },
+  };
+
+  const diffBody = {
+    message: 'config re-resolved',
+    entries: [
+      {
+        scenario_id: 5,
+        name: 'checkout',
+        mode: 'burst',
+        changed: true,
+        before: { engines: 4, concurrency: 375, rampup: 0, throughput: 500 },
+        after: { engines: 5, concurrency: 750, rampup: 0, throughput: 500 },
+      },
+    ],
+  };
+
+  const refreshedCfg = {
+    'multi-test': {
+      ...modeCfg['multi-test'],
+      tests: [{ ...modeCfg['multi-test'].tests[0], engines: 5, concurrency: 750 }],
+    },
+  };
+
+  async function click(selector: string) {
+    await act(async () => {
+      container!.querySelector(selector)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {});
+  }
+
+  it('confirms inline, POSTs the re-resolve, and renders the old → new diff', async () => {
+    const posts: Array<{ url: string; method: string }> = [];
+    let configServed = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (method === 'POST' && url.includes('/api/executions/7/config/re-resolve')) {
+          posts.push({ url, method });
+          return json(diffBody);
+        }
+        if (url.includes('/api/executions/7/config')) {
+          configServed++;
+          return json(configServed > 2 ? refreshedCfg : modeCfg); // initial + post-action refetch
+        }
+        if (url.includes('/api/scenarios/5/capacity-profile')) {
+          return json({ per_pod_qps: 125, saturated_by: 'engine' });
+        }
+        return json({ message: `no stub for ${url}` }, 500);
+      })
+    );
+    await render();
+
+    // Idle: the button, not the confirm bar.
+    expect(container!.querySelector('[data-testid="mode-reresolve"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="mode-reresolve-confirm"]')).toBeNull();
+
+    await click('[data-testid="mode-reresolve"]');
+    expect(container!.querySelector('[data-testid="mode-reresolve-confirm"]')).not.toBeNull();
+    // Cancel returns to idle without a POST.
+    await click('[data-testid="mode-reresolve-cancel"]');
+    expect(container!.querySelector('[data-testid="mode-reresolve-confirm"]')).toBeNull();
+
+    await click('[data-testid="mode-reresolve"]');
+    await click('[data-testid="mode-reresolve-confirm"]');
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toContain('/api/executions/7/config/re-resolve');
+    const diff = container!.querySelector('[data-testid="mode-reresolve-diff"]');
+    expect(diff?.textContent).toContain('engines 4 → 5');
+    expect(diff?.textContent).toContain('concurrency 375 → 750');
+    expect(diff?.textContent).toContain('rampup 0 → 0');
+    expect(diff?.textContent).toContain('throughput 500 → 500');
+    // The table refreshed to the persisted numbers.
+    expect((container!.querySelector('[data-testid="mode-config-table"]') as HTMLElement).textContent).toContain('750');
+  });
+
+  it('surfaces a 409 refusal inline with the structured remediation, nothing refreshed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (method === 'POST' && url.includes('/api/executions/7/config/re-resolve')) {
+          return json(
+            {
+              message:
+                'executionapp: mode config refused: capacity profile status "stale" for scenario 5 on jmeter (500m CPU / 512Mi memory)',
+              details: {
+                fanout_status: 'stale',
+                scenario_id: 5,
+                hint: 'the scenario changed since its calibration; recalibrate it (Execution page → Calibrate scenario), or configure it in Advanced mode',
+              },
+            },
+            409
+          );
+        }
+        if (url.includes('/api/executions/7/config')) {
+          return json(modeCfg);
+        }
+        if (url.includes('/api/scenarios/5/capacity-profile')) {
+          return json({ per_pod_qps: 125, saturated_by: 'engine' });
+        }
+        return json({ message: `no stub for ${url}` }, 500);
+      })
+    );
+    await render();
+    await click('[data-testid="mode-reresolve"]');
+    await click('[data-testid="mode-reresolve-confirm"]');
+
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('stale');
+    expect(container!.querySelector('[data-testid="action-error-details"]')?.textContent).toContain('recalibrate');
+    expect(container!.querySelector('[data-testid="mode-reresolve-diff"]')).toBeNull();
+  });
+
+  it('renders every mode entry of a multi-scenario config and keeps the re-apply form away', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/executions/7/config')) {
+          return json(multiModeCfg);
+        }
+        if (url.includes('/api/scenarios/5/capacity-profile') || url.includes('/api/scenarios/6/capacity-profile')) {
+          return json({ per_pod_qps: 125, saturated_by: 'engine' });
+        }
+        return json({ message: `no stub for ${url}` }, 500);
+      })
+    );
+    await render();
+
+    expect(container!.querySelector('[data-testid="mode-config-row-5"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="mode-config-row-6"]')).not.toBeNull();
+    expect((container!.querySelector('[data-testid="mode-config-table"]') as HTMLElement).textContent).toContain(
+      'soak'
+    );
+    // The re-apply PUT replaces the whole profile: hidden for multi-entry
+    // configs, with the reason stated. Re-resolve stays (it refreshes all).
+    expect(container!.querySelector('[data-testid="mode-reapply"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="mode-reapply-unavailable"]')?.textContent).toContain(
+      'Multi-scenario config'
+    );
+    expect(container!.querySelector('[data-testid="mode-reresolve"]')).not.toBeNull();
+  });
+
+  it('hides the re-resolve control from callers without execution:update', async () => {
+    await render(false);
+    expect(container!.querySelector('[data-testid="mode-reresolve"]')).toBeNull();
+  });
+});
