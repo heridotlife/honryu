@@ -142,7 +142,8 @@ async function renderStartPage() {
 }
 
 const startBtn = () => container!.querySelector('[data-testid="lifecycle-start"]') as HTMLButtonElement;
-const deployBtn = () => container!.querySelector('[data-testid="lifecycle-deploy"]') as HTMLButtonElement;
+const stopBtn = () => container!.querySelector('[data-testid="lifecycle-stop"]') as HTMLButtonElement;
+const lifecycle = (name: string) => container!.querySelector(`[data-testid="lifecycle-${name}"]`);
 const groupEl = () => container!.querySelector('[role="group"][aria-label="Lifecycle controls"]') as HTMLElement;
 const countdown = () => container!.querySelector('[data-testid="start-countdown"]');
 const remainingText = () =>
@@ -202,21 +203,57 @@ afterEach(() => {
 });
 
 describe('Execution one-click Start (mounted)', () => {
-  it('idle offers the Start composite beside the plain deploy path', async () => {
+  it('idle offers Start only — no deploy/trigger/purge/stop buttons in the DOM', async () => {
     await renderStartPage();
     expect(startBtn().textContent).toBe('Start');
-    expect(deployBtn().textContent).toBe('Deploy');
+    for (const gone of ['deploy', 'trigger', 'purge', 'stop']) {
+      expect(lifecycle(gone)).toBeNull();
+    }
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('running offers Stop only — no Start/deploy/trigger/purge buttons', async () => {
+    mutable.phase = 'running';
+    await renderStartPage();
+    expect(stopBtn().textContent).toBe('Stop');
+    expect(stopBtn().disabled).toBe(false);
+    for (const gone of ['start', 'deploy', 'trigger', 'purge']) {
+      expect(lifecycle(gone)).toBeNull();
+    }
+  });
+
+  it('deployed offers Start; clicking it skips the deploy POST and opens the countdown directly', async () => {
+    mutable.phase = 'deployed';
+    await renderStartPage();
+    await advance(500);
+    expect(startBtn().textContent).toBe('Start');
+    await click(startBtn());
+
+    // Straight to the countdown — no deploying step, no deploy call.
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 10s');
+    expect(container!.querySelector('[data-testid="start-flow-deploying"]')).toBeNull();
+    expect(mutable.deployCalls).toBe(0);
+
+    // The countdown runs out into the trigger; success lands on the
+    // running row (Stop), Start gone.
+    await advance(10_000);
+    expect(mutable.triggerCalls).toBe(1);
+    expect(countdown()).toBeNull();
+    expect(startBtn()).toBeNull();
+    expect(stopBtn().disabled).toBe(false);
   });
 
   it('chains deploy → visible countdown → trigger, then hands control back', async () => {
     await reachCountdown();
 
     // Mid-flow contract: the countdown reads as seconds (not a spinner),
-    // the group is busy, and every other lifecycle control is locked.
+    // the group is busy, and no lifecycle button is clickable (Start IS
+    // the countdown now; the deployed row offers nothing else).
     expect(mutable.deployCalls).toBe(1);
     expect(mutable.triggerCalls).toBe(0);
-    expect(deployBtn().disabled).toBe(true);
+    expect(startBtn()).toBeNull();
+    expect(stopBtn()).toBeNull();
     expect(groupEl().getAttribute('aria-busy')).toBe('true');
 
     // 9.5s: one second left, the 10s poll has come and gone harmlessly.
@@ -240,12 +277,13 @@ describe('Execution one-click Start (mounted)', () => {
     const cancel = container!.querySelector('[data-testid="start-countdown-cancel"]') as HTMLButtonElement;
     await click(cancel);
 
-    // The execution IS deployed by now, so the honest control set is the
-    // deployed row: Trigger available, Start gone, nothing fired.
+    // The execution IS deployed by now, so the honest control set is
+    // Start again (straight countdown this time); nothing fired, and the
+    // removed Trigger button stays removed.
     expect(countdown()).toBeNull();
     expect(mutable.triggerCalls).toBe(0);
-    const trigger = container!.querySelector('[data-testid="lifecycle-trigger"]') as HTMLButtonElement;
-    expect(trigger.disabled).toBe(false);
+    expect(startBtn().disabled).toBe(false);
+    expect(lifecycle('trigger')).toBeNull();
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
 
     // The countdown's timer is dead: running out the original 10s (and
@@ -264,13 +302,14 @@ describe('Execution one-click Start (mounted)', () => {
     const status = container!.querySelector('[data-testid="start-flow-deploying"]');
     expect(status?.textContent).toContain('Deploying engines…');
     expect(status?.querySelector('[data-testid="start-flow-cancel"]')).not.toBeNull();
-    expect(deployBtn().disabled).toBe(true);
+    // Start is the flow status now — no lifecycle button while in flight.
+    expect(startBtn()).toBeNull();
     expect(mutable.deployCalls).toBe(1);
 
     await click(status!.querySelector('[data-testid="start-flow-cancel"]')!);
     expect(container!.querySelector('[data-testid="start-flow-deploying"]')).toBeNull();
-    expect(startBtn()).not.toBeNull();
-    expect(deployBtn().disabled).toBe(false);
+    // Phase never left idle (the deploy hung), so Start is back and enabled.
+    expect(startBtn().disabled).toBe(false);
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
 
     // The hung deploy response can never land a late error: the flow was
@@ -292,7 +331,6 @@ describe('Execution one-click Start (mounted)', () => {
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('engine quota exceeded');
     expect(container!.querySelector('[data-testid="action-error-details"]')).toBeNull();
     expect(startBtn().disabled).toBe(false);
-    expect(deployBtn().disabled).toBe(false);
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
   });
 
@@ -343,9 +381,10 @@ describe('Execution one-click Start (mounted)', () => {
     expect(details?.querySelector('code')?.textContent).toBe('PUT /api/tenants/{tenant_id}/quota ceiling=1');
     expect(details?.textContent).toContain('used 0 / ceiling 1 — requested 2');
     expect(mutable.triggerCalls).toBe(1);
-    // Still deployed: manual Trigger is the operator's retry path.
-    const trigger = container!.querySelector('[data-testid="lifecycle-trigger"]') as HTMLButtonElement;
-    expect(trigger.disabled).toBe(false);
+    // Still deployed: Start (straight countdown) is the operator's retry
+    // path — the removed manual Trigger stays removed.
+    expect(startBtn().disabled).toBe(false);
+    expect(lifecycle('trigger')).toBeNull();
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
   });
 });
