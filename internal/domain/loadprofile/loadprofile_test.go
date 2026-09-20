@@ -314,7 +314,7 @@ func TestLongestDurationSecondsCountsStaircaseSteps(t *testing.T) {
 	t.Parallel()
 	p := loadprofile.Profile{Tests: []loadprofile.Entry{
 		{Concurrency: 30, Rampup: 0, Engines: 2, Duration: 120, Steps: 5}, // 5x120s
-		{Concurrency: 5, Rampup: 30, Engines: 1, Duration: 300},          // 330s
+		{Concurrency: 5, Rampup: 30, Engines: 1, Duration: 300},           // 330s
 	}}
 	// The staircase occupies its pods for steps x hold, not one hold --
 	// a quota reservation that covered a single hold would under-reserve

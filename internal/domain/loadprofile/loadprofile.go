@@ -56,7 +56,7 @@ type Entry struct {
 	// persisted), empty for an ordinary advanced entry. It rides along
 	// for the UI to render and never influences compile, sharding, or
 	// quota -- a mode-derived entry is byte-identical to an advanced
-	// entry with the same numbers. 
+	// entry with the same numbers.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	// Steps is the staircase step count (phase 98): 2..10 on a
 	// staircase entry (resolution defaults an unstated count to 5), zero

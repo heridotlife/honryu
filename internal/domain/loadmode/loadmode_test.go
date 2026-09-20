@@ -195,11 +195,11 @@ func TestSuggestedThresholds(t *testing.T) {
 
 func TestStaircaseSteps(t *testing.T) {
 	cases := []struct {
-		name       string
-		conc, tp   int
-		steps      int
-		wantRates  []int
-		wantConcs  []int
+		name      string
+		conc, tp  int
+		steps     int
+		wantRates []int
+		wantConcs []int
 	}{
 		{
 			// The spec's own arithmetic: ceiling 500 rps over 5 steps
