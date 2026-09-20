@@ -1,7 +1,8 @@
-// Package loadmode is the simplified execution-mode domain: the three
+// Package loadmode is the simplified execution-mode domain: the four
 // modes an operator may state instead of hand-tuning concurrency, engines,
-// and ramp-up (burst / ramp / soak), the ramp-up policy each mode implies,
-// and the Little's-Law concurrency formula shared by mode resolution and
+// and ramp-up (burst / ramp / soak / staircase), the ramp-up policy each
+// mode implies, the staircase step-table derivation, and the
+// Little's-Law concurrency formula shared by mode resolution and
 // the calibration search's step sizing.
 //
 // A mode is a REQUEST shape, never a stored one: executionapp.StoreConfig
@@ -34,18 +35,23 @@ const (
 	// degradation hunting, warmed up briefly so minute-0 connection-pool
 	// churn is never misread as degradation.
 	ModeSoak Mode = "soak"
+	// ModeStaircase raises load in discrete plateaus (phase 98) -- the
+	// find-the-ceiling capacity probe. The stated rate is the CEILING
+	// plateau; resolution derives the step table and the engine pods are
+	// sized once, at the ceiling.
+	ModeStaircase Mode = "staircase"
 )
 
 // ErrModeInvalid means a string that is neither a known mode nor the
 // empty/absent advanced marker was offered where a mode was expected.
-var ErrModeInvalid = errors.New("loadmode: mode must be one of burst, ramp, soak")
+var ErrModeInvalid = errors.New("loadmode: mode must be one of burst, ramp, soak, staircase")
 
-// Valid reports whether m is one of the three named modes. The empty
+// Valid reports whether m is one of the named modes. The empty
 // string is deliberately NOT valid here: callers treat it as "advanced"
 // (no mode) before ever reaching this package, and conflating the two
 // would let an absent mode silently resolve.
 func Valid(m Mode) bool {
-	return m == ModeBurst || m == ModeRamp || m == ModeSoak
+	return m == ModeBurst || m == ModeRamp || m == ModeSoak || m == ModeStaircase
 }
 
 // ParseMode converts a wire/API string into a Mode.
@@ -78,6 +84,26 @@ const (
 	soakWarmupSeconds = 60
 )
 
+// Staircase policy constants (phase 98), named for the same reason as the
+// ramp-up policy above: each is a product decision the spec argued
+// explicitly.
+const (
+	// StaircaseStepsDefault is the step count a staircase entry with no
+	// stated steps resolves with -- k6's steps-executor parity.
+	StaircaseStepsDefault = 5
+	// StaircaseStepsMin is the least staircase there is: one plateau is
+	// just a flat run, so the shape starts at two.
+	StaircaseStepsMin = 2
+	// StaircaseStepsMax bounds the step table: more than ten plateaus
+	// spends more time stepping than holding, and the pod would run ten
+	// sequential engine executions to deliver it.
+	StaircaseStepsMax = 10
+	// StaircaseMinDurationSeconds is the per-step hold floor: a
+	// staircase of 5x60s is the honest minimum -- shorter holds read as
+	// a jagged ramp, not a set of plateaus.
+	StaircaseMinDurationSeconds = 60
+)
+
 // RampupSeconds is the ramp-up the mode prescribes for a hold of
 // durationSeconds: burst ramps not at all, soak warms up briefly, and ramp
 // takes a fifth of the window clamped to [60s, 600s]. An unknown mode
@@ -89,6 +115,10 @@ func RampupSeconds(m Mode, durationSeconds int) int {
 		return 0
 	case ModeSoak:
 		return soakWarmupSeconds
+	case ModeStaircase:
+		// The step edges ARE the shape: every step enters at its full
+		// rate, so no ramp-up inside a step.
+		return 0
 	case ModeRamp:
 		r := durationSeconds / rampWindowDivisor
 		if r < rampMinSeconds {
@@ -131,6 +161,13 @@ const (
 	// actually sustain -- a soak that silently undershoots is measuring
 	// the wrong load. 0.9 leaves honest headroom for scheduling jitter.
 	soakThroughputFloor = 0.9
+	// staircaseSuggestedErrorRate matches the ordinary budget: finding
+	// the breaking plateau does not buy error allowance below it.
+	staircaseSuggestedErrorRate = 0.01
+	// staircaseSuggestedP95MS is the widest latency ceiling in the table:
+	// the point is finding the breaking plateau, and alerts should flag
+	// breakage, not proximity to it.
+	staircaseSuggestedP95MS = 1000
 )
 
 // SuggestedThresholds returns the mode's default health contract: the
@@ -149,6 +186,11 @@ func SuggestedThresholds(m Mode, targetQPS float64) []threshold.Threshold {
 		return []threshold.Threshold{
 			{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: burstSuggestedErrorRate},
 			{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: burstSuggestedP95MS},
+		}
+	case ModeStaircase:
+		return []threshold.Threshold{
+			{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: staircaseSuggestedErrorRate},
+			{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: staircaseSuggestedP95MS},
 		}
 	case ModeRamp:
 		return []threshold.Threshold{
@@ -170,6 +212,52 @@ func SuggestedThresholds(m Mode, targetQPS float64) []threshold.Threshold {
 	default:
 		return nil
 	}
+}
+
+// StaircaseStep is one plateau of a staircase shape: the rate the step
+// holds and the virtual users holding it.
+type StaircaseStep struct {
+	// Index is the step's position, 0-based.
+	Index int
+	// Throughput is the step's target request rate.
+	Throughput int
+	// Concurrency is the step's virtual-user count.
+	Concurrency int
+}
+
+// StaircaseSteps expands a resolved staircase entry's ceiling numbers
+// into its step table: step i holds rate round(throughput*(i+1)/steps)
+// (floored at 1 -- a plateau that generates nothing is not a plateau)
+// with ceil(concurrency*(i+1)/steps) users, and the last step holds the
+// ceiling exactly. Because the entry's concurrency is the Little's-Law
+// count at the ceiling rate (linear in the rate), its exact apportionment
+// per step IS Little's Law at each step's rate, up to integer rounding --
+// which is why the derivation needs only the stored numbers and no
+// latency hint. Rates and users rise monotonically by construction. A
+// steps count below two is not a staircase and yields nil; the bounds a
+// stored entry must satisfy are loadprofile.Validate's to enforce.
+func StaircaseSteps(concurrency, throughput, steps int) []StaircaseStep {
+	if steps < StaircaseStepsMin {
+		return nil
+	}
+	out := make([]StaircaseStep, steps)
+	for i := 0; i < steps; i++ {
+		share := float64(i+1) / float64(steps)
+		rate := int(math.Round(float64(throughput) * share))
+		if rate < 1 {
+			rate = 1
+		}
+		conc := int(math.Ceil(float64(concurrency) * share))
+		if conc < 1 {
+			conc = 1
+		}
+		out[i] = StaircaseStep{Index: i, Throughput: rate, Concurrency: conc}
+	}
+	// The ceiling step is exact, not rounded: the shape's whole point is
+	// finding the ceiling, so the top plateau must hold the stated rate
+	// with the full concurrency that was derived for it.
+	out[steps-1] = StaircaseStep{Index: steps - 1, Throughput: throughput, Concurrency: concurrency}
+	return out
 }
 
 // Concurrency-sizing constants, extracted from calibrationapp's step

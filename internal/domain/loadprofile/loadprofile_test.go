@@ -198,3 +198,128 @@ func TestEntry_ModeJSONYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("stated mode entry decoded = %+v, want blank numbers with mode ramp", stated)
 	}
 }
+
+// --- Phase 98: staircase provenance + step-count validation -----------------
+
+func TestEntryValidateStaircase(t *testing.T) {
+	t.Parallel()
+	base := func() loadprofile.Entry {
+		// A fully-resolved staircase entry as StoreConfig would persist
+		// it: steps inside bounds, duration above the per-step floor.
+		return loadprofile.Entry{
+			ScenarioID: 1, Concurrency: 30, Rampup: 0, Engines: 2,
+			Throughput: 20, Duration: 600, Mode: "staircase", Steps: 5,
+		}
+	}
+	cases := []struct {
+		name string
+		mut  func(*loadprofile.Entry)
+		want error
+	}{
+		{name: "resolved staircase entry is valid", mut: func(*loadprofile.Entry) {}, want: nil},
+		{
+			name: "minimum shape: two steps",
+			mut:  func(e *loadprofile.Entry) { e.Steps = 2 },
+			want: nil,
+		},
+		{
+			name: "maximum shape: ten steps",
+			mut:  func(e *loadprofile.Entry) { e.Steps = 10 },
+			want: nil,
+		},
+		{
+			name: "one step is not a staircase",
+			mut:  func(e *loadprofile.Entry) { e.Steps = 1 },
+			want: loadprofile.ErrStepsInvalid,
+		},
+		{
+			name: "zero steps is unforgivable after resolution defaulted it",
+			mut:  func(e *loadprofile.Entry) { e.Steps = 0 },
+			want: loadprofile.ErrStepsInvalid,
+		},
+		{
+			name: "eleven steps is a jagged ramp, not a staircase",
+			mut:  func(e *loadprofile.Entry) { e.Steps = 11 },
+			want: loadprofile.ErrStepsInvalid,
+		},
+		{
+			name: "per-step hold below 60s reads as a jagged ramp",
+			mut:  func(e *loadprofile.Entry) { e.Duration = 59 },
+			want: loadprofile.ErrStaircaseDuration,
+		},
+		{
+			name: "steps on a non-staircase entry is meaningless",
+			mut:  func(e *loadprofile.Entry) { e.Mode = "burst"; e.Steps = 5 },
+			want: loadprofile.ErrStepsInvalid,
+		},
+		{
+			name: "steps on an advanced entry is refused too",
+			mut: func(e *loadprofile.Entry) {
+				e.Mode = ""
+				e.Steps = 3
+			},
+			want: loadprofile.ErrStepsInvalid,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := base()
+			tc.mut(&e)
+			err := e.Validate()
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Validate() = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestEntryStepsRoundTrip(t *testing.T) {
+	t.Parallel()
+	e := loadprofile.Entry{
+		ScenarioID: 1, Concurrency: 30, Rampup: 0, Engines: 2,
+		Throughput: 20, Duration: 600, Mode: "staircase", Steps: 4,
+	}
+	js, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(js), `"steps":4`) {
+		t.Fatalf("JSON = %s, want steps carried on the wire", js)
+	}
+	var back loadprofile.Entry
+	if err := json.Unmarshal(js, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Steps != 4 || back.Mode != "staircase" {
+		t.Fatalf("round trip = %+v, want steps 4 / staircase", back)
+	}
+	// A stated staircase entry without steps decodes zero (resolution
+	// defaults it before Validate, exactly like the other blank numbers).
+	var stated loadprofile.Entry
+	if err := json.Unmarshal([]byte(`{"name":"t","scenario_id":9,"mode":"staircase","throughput":25,"duration":120}`), &stated); err != nil {
+		t.Fatalf("unmarshal stated entry: %v", err)
+	}
+	if stated.Steps != 0 || stated.Mode != "staircase" {
+		t.Fatalf("stated entry decoded = %+v, want zero steps with mode staircase", stated)
+	}
+}
+
+func TestLongestDurationSecondsCountsStaircaseSteps(t *testing.T) {
+	t.Parallel()
+	p := loadprofile.Profile{Tests: []loadprofile.Entry{
+		{Concurrency: 30, Rampup: 0, Engines: 2, Duration: 120, Steps: 5}, // 5x120s
+		{Concurrency: 5, Rampup: 30, Engines: 1, Duration: 300},          // 330s
+	}}
+	// The staircase occupies its pods for steps x hold, not one hold --
+	// a quota reservation that covered a single hold would under-reserve
+	// four fifths of the run.
+	if got := p.LongestDurationSeconds(); got != 600 {
+		t.Fatalf("LongestDurationSeconds() = %d, want 600 (5 steps x 120s)", got)
+	}
+}

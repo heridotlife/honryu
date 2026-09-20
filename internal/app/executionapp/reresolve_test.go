@@ -16,6 +16,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/executionapp"
 	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
@@ -263,5 +264,66 @@ func TestReResolveConfig_AllAdvancedConfigIsANoOp(t *testing.T) {
 	}
 	if len(e.capacity.asked) != 0 {
 		t.Fatalf("capacity asked = %v, want no fan-out for an advanced config", e.capacity.asked)
+	}
+}
+
+// A staircase re-resolves like its siblings -- the ceiling numbers move
+// with the current calibration, the operator's statement (mode, ceiling
+// rate, per-step hold, step count) rides along, and the step table the
+// deploy path derives follows the refreshed ceiling for free.
+func TestReResolveConfig_StaircaseStepTableFollowsTheCeiling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	exec := execution.Execution{Engine: taurus.ExecutorJMeter}
+	e := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	jobID := seedCalibrationJob(t, e, exec)
+	key := modeTestKey(e.scenarioID, exec)
+	e.capacity.profiles[key] = *freshProfile(10, jobID)
+	seedCalibrationReport(t, e, jobID, 0.5)
+
+	cfg := modeConfig(e, "staircase", 20, 300)
+	cfg.Tests[0].Steps = 4
+	if err := e.svc.StoreConfig(ctx, e.executionID, cfg); err != nil {
+		t.Fatalf("StoreConfig: %v", err)
+	}
+	if got := stored(t, e); got.Engines != 2 || got.Concurrency != 30 || got.Steps != 4 {
+		t.Fatalf("precondition: stored = %+v, want 2 engines / 30 VUs / 4 steps", got)
+	}
+
+	// Recalibration doubles the per-pod rate and the latency: engines halve
+	// to 1 (40 would need 2, but the ceiling is still 20 rps over 20/pod),
+	// and concurrency doubles to 60.
+	recalibrate(t, e, exec, key, jobID, 20, 1.0)
+	result, err := e.svc.ReResolveConfig(ctx, e.executionID)
+	if err != nil {
+		t.Fatalf("ReResolveConfig: %v", err)
+	}
+	got := result.Entries[0]
+	if got.Mode != "staircase" {
+		t.Fatalf("mode = %q, want staircase preserved", got.Mode)
+	}
+	if got.Before != (executionapp.ResolvedDiff{Engines: 2, Concurrency: 30, Rampup: 0, Throughput: 20}) {
+		t.Errorf("Before = %+v, want the stored snapshot 2/30/0/20", got.Before)
+	}
+	if got.After != (executionapp.ResolvedDiff{Engines: 1, Concurrency: 60, Rampup: 0, Throughput: 20}) {
+		t.Errorf("After = %+v, want 1/60/0/20", got.After)
+	}
+	if !got.Changed {
+		t.Error("Changed = false, want true")
+	}
+
+	// The stated steps survived the refresh, and the derived table moved
+	// with the new ceiling concurrency: step 0 now ceil(60/4)=15 VUs at
+	// round(20/4)=5 rps.
+	persisted := stored(t, e)
+	if persisted.Steps != 4 {
+		t.Fatalf("persisted steps = %d, want 4 (the statement, never renegotiated)", persisted.Steps)
+	}
+	steps := loadmode.StaircaseSteps(persisted.Concurrency, persisted.Throughput, persisted.Steps)
+	if steps[0].Concurrency != 15 || steps[0].Throughput != 5 {
+		t.Fatalf("step 0 = %+v, want 15 VUs at 5 rps (the refreshed ceiling, re-apportioned)", steps[0])
+	}
+	if last := steps[len(steps)-1]; last.Concurrency != 60 || last.Throughput != 20 {
+		t.Fatalf("ceiling step = %+v, want 60 VUs at 20 rps", last)
 	}
 }
