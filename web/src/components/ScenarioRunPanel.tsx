@@ -26,9 +26,11 @@ import CountdownSettings, { CountdownChip } from './CountdownSettings';
 import { getExecutionConfig, putExecutionConfig, type ConfigTest, type ExecutionConfig } from '../api/executionsConfig';
 import { getExecutionStatus, type ExecutionStatus, type Phase } from '../api/status';
 import { fanOutCapacity, getCapacityProfile } from '../api/calibration';
+import { listThresholds, saveThresholds, type StoredThreshold } from '../api/scenarios';
 import { useSession } from '../hooks/useSession';
 import { useStartFlow } from '../hooks/useStartFlow';
 import { formatRowTime } from '../lib/executionRow';
+import { suggestedThresholds } from '../lib/modeDefaults';
 import {
   buildModeTest,
   initialModeForm,
@@ -109,6 +111,10 @@ export default function ScenarioRunPanel({
   const canEdit = can('execution', 'update');
   const canStart = can('run', 'create');
   const canCreate = can('execution', 'create');
+  // Phase 97: the SLO suggestion's PUT costs scenario:update (the
+  // thresholds route's verb) — a session without it never sees the
+  // one-click affordance at all, the same honesty the form shapes keep.
+  const canEditScenario = can('scenario', 'update');
 
   // The latest execution's config: the whole profile round-trips on edit
   // (the PUT replaces it), so the panel keeps it whole and reads its own
@@ -166,6 +172,13 @@ export default function ScenarioRunPanel({
   // separate from the editor's: different actions, different surfaces.
   const [flowError, setFlowError] = useState<string | null>(null);
   const [flowErrorDetail, setFlowErrorDetail] = useState<Record<string, unknown> | null>(null);
+
+  // Phase 97's SLO suggestion premise: the scenario's stored thresholds.
+  // null = not loaded (or the read failed): the suggestion may only
+  // render against a CONFIRMED empty set, never an unknown one.
+  const [storedThresholds, setStoredThresholds] = useState<StoredThreshold[] | null>(null);
+  const [sloBusy, setSloBusy] = useState(false);
+  const [sloError, setSloError] = useState<string | null>(null);
 
   /** Prefill the form from a config's entry for this scenario. */
   const prefill = (cfg: ExecutionConfig) => {
@@ -250,6 +263,24 @@ export default function ScenarioRunPanel({
     };
   }, [scenarioId, engine, perPodQps, formQps]);
 
+  // The scenario's threshold set: one read per scenario, the suggestion's
+  // zero-thresholds premise. A failed read leaves the set unknown — no
+  // suggestion, nothing else degrades.
+  useEffect(() => {
+    let alive = true;
+    setStoredThresholds(null);
+    listThresholds(scenarioId)
+      .then(list => {
+        if (alive) setStoredThresholds(list);
+      })
+      .catch(() => {
+        /* unknown set: the suggestion stays hidden */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [scenarioId]);
+
   // The lifecycle snapshot's feed: one fetch on entry plus the 10s poll
   // (the execution hub's cadence). The start flow's phase-watch reads the
   // guarded `status` above, so the panel — like the hub — has one source
@@ -330,7 +361,10 @@ export default function ScenarioRunPanel({
     setCreateErrorDetail(null);
     setCreateNeedsCalibration(false);
     apiClient
-      .post<{ id: number }>('/executions', new URLSearchParams({ project_id: String(projectId), name: scenarioName, engine }))
+      .post<{ id: number }>(
+        '/executions',
+        new URLSearchParams({ project_id: String(projectId), name: scenarioName, engine })
+      )
       .then(execution =>
         putExecutionConfig(execution.id, {
           name: `${scenarioName}-load`,
@@ -430,12 +464,9 @@ export default function ScenarioRunPanel({
           </p>
           <ActionErrorDetails details={createErrorDetail} />
           {createNeedsCalibration && (
-            <p
-              className="mt-2 text-caption text-slate-600 dark:text-slate-300"
-              data-testid="run-calibrate-remediation"
-            >
-              Calibrate this scenario first, then retry — the run was created but not configured. The Calibrate
-              action sits below the run history on this tab.
+            <p className="mt-2 text-caption text-slate-600 dark:text-slate-300" data-testid="run-calibrate-remediation">
+              Calibrate this scenario first, then retry — the run was created but not configured. The Calibrate action
+              sits below the run history on this tab.
             </p>
           )}
         </div>
@@ -470,13 +501,20 @@ export default function ScenarioRunPanel({
   }
 
   if (latest === undefined || latestId === undefined) {
-    return <div data-testid="run-loading" className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700/50" />;
+    return (
+      <div data-testid="run-loading" className="h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-700/50" />
+    );
   }
 
   // This scenario's entry in the latest execution's profile (the 67a list
   // only contains executions whose profile binds the scenario, so a found
   // entry is the normal case; a missing one means the config never saved).
   const entry: ConfigTest | undefined = config?.tests.find(t => t.scenario_id === scenarioId);
+  // Phase 97: the mode entry's suggested SLO rows, derived locally from
+  // the same table the Go side exports (modeDefaults mirrors
+  // loadmode.SuggestedThresholds number-for-number). The soak floor needs
+  // the stated rate; an unlimited entry (throughput undefined) states none.
+  const sloRows = entry?.mode !== undefined ? suggestedThresholds(entry.mode as LoadMode, entry.throughput ?? 0) : [];
 
   // The unified inputs (phase 95): exactly ONE form shape renders, picked
   // by what the latest holds and what the session grants.
@@ -494,6 +532,28 @@ export default function ScenarioRunPanel({
   //   stay (RBAC honesty: no dead form).
   const showEdit = entry?.mode !== undefined && form !== null && canEdit;
   const showCreate = !showEdit && canCreate;
+
+  // Apply the suggested SLO defaults: one PUT through the ordinary
+  // replace-all thresholds route — the stored answer becomes the panel's
+  // threshold state (non-empty, so the suggestion hides) and the Editor
+  // tab shows the rows like any threshold, editable from there. Offered
+  // and applied only on an explicit click — auto-magic writes are a trust
+  // hazard, which is why nothing is ever inserted silently.
+  const applySloDefaults = () => {
+    if (sloRows.length === 0) {
+      return;
+    }
+    setSloBusy(true);
+    setSloError(null);
+    saveThresholds(scenarioId, sloRows)
+      .then(stored => {
+        setStoredThresholds(stored);
+      })
+      .catch((e: unknown) => {
+        setSloError(e instanceof ApiError ? e.message : 'failed to apply SLO defaults');
+      })
+      .finally(() => setSloBusy(false));
+  };
 
   return (
     <Card data-testid="run-panel">
@@ -573,16 +633,61 @@ export default function ScenarioRunPanel({
                 .
               </p>
             )}
+            {/* Phase 97: the per-mode SLO default suggestion — offered
+                (never auto-inserted) only when the scenario's threshold
+                set is CONFIRMED empty and this scenario's mode entry is in
+                hand. Costs scenario:update; a session without the grant
+                never sees the affordance. */}
+            {entry.mode !== undefined &&
+              storedThresholds !== null &&
+              storedThresholds.length === 0 &&
+              canEditScenario && (
+                <div
+                  className="space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-3 dark:border-sky-800 dark:bg-sky-900/20"
+                  data-testid="run-slo-suggestion"
+                >
+                  <p className="text-caption font-medium text-slate-600 dark:text-slate-300">
+                    No thresholds set — {entry.mode}&apos;s default health contract:
+                  </p>
+                  <ul className="flex flex-wrap gap-x-4 gap-y-1" data-testid="run-slo-rows">
+                    {sloRows.map(row => (
+                      <li
+                        key={row.metric}
+                        className="text-caption text-slate-700 dark:text-slate-300"
+                        data-testid="run-slo-row"
+                      >
+                        {row.metric} {row.comparison === 'lt' ? '<' : '>'} {row.value}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={applySloDefaults}
+                      disabled={sloBusy}
+                      className="active:scale-95"
+                      data-testid="run-slo-apply"
+                    >
+                      {sloBusy ? 'Applying…' : 'Apply SLO defaults'}
+                    </Button>
+                    <span className="text-caption text-slate-500 dark:text-slate-400">
+                      Saves these as the scenario&apos;s thresholds — editable on the Editor tab.
+                    </span>
+                  </div>
+                  {sloError !== null && (
+                    <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                      {sloError}
+                    </p>
+                  )}
+                </div>
+              )}
             {/* The unified inputs (see showEdit/showCreate above). Edit
                 shape: mode + rate + duration, the NewTest Simple row's
                 exact shape and validation (soak warning included). Only
                 the scenario's own entry restates; co-entries ride the PUT
                 untouched (see applyEdit). Costs execution:update. */}
             {showEdit && (
-              <div
-                className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
-                data-testid="run-edit"
-              >
+              <div className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700" data-testid="run-edit">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-caption font-medium text-slate-600 dark:text-slate-300">Run settings</p>
                   {appliedAt && (
@@ -632,10 +737,7 @@ export default function ScenarioRunPanel({
                 session cannot PUT. Costs execution:create (+ run:create
                 when the chained start fires). */}
             {showCreate && (
-              <div
-                className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700"
-                data-testid="run-create"
-              >
+              <div className="space-y-3 border-t border-slate-200 pt-4 dark:border-slate-700" data-testid="run-create">
                 <p className="text-caption font-medium text-slate-600 dark:text-slate-300">New run</p>
                 <p className="text-caption text-slate-500 dark:text-slate-400">
                   {entry.mode === undefined
@@ -702,10 +804,7 @@ export default function ScenarioRunPanel({
           ) : status?.phase === 'running' ? (
             <p className="text-caption text-slate-500 dark:text-slate-400" data-testid="run-running-note">
               A run is in progress —{' '}
-              <Link
-                to={`/executions/${latestId}`}
-                className="font-medium text-sky-600 underline dark:text-sky-400"
-              >
+              <Link to={`/executions/${latestId}`} className="font-medium text-sky-600 underline dark:text-sky-400">
                 view execution #{latestId}
               </Link>{' '}
               to watch or stop it.
