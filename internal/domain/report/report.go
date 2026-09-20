@@ -319,6 +319,10 @@ func (l Load) meanRequestedRate() float64 {
 	return samples / float64(secs)
 }
 
+// ShortOfRequest reports whether the run produced materially less load than
+// it was asked for -- the rate reading, judged against a stepped request's
+// time-weighted mean plateau rather than its ceiling (a staircase spends most
+// of its window below the ceiling by design).
 func (r Report) ShortOfRequest() bool {
 	if r.Requested.Throughput <= 0 {
 		return false // unlimited: there is no target rate to fall short of
