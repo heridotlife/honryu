@@ -10,7 +10,8 @@
 # the same creds work fine over the registry HTTP API. skopeo reads the
 # image straight from the docker daemon, so the socket must be mounted.
 #
-# Image paths are DOUBLE-honryu: registry.pve.heri.life/honryu/honryu-<C>.
+# Image paths: control-plane is DOUBLE-honryu (honryu/honryu-<C>) but grafana
+# is SINGLE (honryu/grafana) — the chart repositories differ; check values.yaml.
 # The chart's image.repository values say honryu/honryu-api (namespace
 # honryu, repo honryu-api) — a build script that pushes honryu/api feeds
 # helm an ImagePullBackOff 300s timeout (phase97 lesson, twice).
@@ -37,11 +38,11 @@ for C in api calibrator scheduler sidecar; do
 done
 
 echo "== grafana image =="
-docker build -f grafana/Dockerfile -t "$REG/honryu/honryu-grafana:$TAG" grafana/ || exit 1
+docker build -f grafana/Dockerfile -t "$REG/honryu/grafana:$TAG" grafana/ || exit 1
 echo "grafana: built"
 
 echo "== push via skopeo (docker login is broken on this host) =="
-for C in api calibrator scheduler sidecar grafana; do
+for C in api calibrator scheduler sidecar; do
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
     quay.io/skopeo/stable:latest copy --dest-tls-verify=false \
     --dest-creds "$U:$P" \
@@ -49,10 +50,16 @@ for C in api calibrator scheduler sidecar grafana; do
     "docker://$REG/honryu/honryu-$C:$TAG" >/dev/null || { echo "PUSH_FAIL $C"; exit 1; }
   echo "$C: pushed $TAG"
 done
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  quay.io/skopeo/stable:latest copy --dest-tls-verify=false \
+  --dest-creds "$U:$P" \
+  "docker-daemon:$REG/honryu/grafana:$TAG" \
+  "docker://$REG/honryu/grafana:$TAG" >/dev/null || { echo "PUSH_FAIL grafana"; exit 1; }
+echo "grafana: pushed $TAG"
 
 echo "== verify tags landed in registry =="
-for C in api calibrator scheduler sidecar grafana; do
-  PRESENT=$(curl -sk -u "$AUTH" "https://$REG/v2/honryu/honryu-$C/tags/list" | python3 -c "import json,sys; print('$TAG' in json.load(sys.stdin).get('tags',[]))")
+for C in api calibrator scheduler sidecar honryu-grafana; do
+  PRESENT=$(curl -sk -u "$AUTH" "https://$REG/v2/honryu/$C/tags/list" | python3 -c "import json,sys; print('$TAG' in json.load(sys.stdin).get('tags',[]))")
   echo "$C tag $TAG present: $PRESENT"
   [ "$PRESENT" = "True" ] || { echo "VERIFY_FAIL $C"; exit 1; }
 done
