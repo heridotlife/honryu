@@ -1,12 +1,14 @@
 // Phase 93: the Start flow's countdown component (see StartCountdown.tsx).
 // Fake timers drive the 1s ticker; the assertions pin the spec's UX
 // contract: an explicit seconds countdown (not a spinner), polite live
-// announcements ONLY at the 10/5/1 marks, cancel that stops the countdown
-// without completing, and the reduced-motion static render.
+// announcements ONLY at the scaled marks, cancel that stops the countdown
+// without completing, and the reduced-motion static render. Phase 96 adds
+// the scaled-length contract: the marks (and the ring/text) follow
+// whatever seconds the operator's preference handed in.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import StartCountdown from './StartCountdown';
+import StartCountdown, { announceMarks } from './StartCountdown';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,12 +17,18 @@ let root: Root | null = null;
 const onComplete = vi.fn();
 const onCancel = vi.fn();
 
-async function mountCountdown() {
+async function mountCountdown(seconds?: number) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container!);
   await act(async () => {
-    root!.render(<StartCountdown onComplete={onComplete} onCancel={onCancel} />);
+    root!.render(
+      seconds === undefined ? (
+        <StartCountdown onComplete={onComplete} onCancel={onCancel} />
+      ) : (
+        <StartCountdown seconds={seconds} onComplete={onComplete} onCancel={onCancel} />
+      )
+    );
   });
 }
 
@@ -130,5 +138,61 @@ describe('StartCountdown', () => {
     expect(remainingText()).toBe('Load test starts in 10s');
     // The cancel affordance survives reduced motion — it is not decoration.
     expect(container!.querySelector('[data-testid="start-countdown-cancel"]')).not.toBeNull();
+  });
+});
+
+describe('announceMarks', () => {
+  it('scales the cadence to the length: 10 → {10,5,1}, 60 → {60,30,1}', () => {
+    expect([...announceMarks(10)].sort((a, b) => b - a)).toEqual([10, 5, 1]);
+    expect([...announceMarks(60)].sort((a, b) => b - a)).toEqual([60, 30, 1]);
+  });
+
+  it('floors the half mark so short lengths dedupe onto the final second', () => {
+    // 3's half is 1.5 — the floor lands on 1, which the final mark already
+    // covers; 1 has no room for a middle mark at all; 2 keeps start+final.
+    expect([...announceMarks(3)].sort((a, b) => b - a)).toEqual([3, 1]);
+    expect([...announceMarks(1)].sort((a, b) => b - a)).toEqual([1]);
+    expect([...announceMarks(2)].sort((a, b) => b - a)).toEqual([2, 1]);
+  });
+});
+
+describe('StartCountdown at a scaled length (phase 96)', () => {
+  it('counts down 3s, announcing only at 3 and 1', async () => {
+    await mountCountdown(3);
+    expect(remainingText()).toBe('Load test starts in 3s');
+    expect(announceText()).toBe('Load test starts in 3s');
+
+    await tick(1_000);
+    expect(remainingText()).toBe('Load test starts in 2s');
+    expect(announceText()).toBe('Load test starts in 3s'); // 2 is not a mark
+
+    await tick(1_000);
+    expect(announceText()).toBe('Load test starts in 1s');
+
+    await tick(1_000);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(remainingText()).toBe('Starting…');
+  });
+
+  it('counts down a single second: mount-mark announcement, immediate complete', async () => {
+    await mountCountdown(1);
+    expect(remainingText()).toBe('Load test starts in 1s');
+    expect(announceText()).toBe('Load test starts in 1s');
+
+    await tick(1_000);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it('counts down 60s with the ring drawn at a sixtieth per second', async () => {
+    await mountCountdown(60);
+    expect(remainingText()).toBe('Load test starts in 60s');
+    await tick(30_000);
+    expect(remainingText()).toBe('Load test starts in 30s');
+    expect(announceText()).toBe('Load test starts in 30s'); // 30 IS a mark
+    await tick(28_000);
+    expect(announceText()).toBe('Load test starts in 30s'); // 2 is not
+    await tick(1_000);
+    expect(announceText()).toBe('Load test starts in 1s');
   });
 });

@@ -25,6 +25,7 @@ import EngineBadge from '../components/ui/EngineBadge';
 import CopyLink from '../components/CopyLink';
 import ActionErrorDetails from '../components/ActionErrorDetails';
 import StartCountdown from '../components/StartCountdown';
+import CountdownSettings, { CountdownChip } from '../components/CountdownSettings';
 import { useStartFlow } from '../hooks/useStartFlow';
 import CalibrateScenarioModal from '../components/CalibrateScenarioModal';
 import CardTable, { type CardTableColumn } from '../components/CardTable';
@@ -948,11 +949,17 @@ export default function Execution() {
                     feedback. */}
                 {startBusy ? (
                   startFlow.step === 'counting' ? (
-                    <StartCountdown
-                      seconds={startFlow.seconds}
-                      onComplete={startFlow.countdownComplete}
-                      onCancel={startFlow.cancel}
-                    />
+                    <>
+                      <StartCountdown
+                        seconds={startFlow.seconds}
+                        onComplete={startFlow.countdownComplete}
+                        onCancel={startFlow.cancel}
+                      />
+                      {/* Phase 96: the countdown's settings stay reachable
+                          while it ticks — a retune applies to the next
+                          launch (the value is captured at begin()). */}
+                      <CountdownSettings />
+                    </>
                   ) : (
                     <span
                       className="inline-flex items-center gap-2"
@@ -976,15 +983,23 @@ export default function Execution() {
                   )
                 ) : (
                   startControl && (
-                    <Button
-                      data-testid="lifecycle-start"
-                      variant="accent"
-                      className="active:scale-95"
-                      disabled={!startControl.enabled || busyAction !== null}
-                      onClick={startFlow.begin}
-                    >
-                      Start
-                    </Button>
+                    <>
+                      <Button
+                        data-testid="lifecycle-start"
+                        variant="accent"
+                        className="active:scale-95"
+                        disabled={!startControl.enabled || busyAction !== null}
+                        onClick={startFlow.begin}
+                      >
+                        Start
+                      </Button>
+                      {/* Phase 96: the countdown preference beside Start — a
+                          chip when it differs from the default, the settings
+                          popover always, so the value is discoverable before
+                          the first launch. */}
+                      <CountdownChip />
+                      <CountdownSettings />
+                    </>
                   )
                 )}
                 {/* Phase 93's other half: Stop, the hub's only direct

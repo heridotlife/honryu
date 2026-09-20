@@ -2,19 +2,33 @@
 // 10-second wait is NOT a spinner (ui-ux-pro-max: loading feedback must
 // match the expected wait) — this component renders an explicit ring plus
 // the remaining seconds as text, announces progress to screen readers only
-// at the 10/5/1 marks, and always offers Cancel: a one-way door needs an
+// at the scaled marks, and always offers Cancel: a one-way door needs an
 // exit. owns its 1s ticker so it stays independently testable with fake
-// timers; the parent (Execution.tsx) mounts it for exactly the 'counting'
-// step and unmounts on cancel/complete.
+// timers; the parent (Execution.tsx / ScenarioRunPanel) mounts it for
+// exactly the 'counting' step and unmounts on cancel/complete. Phase 96:
+// the length is the operator's per-browser preference (0–60s) — the ring
+// and the announce cadence scale with whatever seconds it is handed.
 import { useEffect, useRef, useState } from 'react';
 import Button from './ui/Button';
 
-/** The countdown length (spec: fixed 10s in v1, not configurable). */
+/** The countdown default (spec: stays 10; the preference overrides it). */
 export const START_SECONDS = 10;
 
-/** Marks at which the polite live region carries text. Every tick would
- * narrate a drum-roll of numbers; 10/5/1 is the spec'd cadence. */
-const ANNOUNCE_AT = new Set([10, 5, 1]);
+/** The announce cadence scaled to the length: the top, the half-way mark
+ *  (floored — 3s's half is 1, which the final mark already covers), and
+ *  the final second, deduped and clamped into 1..N. 10 → {10,5,1} (the
+ *  phase-93 cadence, unchanged); 3 → {3,1}; 1 → {1}; 60 → {60,30,1}.
+ *  Every tick would narrate a drum-roll of numbers; the marks say
+ *  "halfway gone, one left" and nothing more. */
+export function announceMarks(seconds: number): Set<number> {
+  const marks = new Set([seconds, Math.floor(seconds / 2), 1]);
+  for (const m of marks) {
+    if (m < 1 || m > seconds) {
+      marks.delete(m);
+    }
+  }
+  return marks;
+}
 
 const message = (s: number) => `Load test starts in ${s}s`;
 
@@ -31,13 +45,18 @@ export interface StartCountdownProps {
 }
 
 export default function StartCountdown({ seconds = START_SECONDS, onComplete, onCancel }: StartCountdownProps) {
+  // The cadence is computed from the handed length, not hardcoded —
+  // phase 96's scaling requirement. seconds never changes mid-mount (the
+  // hook captures it at begin(), before this component exists).
+  const marks = announceMarks(seconds);
   const [remaining, setRemaining] = useState(seconds);
-  // The live region is rendered with the mount-mark's text (10s by
-  // default) so the very first announcement rides the initial paint
-  // instead of racing it; later marks update the text in place, and
-  // between marks the text simply does not change — which is exactly
-  // "announce only at 10/5/1".
-  const [announced, setAnnounced] = useState(() => (ANNOUNCE_AT.has(seconds) ? message(seconds) : ''));
+  // The live region is rendered with the mount-mark's text so the very
+  // first announcement rides the initial paint instead of racing it;
+  // later marks update the text in place, and between marks the text
+  // simply does not change — which is exactly "announce only at marks".
+  // For every N ≥ 1 the top N is itself a mark, so the first paint always
+  // carries one.
+  const [announced, setAnnounced] = useState(() => (marks.has(seconds) ? message(seconds) : ''));
   // Set once the countdown has ended (complete or cancel): gates the
   // one-shot callbacks and freezes the ticker.
   const finished = useRef(false);
@@ -56,7 +75,7 @@ export default function StartCountdown({ seconds = START_SECONDS, onComplete, on
   }, []);
 
   useEffect(() => {
-    if (ANNOUNCE_AT.has(remaining)) {
+    if (marks.has(remaining)) {
       setAnnounced(message(remaining));
     }
     if (remaining <= 0 && !finished.current) {

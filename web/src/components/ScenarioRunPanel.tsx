@@ -22,6 +22,7 @@ import ActionErrorDetails from './ActionErrorDetails';
 import ModeForm from './ModeForm';
 import RunStatusBadge from './RunStatusBadge';
 import StartCountdown from './StartCountdown';
+import CountdownSettings, { CountdownChip } from './CountdownSettings';
 import { getExecutionConfig, putExecutionConfig, type ConfigTest, type ExecutionConfig } from '../api/executionsConfig';
 import { getExecutionStatus, type ExecutionStatus, type Phase } from '../api/status';
 import { fanOutCapacity, getCapacityProfile } from '../api/calibration';
@@ -407,14 +408,21 @@ export default function ScenarioRunPanel({
   const createSurface = (
     <>
       <ModeForm value={createForm} onChange={setCreateForm} disabled={createBusy || startBusy} qpsHint={qpsHint} />
-      <Button
-        onClick={createAndStart}
-        disabled={createBusy || startBusy || !modeFormValid(createForm)}
-        className="active:scale-95"
-        data-testid="run-create-start"
-      >
-        {createBusy ? 'Creating…' : 'Create and start'}
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          onClick={createAndStart}
+          disabled={createBusy || startBusy || !modeFormValid(createForm)}
+          className="active:scale-95"
+          data-testid="run-create-start"
+        >
+          {createBusy ? 'Creating…' : 'Create and start'}
+        </Button>
+        {/* Phase 96: the launch countdown's chip + settings ride the create
+            path too — this button begins the same flow, and a never-run
+            scenario's FIRST launch goes through it. */}
+        <CountdownChip />
+        <CountdownSettings />
+      </div>
       {createError !== null && (
         <div>
           <p className="text-sm text-red-600 dark:text-red-400" role="alert">
@@ -663,11 +671,16 @@ export default function ScenarioRunPanel({
         >
           {startBusy ? (
             startFlow.step === 'counting' ? (
-              <StartCountdown
-                seconds={startFlow.seconds}
-                onComplete={startFlow.countdownComplete}
-                onCancel={startFlow.cancel}
-              />
+              <>
+                <StartCountdown
+                  seconds={startFlow.seconds}
+                  onComplete={startFlow.countdownComplete}
+                  onCancel={startFlow.cancel}
+                />
+                {/* Phase 96: settings stay reachable while the countdown
+                    ticks; a retune applies to the next launch. */}
+                <CountdownSettings />
+              </>
             ) : (
               <span className="inline-flex items-center gap-2" data-testid={`start-flow-${startFlow.step}`}>
                 <span className="text-body-sm font-medium text-slate-700 dark:text-slate-200">
@@ -704,15 +717,21 @@ export default function ScenarioRunPanel({
             // the create shape the plain Start keeps its phase-93 contract.
             canStart &&
             !showCreate && (
-              <Button
-                data-testid="run-start"
-                variant="accent"
-                className="active:scale-95"
-                disabled={status === null || editBusy}
-                onClick={startFlow.begin}
-              >
-                Start
-              </Button>
+              <>
+                <Button
+                  data-testid="run-start"
+                  variant="accent"
+                  className="active:scale-95"
+                  disabled={status === null || editBusy}
+                  onClick={startFlow.begin}
+                >
+                  Start
+                </Button>
+                {/* Phase 96: the countdown preference beside Start — chip
+                    when ≠ default, settings always. */}
+                <CountdownChip />
+                <CountdownSettings />
+              </>
             )
           )}
           {flowError !== null && (

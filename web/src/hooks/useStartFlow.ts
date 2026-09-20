@@ -1,6 +1,6 @@
 // Phase 93: the one-click Start orchestration — the chain the spec draws:
-// POST deploy → wait for phase 'deployed' → 10s countdown (StartCountdown)
-// → POST trigger. Already deployed (a finished run's engines, or a manual
+// POST deploy → wait for phase 'deployed' → countdown (StartCountdown,
+// the operator's per-browser 0–60s preference, phase 96) → POST trigger. Already deployed (a finished run's engines, or a manual
 // stop's): no deploy POST at all — straight to the countdown, because
 // trigger-on-deployed is exactly the trigger. Pure web chaining of the
 // two existing endpoints; the
@@ -17,11 +17,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, errorDetails } from '../api/client';
 import { deployExecution, triggerExecution } from '../api/lifecycle';
 import { getExecutionStatus, type ExecutionStatus, type Phase } from '../api/status';
+import { getCountdownSeconds } from '../lib/countdownPref';
 
 /** The flow's steps, in order; null = no flow (the idle control set). */
 export type StartStep = 'deploying' | 'counting' | 'triggering';
 
-/** Fixed by the spec: 10s v1, not configurable. */
+/** The countdown default (phase 96: configurable 0–60, default stays 10). */
 export const START_COUNTDOWN_SECONDS = 10;
 
 export interface UseStartFlowArgs {
@@ -38,6 +39,11 @@ export interface UseStartFlowArgs {
 
 export function useStartFlow({ executionId, phase, onStatus, onError, onReset }: UseStartFlowArgs) {
   const [step, setStep] = useState<StartStep | null>(null);
+  // The countdown length captured at begin() — NOT at mount, so a
+  // preference change between page load and the Start click applies to
+  // the very next launch. 0 means no counting step at all: the flow runs
+  // deploy-wait → trigger directly.
+  const [seconds, setSeconds] = useState(START_COUNTDOWN_SECONDS);
   // Bumped by cancel (and by aborts): a deploy or trigger response that
   // lands after the operator walked away is dropped, not surfaced — the
   // user ended the flow, so the flow may not still speak.
@@ -51,17 +57,50 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
     [onError]
   );
 
+  /** Fire the trigger POST: the countdown's completion, and — when the
+   *  captured preference is 0 — the flow's step right after the deploy
+   *  wait, with no counting step in between. */
+  const fireTrigger = useCallback(() => {
+    setStep('triggering');
+    const run = ++runRef.current;
+    triggerExecution(executionId)
+      .then(() => {
+        if (runRef.current !== run) {
+          return;
+        }
+        setStep(null);
+        onReset();
+        getExecutionStatus(executionId)
+          .then(onStatus)
+          .catch(() => {});
+      })
+      .catch(err => {
+        if (runRef.current !== run) {
+          return;
+        }
+        fail(err, 'start failed: trigger did not complete.');
+      });
+  }, [executionId, onReset, onStatus, fail]);
+
   /** Start clicked. Idle: deploy first, then the phase-watch effect
    *  below opens the countdown on 'deployed'. Already deployed: skip the
    *  deploy POST entirely — straight to the countdown (trigger on
-   *  deployed IS the trigger). No-op if a flow is already in flight. */
+   *  deployed IS the trigger). The countdown preference is read HERE,
+   * per launch: a value of 0 skips the counting step entirely. No-op if
+   * a flow is already in flight. */
   const begin = useCallback(() => {
     if (step !== null) {
       return;
     }
     onReset();
+    const pref = getCountdownSeconds();
+    setSeconds(pref);
     if (phase === 'deployed') {
-      setStep('counting');
+      if (pref === 0) {
+        fireTrigger();
+      } else {
+        setStep('counting');
+      }
       return;
     }
     setStep('deploying');
@@ -88,30 +127,12 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
         }
         fail(err, 'start failed: deploy did not complete.');
       });
-  }, [step, phase, executionId, onReset, onStatus, fail]);
+  }, [step, phase, executionId, onReset, onStatus, fail, fireTrigger]);
 
   /** The countdown ran out: fire the trigger. No cancel from here on — the door is open. */
   const countdownComplete = useCallback(() => {
-    setStep('triggering');
-    const run = ++runRef.current;
-    triggerExecution(executionId)
-      .then(() => {
-        if (runRef.current !== run) {
-          return;
-        }
-        setStep(null);
-        onReset();
-        getExecutionStatus(executionId)
-          .then(onStatus)
-          .catch(() => {});
-      })
-      .catch(err => {
-        if (runRef.current !== run) {
-          return;
-        }
-        fail(err, 'start failed: trigger did not complete.');
-      });
-  }, [executionId, onReset, onStatus, fail]);
+    fireTrigger();
+  }, [fireTrigger]);
 
   // The phase watch — the only transition source besides the API calls
   // themselves. Deploying waits for 'deployed' (the pods settling); any
@@ -119,7 +140,13 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
   // starting during deploy, aborts the chain with the honest reason.
   useEffect(() => {
     if (step === 'deploying' && phase === 'deployed') {
-      setStep('counting');
+      // A 0s preference skips the counting step here too: the deploy
+      // wait hands straight to the trigger, never mounting a countdown.
+      if (seconds === 0) {
+        fireTrigger();
+      } else {
+        setStep('counting');
+      }
       return;
     }
     if (step === 'deploying' && phase === 'running') {
@@ -133,7 +160,7 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
       setStep(null); // unmounts StartCountdown → its interval clears
       onError(`start aborted: the execution is no longer deployed (phase ${phase ?? 'unknown'}).`, null);
     }
-  }, [step, phase, onError]);
+  }, [step, phase, seconds, onError, fireTrigger]);
 
   /** The operator's exit: back to the phase's control set, no trigger
    *  fired, stale API responses invalidated. Engines already deploying
@@ -144,5 +171,5 @@ export function useStartFlow({ executionId, phase, onStatus, onError, onReset }:
     setStep(null);
   }, []);
 
-  return { step, begin, cancel, countdownComplete, seconds: START_COUNTDOWN_SECONDS };
+  return { step, begin, cancel, countdownComplete, seconds };
 }

@@ -12,6 +12,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Execution from './Execution';
 import { SessionProvider } from '../hooks/useSession';
+import { COUNTDOWN_STORAGE_KEY } from '../lib/countdownPref';
 import type { ExecutionStatus } from '../api/status';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -44,6 +45,9 @@ const mutable: {
   triggerStatus: number;
   triggerBody: Record<string, unknown>;
   hangDeploy: boolean;
+  /** When true the deploy POST stays pending until the test calls releaseDeploy. */
+  gateDeploy: boolean;
+  releaseDeploy: (() => void) | null;
   deployCalls: number;
   triggerCalls: number;
 } = {
@@ -53,6 +57,8 @@ const mutable: {
   triggerStatus: 200,
   triggerBody: { message: 'run triggered' },
   hangDeploy: false,
+  gateDeploy: false,
+  releaseDeploy: null,
   deployCalls: 0,
   triggerCalls: 0,
 };
@@ -99,6 +105,18 @@ async function renderStartPage() {
         if (mutable.hangDeploy) {
           // A never-landing deploy: the deploying wait must be escapable.
           return new Promise<Response>(() => {});
+        }
+        if (mutable.gateDeploy) {
+          // A test-gated deploy: pending until the test releases it, so the
+          // mid-deploy state is observable (phase 96's 0-skip test).
+          return new Promise<Response>(resolve => {
+            mutable.releaseDeploy = () => {
+              if (mutable.deployStatus === 200) {
+                mutable.phase = 'deployed';
+              }
+              resolve(json(mutable.deployBody, mutable.deployStatus));
+            };
+          });
         }
         if (mutable.deployStatus === 200) {
           // Realistic: a successful deploy flips the execution's phase.
@@ -148,6 +166,7 @@ const groupEl = () => container!.querySelector('[role="group"][aria-label="Lifec
 const countdown = () => container!.querySelector('[data-testid="start-countdown"]');
 const remainingText = () =>
   container!.querySelector('[data-testid="start-countdown-remaining"]')?.textContent ?? '';
+const stepStatus = (step: string) => container!.querySelector(`[data-testid="start-flow-${step}"]`);
 
 const click = async (el: Element) => {
   await act(async () => {
@@ -175,6 +194,10 @@ async function reachCountdown() {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Phase 96: the countdown preference is localStorage-backed and jsdom's
+  // storage persists across tests within a file — reset to absent so every
+  // test starts from the 10s default unless it sets a value itself.
+  localStorage.removeItem(COUNTDOWN_STORAGE_KEY);
   Object.assign(mutable, {
     phase: 'idle',
     deployStatus: 200,
@@ -182,6 +205,8 @@ beforeEach(() => {
     triggerStatus: 200,
     triggerBody: { message: 'run triggered' },
     hangDeploy: false,
+    gateDeploy: false,
+    releaseDeploy: null,
     deployCalls: 0,
     triggerCalls: 0,
   });
@@ -386,5 +411,136 @@ describe('Execution one-click Start (mounted)', () => {
     expect(startBtn().disabled).toBe(false);
     expect(lifecycle('trigger')).toBeNull();
     expect(groupEl().getAttribute('aria-busy')).toBe('false');
+  });
+});
+
+describe('configurable launch countdown (phase 96)', () => {
+  it('begin() reads the preference at click time — a stored 3 counts down from 3', async () => {
+    localStorage.setItem(COUNTDOWN_STORAGE_KEY, '3');
+    await renderStartPage();
+    await advance(500);
+    await click(startBtn());
+    await act(async () => {});
+
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 3s');
+    expect(mutable.deployCalls).toBe(1);
+
+    // The scaled length is honest end to end: 3s → trigger, not 10s.
+    await advance(2_000);
+    expect(mutable.triggerCalls).toBe(0);
+    await advance(1_000);
+    expect(mutable.triggerCalls).toBe(1);
+    expect(countdown()).toBeNull();
+  });
+
+  it('a stored 0 skips the counting step entirely from idle: deploy-wait → trigger', async () => {
+    localStorage.setItem(COUNTDOWN_STORAGE_KEY, '0');
+    mutable.gateDeploy = true;
+    await renderStartPage();
+    await advance(500);
+
+    // A countdown mounting even for one frame would betray a zero-second
+    // countdown UI. The check reads the mutation RECORDS (addedNodes), not
+    // the live DOM — a countdown that mounts and unmounts within the same
+    // act flush is already gone by the time the observer callback runs, but
+    // its insertion is still in the records.
+    let sawCountdown = false;
+    const wasCountdownNode = (n: Node) =>
+      n instanceof Element && (n.matches('[data-testid="start-countdown"]') || n.querySelector('[data-testid="start-countdown"]') !== null);
+    const observer = new MutationObserver(records => {
+      for (const r of records) {
+        if (Array.from(r.addedNodes).some(wasCountdownNode)) {
+          sawCountdown = true;
+        }
+      }
+    });
+    observer.observe(container!, { childList: true, subtree: true });
+
+    await click(startBtn());
+    // The deploy POST is out and gated: the deploying wait is up, and no
+    // countdown renders alongside it.
+    expect(mutable.deployCalls).toBe(1);
+    expect(stepStatus('deploying')).not.toBeNull();
+    expect(countdown()).toBeNull();
+
+    // Release the deploy: the phase flip hands STRAIGHT to the trigger —
+    // deploy-wait → triggering, no counting step between.
+    await act(async () => {
+      mutable.releaseDeploy!();
+    });
+    observer.disconnect();
+
+    expect(sawCountdown).toBe(false);
+    expect(countdown()).toBeNull();
+    expect(mutable.triggerCalls).toBe(1);
+    expect(stopBtn().disabled).toBe(false);
+  });
+
+  it('a stored 0 on an already-deployed execution triggers immediately — no deploy, no countdown', async () => {
+    localStorage.setItem(COUNTDOWN_STORAGE_KEY, '0');
+    mutable.phase = 'deployed';
+    await renderStartPage();
+    await advance(500);
+    await click(startBtn());
+    await act(async () => {});
+
+    expect(mutable.deployCalls).toBe(0);
+    expect(countdown()).toBeNull();
+    expect(mutable.triggerCalls).toBe(1);
+    expect(stopBtn().disabled).toBe(false);
+  });
+
+  it('a preference change mid-session applies to the NEXT begin, not the live countdown', async () => {
+    // First launch at the default: the countdown opens at 10.
+    await reachCountdown();
+    expect(remainingText()).toBe('Load test starts in 10s');
+
+    // The operator walks away (cancel), changes the preference, starts again.
+    await click(container!.querySelector('[data-testid="start-countdown-cancel"]')!);
+    localStorage.setItem(COUNTDOWN_STORAGE_KEY, '5');
+    await click(startBtn());
+    await act(async () => {});
+
+    // Deployed by the first launch's deploy: the retry is a straight
+    // countdown — at the NEW value, read at begin() time.
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 5s');
+    expect(mutable.deployCalls).toBe(1); // no second deploy
+  });
+
+  it('offers the countdown settings beside Start when idle, and during the countdown', async () => {
+    await renderStartPage();
+    await advance(500);
+
+    // Idle: the gear sits in the lifecycle group next to Start; the chip
+    // stays hidden while the preference equals the default.
+    const gearBtn = () => container!.querySelector('[data-testid="countdown-settings-button"]')!;
+    expect(gearBtn().getAttribute('aria-label')).toBe('Countdown settings');
+    expect(groupEl().contains(gearBtn())).toBe(true);
+    expect(container!.querySelector('[data-testid="countdown-chip"]')).toBeNull();
+
+    // The popover opens right from the hub and closes on its toggle.
+    await click(gearBtn());
+    expect(container!.querySelector('[data-testid="countdown-settings-popover"]')).not.toBeNull();
+    await click(gearBtn());
+    expect(container!.querySelector('[data-testid="countdown-settings-popover"]')).toBeNull();
+
+    // A non-default value (written by the popover elsewhere in this tab,
+    // or another tab) echoes as the chip beside Start.
+    await act(async () => {
+      localStorage.setItem(COUNTDOWN_STORAGE_KEY, '5');
+      window.dispatchEvent(new StorageEvent('storage', { key: COUNTDOWN_STORAGE_KEY, newValue: '5' }));
+    });
+    expect(container!.querySelector('[data-testid="countdown-chip"]')?.textContent).toBe('5s');
+
+    // During the countdown the gear stays mounted next to it (a retune
+    // applies to the next launch); the chip is Start's companion and
+    // waits with it.
+    await click(startBtn());
+    await act(async () => {});
+    expect(countdown()).not.toBeNull();
+    expect(container!.querySelector('[data-testid="countdown-settings-button"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="countdown-chip"]')).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScenarioRunPanel, { defaultEngine, latestLoadExecution } from './ScenarioRunPanel';
 import { SessionProvider } from '../hooks/useSession';
+import { COUNTDOWN_STORAGE_KEY } from '../lib/countdownPref';
 import type { ExecutionSummary } from '../api/generated';
 import { buildModeTest } from '../lib/modeConfig';
 
@@ -280,6 +281,9 @@ const byId = <T extends HTMLElement>(id: string) => container!.querySelector(`[d
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Phase 96: the countdown preference persists across tests within this
+  // file's jsdom storage — reset to absent (the 10s default) each time.
+  localStorage.removeItem(COUNTDOWN_STORAGE_KEY);
   Object.assign(mutable, {
     phase: 'idle',
     config: configFixture,
@@ -806,5 +810,52 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
 
     expect(byId('run-create-start')).toBeNull();
     expect(byId('run-no-create-permission')?.textContent).toContain('cannot create executions');
+  });
+});
+
+describe('ScenarioRunPanel — countdown preference affordances (phase 96)', () => {
+  /** The other-tab write, simulated: the value lands in localStorage and
+   *  the native storage event carries it to the mounted consumers. */
+  const otherTabWrites = async (value: string) => {
+    await act(async () => {
+      localStorage.setItem(COUNTDOWN_STORAGE_KEY, value);
+      window.dispatchEvent(new StorageEvent('storage', { key: COUNTDOWN_STORAGE_KEY, newValue: value }));
+    });
+  };
+
+  it('shows the settings gear beside Start when idle; the chip only when ≠ default', async () => {
+    await renderPanel();
+
+    expect(byId('run-start')).not.toBeNull();
+    const gear = byId('countdown-settings-button');
+    expect(gear.getAttribute('aria-label')).toBe('Countdown settings');
+    // The gear sits inside the run-controls group, Start's row.
+    expect(container!.querySelector('[data-testid="run-controls"]')!.contains(gear)).toBe(true);
+    // Default value: no chip — a control that always shows says nothing.
+    expect(byId('countdown-chip')).toBeNull();
+
+    await otherTabWrites('5');
+    expect(byId('countdown-chip')?.textContent).toBe('5s');
+  });
+
+  it('keeps the settings gear beside the countdown while it ticks', async () => {
+    mutable.phase = 'deployed';
+    await renderPanel();
+    await click(byId('run-start'));
+
+    expect(countdown()).not.toBeNull();
+    expect(remainingText()).toBe('Load test starts in 10s');
+    expect(byId('countdown-settings-button')).not.toBeNull();
+  });
+
+  it('rides the create surface too: gear + chip beside Create and start (empty state)', async () => {
+    await renderPanel({ executions: [] });
+
+    expect(byId('run-create-start')).not.toBeNull();
+    expect(byId('countdown-settings-button')).not.toBeNull();
+    expect(byId('countdown-chip')).toBeNull();
+
+    await otherTabWrites('3');
+    expect(byId('countdown-chip')?.textContent).toBe('3s');
   });
 });
