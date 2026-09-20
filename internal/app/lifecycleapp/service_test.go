@@ -15,6 +15,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
 	"github.com/heridotlife/honryu/internal/domain/compile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/run"
@@ -1502,5 +1503,131 @@ func TestRunExecutionID(t *testing.T) {
 	}
 	if _, err := svc.RunExecutionID(ctx, 9999); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatalf("unknown run error = %v, want ErrNotFound", err)
+	}
+}
+
+// A staircase entry's deploy (phase 98): each pod's compiled config carries
+// the whole step table as sequential execution blocks -- every pod every
+// step, Split-share of each step's rate and users, ramp-up 0, the
+// per-step hold -- plus bzt's modules.local.sequential flag that chains
+// them one at a time. The pods together reproduce the table exactly.
+func TestDeploy_StaircaseCompilesSequentialStepBlocks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := fake.NewStore()
+	obj := fake.NewObjectStore()
+
+	p, _ := project.New("web", "honryu", "")
+	projectID, _ := store.CreateProject(ctx, p)
+	coll, _ := execution.New("stairs", projectID)
+	executionID, _ := store.CreateExecution(ctx, coll)
+
+	pl, _ := scenario.NewNative("scenario", projectID, taurus.ExecutorJMeter)
+	scenarioID, _ := store.CreateScenario(ctx, pl)
+	if err := store.AddScenarioFile(ctx, scenarioID, "test.jmx", true); err != nil {
+		t.Fatalf("add test file: %v", err)
+	}
+	if err := obj.Upload(ctx, fmt.Sprintf("scenario/%d/test.jmx", scenarioID), strings.NewReader("<jmx/>")); err != nil {
+		t.Fatalf("upload test file: %v", err)
+	}
+	// A resolved staircase entry as StoreConfig persists it: ceiling 20
+	// rps, 30 VUs (Little's Law at the ceiling), 2 engine pods, 4 steps,
+	// 120s per step.
+	stairEntry := loadprofile.Entry{
+		Name: "stairs", ScenarioID: scenarioID, Concurrency: 30, Rampup: 0,
+		Engines: 2, Throughput: 20, Duration: 120, Mode: "staircase", Steps: 4,
+	}
+	if err := store.StoreLoadProfile(ctx, executionID, false, []loadprofile.Entry{stairEntry}); err != nil {
+		t.Fatalf("store profile: %v", err)
+	}
+
+	svc := lifecycleapp.NewService(store, fake.NewScheduler(), obj, lifecycleapp.StaticImage(image))
+	if err := svc.Deploy(ctx, executionID); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := svc.Trigger(ctx, executionID); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	runID, _, _ := store.CurrentRun(ctx, executionID)
+
+	// The step table the shards must reproduce in aggregate:
+	// rates 5/10/15/20, users 8/15/23/30.
+	table := loadmode.StaircaseSteps(30, 20, 4)
+
+	type podBlock struct {
+		conc, tput int
+		rampup     taurus.Duration
+		hold       taurus.Duration
+	}
+	var shard0 []podBlock
+	for shardIdx := 0; shardIdx < 2; shardIdx++ {
+		raw, err := obj.Download(ctx, lifecycleapp.RunShardKey(runID, scenarioID, shardIdx, "yml"))
+		if err != nil {
+			t.Fatalf("shard %d config: %v", shardIdx, err)
+		}
+		var cfg taurus.Config
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			t.Fatalf("shard %d: unmarshal: %v", shardIdx, err)
+		}
+		if len(cfg.Execution) != 4 {
+			t.Fatalf("shard %d has %d executions, want the 4 step blocks", shardIdx, len(cfg.Execution))
+		}
+		// The sequencing flag, in bzt's own grammar.
+		if mod, ok := cfg.Modules["local"]; !ok || mod.Sequential == nil || !*mod.Sequential {
+			t.Fatalf("shard %d modules.local = %+v, want sequential: true", shardIdx, cfg.Modules["local"])
+		}
+		blocks := make([]podBlock, 0, 4)
+		for _, ex := range cfg.Execution {
+			blocks = append(blocks, podBlock{ex.Concurrency, ex.Throughput, ex.RampUp, ex.HoldFor})
+		}
+		// Ramp-up 0 and the per-step hold everywhere.
+		for i, b := range blocks {
+			if b.rampup != 0 {
+				t.Errorf("shard %d step %d ramp-up = %v, want 0 (step edges are the shape)", shardIdx, i, b.rampup)
+			}
+			if time.Duration(b.hold) != 120*time.Second {
+				t.Errorf("shard %d step %d hold = %v, want 120s", shardIdx, i, b.hold)
+			}
+		}
+		// Keep shard 0's rates for the cross-pod sum below.
+		if shardIdx == 0 {
+			shard0 = blocks
+		} else {
+			for stepIdx, row := range table {
+				if gotConc := blocks[stepIdx].conc + shard0[stepIdx].conc; gotConc != row.Concurrency {
+					t.Errorf("step %d aggregate concurrency = %d, want %d", stepIdx, gotConc, row.Concurrency)
+				}
+				if gotTput := blocks[stepIdx].tput + shard0[stepIdx].tput; gotTput != row.Throughput {
+					t.Errorf("step %d aggregate rate = %d, want %d", stepIdx, gotTput, row.Throughput)
+				}
+			}
+		}
+	}
+}
+
+// An ordinary entry's compiled shard config is untouched by the staircase
+// machinery: one execution, no modules -- the golden byte-identity of
+// every pre-phase-98 deploy.
+func TestDeploy_OrdinaryEntryGainsNoSequentialFlag(t *testing.T) {
+	t.Parallel()
+	e := setup(t, false, 2)
+	ctx := context.Background()
+	if err := e.svc.Deploy(ctx, e.executionID); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := e.svc.Trigger(ctx, e.executionID); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	runID, _, _ := e.store.CurrentRun(ctx, e.executionID)
+	raw, err := e.obj.Download(ctx, lifecycleapp.RunShardKey(runID, e.planIDs[0], 0, "yml"))
+	if err != nil {
+		t.Fatalf("shard config: %v", err)
+	}
+	var cfg taurus.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(cfg.Execution) != 1 || len(cfg.Modules) != 0 {
+		t.Fatalf("ordinary shard config = %d executions / modules %v, want 1 / none", len(cfg.Execution), cfg.Modules)
 	}
 }

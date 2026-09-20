@@ -5,16 +5,17 @@
 // resolver; these helpers only shape what the operator stated and explain
 // what came back.
 
-/** The three simplified modes, mirroring internal/domain/loadmode. */
-export type LoadMode = 'burst' | 'ramp' | 'soak';
+/** The four simplified modes, mirroring internal/domain/loadmode. */
+export type LoadMode = 'burst' | 'ramp' | 'soak' | 'staircase';
 
-export const LOAD_MODES: LoadMode[] = ['burst', 'ramp', 'soak'];
+export const LOAD_MODES: LoadMode[] = ['burst', 'ramp', 'soak', 'staircase'];
 
 /** Each mode's one-line statement of what it is for (select helper copy). */
 export const MODE_PURPOSE: Record<LoadMode, string> = {
   burst: 'full rate from the first second — cold start is the subject',
   ramp: 'rise over a fifth of the window (60–600s) and observe',
   soak: 'a steady rate for a long window — leak and degradation hunting',
+  staircase: 'rise in plateaus to the ceiling — find-the-ceiling capacity probe',
 };
 
 /** Duration units the form offers; seconds is the wire's currency. */
@@ -28,6 +29,10 @@ export interface ModeFormValue {
   /** The number in the duration box, in unit. */
   duration: number;
   unit: DurationUnit;
+  /** Staircase only (phase 98): the step count, 2–10. Ignored by the
+   * other modes (never emitted on their wire entries); the server
+   * defaults an unstated 0 to 5, but the form always states one. */
+  steps: number;
 }
 
 export const initialModeForm: ModeFormValue = {
@@ -35,6 +40,7 @@ export const initialModeForm: ModeFormValue = {
   qps: 100,
   duration: 10,
   unit: 'm',
+  steps: 5,
 };
 
 /** The form's duration in seconds (the wire's unit). */
@@ -54,13 +60,15 @@ export function secondsToModeForm(seconds: number): Pick<ModeFormValue, 'duratio
 
 /**
  * Client-side validation mirroring the server's input rules (qps > 0,
- * duration > 0); the resolved fields' rules (engines, concurrency) are the
+ * duration > 0; staircase: steps 2–10 and a per-step hold of at least
+ * 60s); the resolved fields' rules (engines, concurrency) are the
  * server's to enforce, never guessed here. Collects all offenders for
  * inline display.
  */
 export interface ModeFormErrors {
   qps?: string;
   duration?: string;
+  steps?: string;
 }
 
 export function validateModeForm(v: ModeFormValue): ModeFormErrors {
@@ -70,6 +78,17 @@ export function validateModeForm(v: ModeFormValue): ModeFormErrors {
   }
   if (!(v.duration > 0)) {
     e.duration = 'duration must be positive';
+  }
+  if (v.mode === 'staircase') {
+    // The server's own bounds (loadmode 2–10); the duration is the
+    // PER-STEP hold, so the 60s floor reads as minutes here: a 5×60s
+    // staircase is the honest minimum shape.
+    if (!Number.isInteger(v.steps) || v.steps < 2 || v.steps > 10) {
+      e.steps = 'steps must be between 2 and 10';
+    }
+    if (v.duration > 0 && durationSeconds(v) < 60) {
+      e.duration = 'each step needs a hold of at least 1m';
+    }
   }
   return e;
 }
@@ -97,7 +116,10 @@ export function soakTooShortWarning(v: ModeFormValue): string | null {
  * The tests[] entry a Simple submit PUTs: mode + the target rate + the
  * duration, nothing else -- concurrency/engines/ramp-up are the server's
  * to derive. The shape is StageTestJSON so the existing config plumbing
- * carries it; mode sits last, matching Go's marshal order.
+ * carries it; mode sits last, matching Go's marshal order, and staircase
+ * appends its step count after that (the same last-position contract).
+ * Non-staircase entries never carry steps: the server refuses the field
+ * anywhere else.
  */
 export function buildModeTest(
   name: string,
@@ -112,8 +134,19 @@ export function buildModeTest(
   throughput: number;
   duration: number;
   mode: LoadMode;
+  steps?: number;
 } {
-  return {
+  const t: {
+    name: string;
+    scenario_id: number;
+    concurrency: number;
+    rampup: number;
+    engines: number;
+    throughput: number;
+    duration: number;
+    mode: LoadMode;
+    steps?: number;
+  } = {
     name,
     scenario_id: scenarioId,
     concurrency: 0,
@@ -123,6 +156,10 @@ export function buildModeTest(
     duration: durationSeconds(v),
     mode: v.mode,
   };
+  if (v.mode === 'staircase') {
+    t.steps = v.steps;
+  }
+  return t;
 }
 
 // --- Multi-scenario Simple rows (phase 91) -------------------------------
@@ -227,13 +264,16 @@ export interface ModeEntryView {
   concurrency: number;
   engines: number;
   rampup: number;
+  /** Staircase entries only (phase 98): the step count. */
+  steps?: number;
 }
 
 /** The mode chip's compact statement: "burst · 500 rps · 10m". */
 export function modeChipLabel(t: ModeEntryView): string {
   const mode = t.mode ?? '';
   const rate = t.throughput != null ? `${t.throughput} rps` : 'unlimited';
-  return `${mode} · ${rate} · ${formatModeDuration(t.duration)}`;
+  const shape = mode === 'staircase' && t.steps ? ` · ${t.steps} steps` : '';
+  return `${mode} · ${rate} · ${formatModeDuration(t.duration)}${shape}`;
 }
 
 /**
@@ -262,6 +302,7 @@ export function modeDerivationLines(t: ModeEntryView, perPodQps?: number): strin
     burst: 'cold start is the subject',
     ramp: `ramp policy: duration/5, clamped to 60–600s (${t.duration}s → ${t.rampup}s)`,
     soak: 'soak policy: fixed 60s warmup before the hold',
+    staircase: `staircase policy: ${t.steps ?? 5} steps to the ceiling, step edges are the shape`,
   };
   lines.push(`ramp-up ${t.rampup}s ← ${why[(t.mode ?? '') as LoadMode] ?? 'mode policy'}`);
   return lines;

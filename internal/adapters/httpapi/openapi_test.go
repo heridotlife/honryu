@@ -302,8 +302,22 @@ func TestOpenAPIExecutionConfigMode(t *testing.T) {
 	if mode == nil {
 		t.Fatal("PUT tests[].mode not documented")
 	}
-	if enum, _ := mode["enum"].([]any); len(enum) != 3 {
-		t.Errorf("PUT tests[].mode enum = %v, want [burst ramp soak]", mode["enum"])
+	// Phase 98 grew the enum to four; the pin stays exact so an
+	// undocumented mode cannot ship.
+	if enum, _ := mode["enum"].([]any); len(enum) != 4 {
+		t.Errorf("PUT tests[].mode enum = %v, want [burst ramp soak staircase]", mode["enum"])
+	}
+
+	// tests[].steps: staircase-only, bounded 2..10 (phase 98's pin).
+	steps, _ := itemProps["steps"].(map[string]any)
+	if steps == nil {
+		t.Fatal("PUT tests[].steps not documented")
+	}
+	if min, _ := steps["minimum"].(int); min != 2 {
+		t.Errorf("PUT tests[].steps minimum = %v, want 2", steps["minimum"])
+	}
+	if max, _ := steps["maximum"].(int); max != 10 {
+		t.Errorf("PUT tests[].steps maximum = %v, want 10", steps["maximum"])
 	}
 
 	// The 409 refusal is documented on the PUT.

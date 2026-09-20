@@ -47,7 +47,7 @@ describe('soakTooShortWarning', () => {
 
 describe('buildModeTest', () => {
   it('states only mode, rate, and duration — the resolved fields ride as zeros for the server to overwrite', () => {
-    const t = buildModeTest('checkout', 42, { mode: 'soak', qps: 250, duration: 2, unit: 'h' });
+    const t = buildModeTest('checkout', 42, { mode: 'soak', qps: 250, duration: 2, unit: 'h', steps: 5 });
     expect(t).toEqual({
       name: 'checkout',
       scenario_id: 42,
@@ -118,6 +118,7 @@ const row = (patch: Partial<ModeRowValue> = {}): ModeRowValue => ({
   qps: 100,
   duration: 10,
   unit: 'm',
+  steps: 5,
   name: '',
   ...patch,
 });
@@ -172,5 +173,50 @@ describe('buildModeTests (phase 91)', () => {
     // No cross-row sharing: each entry's numbers come from its own row.
     expect(tests[0].throughput).toBe(500);
     expect(tests[1].throughput).toBe(50);
+  });
+});
+
+// Phase 98: the staircase's wire shape and validation mirror.
+describe('staircase (phase 98)', () => {
+  it('states steps on a staircase wire entry, last key, and never elsewhere', () => {
+    const t = buildModeTest('probe', 42, { mode: 'staircase', qps: 500, duration: 2, unit: 'm', steps: 4 });
+    expect(t.steps).toBe(4);
+    expect(t.duration).toBe(120);
+    // steps is the LAST key: Go's marshal order (after mode).
+    expect(Object.keys(t).pop()).toBe('steps');
+    // A non-staircase entry never carries steps -- the server refuses it.
+    const flat = buildModeTest('blast', 42, { mode: 'burst', qps: 500, duration: 10, unit: 'm', steps: 4 });
+    expect('steps' in flat).toBe(false);
+    expect(Object.keys(flat).pop()).toBe('mode');
+  });
+
+  it('validates the staircase bounds the server enforces', () => {
+    const base = { mode: 'staircase' as const, qps: 100, duration: 10, unit: 'm' as const };
+    expect(validateModeForm({ ...base, steps: 5 })).toEqual({});
+    expect(validateModeForm({ ...base, steps: 2 })).toEqual({});
+    expect(validateModeForm({ ...base, steps: 10 })).toEqual({});
+    expect(validateModeForm({ ...base, steps: 1 })?.steps).toContain('2 and 10');
+    expect(validateModeForm({ ...base, steps: 11 })?.steps).toContain('2 and 10');
+    expect(validateModeForm({ ...base, steps: 3.5 })?.steps).toContain('2 and 10');
+    // The per-step hold floor: under 60s refuses, at/above passes.
+    expect(validateModeForm({ ...base, steps: 5, duration: 0.5, unit: 'm' })?.duration).toContain('step');
+    expect(validateModeForm({ ...base, steps: 5, duration: 1, unit: 'm' })?.duration).toBeUndefined();
+    // Other modes state no steps rule even when the value rides along
+    // (the form keeps one field for all modes; only staircase checks it).
+    expect(validateModeForm({ mode: 'burst', qps: 100, duration: 10, unit: 'm', steps: 99 })).toEqual({});
+  });
+
+  it('labels and explains a staircase entry from what the page can know', () => {
+    expect(
+      modeChipLabel({ mode: 'staircase', throughput: 500, duration: 120, concurrency: 375, engines: 4, rampup: 0, steps: 5 })
+    ).toBe('staircase · 500 rps · 2m · 5 steps');
+    // Flat entries gain no steps suffix.
+    expect(
+      modeChipLabel({ mode: 'burst', throughput: 500, duration: 600, concurrency: 0, engines: 0, rampup: 0 })
+    ).toBe('burst · 500 rps · 10m');
+    const lines = modeDerivationLines({
+      mode: 'staircase', throughput: 500, duration: 120, concurrency: 375, engines: 4, rampup: 0, steps: 5,
+    });
+    expect(lines[2]).toContain('5 steps to the ceiling');
   });
 });

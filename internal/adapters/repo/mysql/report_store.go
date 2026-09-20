@@ -18,7 +18,7 @@ var _ ports.ReportStore = (*Repository)(nil)
 // reportColumns is the summary projection, shared by every read so a column
 // added to one query cannot be forgotten in another.
 const reportColumns = `run_id, execution_id, scenario_id, engine, cluster, correlation_id, outcome, started_at, ended_at,
-	requested_concurrency, requested_throughput, requested_duration_seconds,
+	requested_concurrency, requested_throughput, requested_duration_seconds, requested_steps,
 	achieved_concurrency, achieved_throughput, achieved_duration_seconds,
 	achieved_samples, achieved_failed, error_rate,
 	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results`
@@ -59,6 +59,14 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 			return fmt.Errorf("mysql: encode cluster results: %w", err)
 		}
 	}
+	// A stepped request's plateau table rides as JSON the same way (0076):
+	// NULL for every flat request, the step rows for a staircase.
+	var requestedSteps any
+	if rep.Requested.Steps != nil {
+		if requestedSteps, err = json.Marshal(rep.Requested.Steps); err != nil {
+			return fmt.Errorf("mysql: encode requested steps: %w", err)
+		}
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -66,10 +74,10 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_report (`+reportColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rep.RunID, rep.ExecutionID, rep.ScenarioID, string(rep.Engine), rep.Cluster, rep.CorrelationID, string(rep.Outcome),
 		rep.StartedAt.UTC(), rep.EndedAt.UTC(),
-		rep.Requested.Concurrency, rep.Requested.Throughput, rep.Requested.DurationSeconds,
+		rep.Requested.Concurrency, rep.Requested.Throughput, rep.Requested.DurationSeconds, requestedSteps,
 		rep.Achieved.Concurrency, rep.Achieved.Throughput, rep.Achieved.DurationSeconds,
 		rep.Achieved.Samples, rep.Achieved.Failed, rep.ErrorRate,
 		rep.Attribution.Target, rep.Attribution.Engine, rep.Attribution.Unknown,
@@ -232,11 +240,12 @@ func scanReport(s rowScanner) (report.Report, error) {
 		engine, outcome string
 		latency, labels []byte
 		clusterResults  []byte // JSON array or NULL
+		requestedSteps  []byte // JSON step table or NULL (0076)
 	)
 	if err := s.Scan(
 		&rep.RunID, &rep.ExecutionID, &rep.ScenarioID, &engine, &rep.Cluster, &rep.CorrelationID, &outcome,
 		&rep.StartedAt, &rep.EndedAt,
-		&rep.Requested.Concurrency, &rep.Requested.Throughput, &rep.Requested.DurationSeconds,
+		&rep.Requested.Concurrency, &rep.Requested.Throughput, &rep.Requested.DurationSeconds, &requestedSteps,
 		&rep.Achieved.Concurrency, &rep.Achieved.Throughput, &rep.Achieved.DurationSeconds,
 		&rep.Achieved.Samples, &rep.Achieved.Failed, &rep.ErrorRate,
 		&rep.Attribution.Target, &rep.Attribution.Engine, &rep.Attribution.Unknown,
@@ -254,6 +263,9 @@ func scanReport(s rowScanner) (report.Report, error) {
 	}
 	if err := decodeJSON(clusterResults, &rep.ClusterResults); err != nil {
 		return report.Report{}, fmt.Errorf("mysql: decode cluster results: %w", err)
+	}
+	if err := decodeJSON(requestedSteps, &rep.Requested.Steps); err != nil {
+		return report.Report{}, fmt.Errorf("mysql: decode requested steps: %w", err)
 	}
 	return rep, nil
 }

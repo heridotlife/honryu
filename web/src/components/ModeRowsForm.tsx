@@ -40,7 +40,7 @@ export default function ModeRowsForm({ value, onChange, onValidityChange }: Mode
 
   const setRow = (i: number, patch: Partial<ModeRowValue>) =>
     onChange(value.map((row, j) => (j === i ? { ...row, ...patch } : row)));
-  const addRow = () => onChange([...value, { mode: 'burst', qps: 100, duration: 10, unit: 'm', name: '' }]);
+  const addRow = () => onChange([...value, { mode: 'burst', qps: 100, duration: 10, unit: 'm', steps: 5, name: '' }]);
   const dropRow = (i: number) => onChange(value.filter((_, j) => j !== i));
 
   return (

@@ -92,6 +92,10 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
           mode: modeTests[0].mode as ModeFormValue['mode'],
           qps: modeTests[0].throughput ?? 0,
           ...secondsToForm(modeTests[0].duration),
+          // Phase 98: a stored staircase prefills its step count (a
+          // stored entry always has one; the fallback only guards a
+          // hand-written config).
+          steps: modeTests[0].steps ?? 5,
         });
         // Best-effort enrichment of each entry's derivation note: the
         // profile's per-pod rate. Absent (never calibrated under this key
@@ -144,6 +148,7 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
             mode: modeTests[0].mode as ModeFormValue['mode'],
             qps: modeTests[0].throughput ?? 0,
             ...secondsToForm(modeTests[0].duration),
+            steps: modeTests[0].steps ?? 5,
           });
         }
         setAppliedAt(new Date().toLocaleTimeString());
@@ -178,6 +183,7 @@ export default function ModeConfigCard({ executionId, canUpdate, capacityKey }: 
             mode: modeTests[0].mode as ModeFormValue['mode'],
             qps: modeTests[0].throughput ?? 0,
             ...secondsToForm(modeTests[0].duration),
+            steps: modeTests[0].steps ?? 5,
           });
         }
       })

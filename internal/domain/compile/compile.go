@@ -69,6 +69,13 @@ type Input struct {
 	// passfail module, whose outcome bzt reports through exit code 3 -- the
 	// signal Honryu turns into an execution's verdict.
 	Criteria []string
+	// Sequential demands the config's executions run one at a time (phase
+	// 98): compile emits bzt's modules.local.sequential flag, which the
+	// local provisioner honours by chaining executions finish-then-start.
+	// The staircase deploy path sets it for a shard's step blocks. It is
+	// only honoured when the compiled config ends up with more than one
+	// execution -- a single-execution config gains nothing.
+	Sequential bool
 }
 
 // Taurus compiles the input into a Taurus configuration. The result is
@@ -118,6 +125,18 @@ func Taurus(in Input) (taurus.Config, error) {
 			Module:   "passfail",
 			Criteria: append([]string(nil), in.Criteria...),
 		})
+	}
+
+	// A sequential compile with multiple executions (the staircase step
+	// blocks) carries bzt's own flag for it: without
+	// modules.local.sequential the provisioner would start every
+	// execution at once and the shape would be a wall, not a staircase.
+	if in.Sequential && len(cfg.Execution) > 1 {
+		if cfg.Modules == nil {
+			cfg.Modules = make(map[string]taurus.Module)
+		}
+		sequential := true
+		cfg.Modules["local"] = taurus.Module{Sequential: &sequential}
 	}
 
 	if err := cfg.Validate(); err != nil {

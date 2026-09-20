@@ -318,3 +318,30 @@ describe('mode provenance (phase 90)', () => {
     expect(JSON.stringify(cfg.tests[0])).not.toContain('mode');
   });
 });
+
+// Phase 98: a staircase row's step count survives the rows <-> wire round
+// trip beside its mode, and never leaks onto a non-staircase entry.
+describe('stagesConfig steps round trip (phase 98)', () => {
+  it('carries steps only on staircase rows', () => {
+    const rows: StageRow[] = [
+      { name: 'probe', scenarioId: 7, concurrency: 30, rampup: 0, engines: 2, duration: 120, mode: 'staircase', steps: 4 },
+      { name: 'blast', scenarioId: 8, concurrency: 5, rampup: 10, engines: 1, duration: 60, mode: 'burst', steps: 4 },
+    ];
+    const cfg = stagesToConfig(rows, 't', 1, 2);
+    expect(cfg.tests[0].mode).toBe('staircase');
+    expect(cfg.tests[0].steps).toBe(4);
+    // steps is the last key (Go marshal order), and a non-staircase row
+    // never emits it even if the value rides the row.
+    expect(Object.keys(cfg.tests[0]).pop()).toBe('steps');
+    expect(cfg.tests[1].steps).toBeUndefined();
+    const back = configToStages({
+      ...cfg,
+      tests: [
+        cfg.tests[0],
+        { ...cfg.tests[1], steps: undefined },
+      ],
+    });
+    expect(back[0].mode).toBe('staircase');
+    expect(back[0].steps).toBe(4);
+  });
+});

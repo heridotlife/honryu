@@ -767,3 +767,56 @@ func TestFinalize_StampsEngineActivity(t *testing.T) {
 		t.Fatalf("activity touches after second Finalize = %d, want %d", got, before+1)
 	}
 }
+
+// A staircase entry's requested load (phase 98): the stated ceiling rides
+// as Throughput, the whole window (steps x hold) as DurationSeconds, and
+// the report carries the per-step plateau table -- the rates the run was
+// actually asked to hold, one row per step, concurrency in the same
+// engines-multiplied accounting shape the flat figure uses.
+func TestFinalize_RequestedLoadCarriesStaircaseStepTable(t *testing.T) {
+	t.Parallel()
+	e := setup(t, 2) // one scenario, 2 engine pods
+	ctx := context.Background()
+
+	// A resolved staircase entry: ceiling 20 rps, 30 VUs, 2 pods, 4
+	// steps of 120s.
+	profile := []loadprofile.Entry{{
+		ScenarioID: e.scenarioIDs[0], Concurrency: 30, Rampup: 0,
+		Engines: 2, Duration: 120, Throughput: 20, Mode: "staircase", Steps: 4,
+	}}
+	if err := e.store.StoreLoadProfile(ctx, e.executionID, false, profile); err != nil {
+		t.Fatalf("StoreLoadProfile: %v", err)
+	}
+	if err := e.svc.Finalize(ctx, e.executionID, e.runID); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	rep, err := e.reports.GetReport(ctx, e.runID)
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if rep.Requested.Throughput != 20 {
+		t.Errorf("requested throughput = %v, want the stated ceiling 20", rep.Requested.Throughput)
+	}
+	if rep.Requested.DurationSeconds != 480 {
+		t.Errorf("requested duration = %d, want 480 (4 steps x 120s)", rep.Requested.DurationSeconds)
+	}
+	if rep.Requested.Concurrency != 60 {
+		t.Errorf("requested concurrency = %d, want 60 (2 pods x 30 VUs)", rep.Requested.Concurrency)
+	}
+	// The table: rates 5/10/15/20, users 16/30/46/60 (the accounting
+	// shape: engines x the step's share of 30).
+	want := []report.StepLoad{
+		{Index: 0, Throughput: 5, Concurrency: 16, DurationSeconds: 120},
+		{Index: 1, Throughput: 10, Concurrency: 30, DurationSeconds: 120},
+		{Index: 2, Throughput: 15, Concurrency: 46, DurationSeconds: 120},
+		{Index: 3, Throughput: 20, Concurrency: 60, DurationSeconds: 120},
+	}
+	if len(rep.Requested.Steps) != len(want) {
+		t.Fatalf("step table = %+v, want %+v", rep.Requested.Steps, want)
+	}
+	for i, row := range rep.Requested.Steps {
+		if row != want[i] {
+			t.Errorf("step %d = %+v, want %+v", i, row, want[i])
+		}
+	}
+}

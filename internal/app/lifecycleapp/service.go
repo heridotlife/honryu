@@ -25,6 +25,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/compile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/project"
 	"github.com/heridotlife/honryu/internal/domain/report"
@@ -1255,6 +1256,7 @@ func (s *Service) compileShards(
 	}
 
 	specs := make([]ports.ShardSpec, len(shards))
+	pods := len(shards)
 	for i, sh := range shards {
 		// Only this shard's slice of the load: the pods together add up to the
 		// requested profile.
@@ -1262,13 +1264,45 @@ func (s *Service) compileShards(
 		shardEntry.Concurrency = sh.Concurrency
 		shardEntry.Throughput = sh.Throughput
 
+		// A staircase entry (phase 98) expands to its step table per pod:
+		// EVERY pod carries EVERY step block -- sequential engines chain
+		// their own list, so a pod that skipped a low step would start the
+		// next plateau while its siblings still held the previous one and
+		// the plateaus would blur across pods. Each step's rate and users
+		// are this pod's Split of that step's table row, the same
+		// base+remainder discipline the ceiling numbers took. Floors at 1:
+		// bzt rejects a concurrency of zero outright, and a throughput of
+		// zero means UNLIMITED, which would turn an under-split step into a
+		// blast -- a pod cannot hold a fraction of a request per second, so
+		// the minimum representable rate is the honest floor (with per-step
+		// rates below the pod count the aggregate overshoots the table's
+		// step, bounded by the pod count; the ceiling step is always
+		// exact).
+		tests := []loadprofile.Entry{shardEntry}
+		sequential := false
+		if entry.Steps > 1 {
+			steps := loadmode.StaircaseSteps(entry.Concurrency, entry.Throughput, entry.Steps)
+			tests = make([]loadprofile.Entry, 0, len(steps))
+			for _, st := range steps {
+				step := entry
+				step.Concurrency = max(1, shard.Split(st.Concurrency, pods, i))
+				step.Throughput = max(1, shard.Split(st.Throughput, pods, i))
+				// The step edges are the shape: no ramp inside a step,
+				// whatever the stored entry's ramp-up policy was.
+				step.Rampup = 0
+				tests = append(tests, step)
+			}
+			sequential = true
+		}
+
 		cfg, cErr := compile.Taurus(compile.Input{
-			Execution: exe,
-			Profile:   loadprofile.Profile{Tests: []loadprofile.Entry{shardEntry}},
-			Engine:    engine,
-			Scenarios: map[int64]compile.ScenarioInput{entry.ScenarioID: si},
-			Headers:   headers,
-			Criteria:  criteria,
+			Execution:  exe,
+			Profile:    loadprofile.Profile{Tests: tests},
+			Engine:     engine,
+			Scenarios:  map[int64]compile.ScenarioInput{entry.ScenarioID: si},
+			Headers:    headers,
+			Criteria:   criteria,
+			Sequential: sequential,
 		})
 		if cErr != nil {
 			return nil, nil, cErr

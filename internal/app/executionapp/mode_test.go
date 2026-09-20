@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/heridotlife/honryu/internal/domain/calibration"
 	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
@@ -27,6 +29,9 @@ type stubCapacity struct {
 	profiles    map[capacityprofile.Key]capacityprofile.CapacityProfile
 	fingerprint string
 	asked       []capacityprofile.Key
+	// askedQPS records every rate FanOut was asked about, beside the
+	// keys -- a staircase resolution must ask at the CEILING, not a step.
+	askedQPS []float64
 	// fanOutErr, when set, makes FanOut fail outright -- the transport
 	// branch resolution must propagate verbatim (a failing read is never a
 	// refusal with a remediation).
@@ -35,6 +40,7 @@ type stubCapacity struct {
 
 func (c *stubCapacity) FanOut(_ context.Context, key capacityprofile.Key, targetQPS float64) (capacityprofile.Result, error) {
 	c.asked = append(c.asked, key)
+	c.askedQPS = append(c.askedQPS, targetQPS)
 	if c.fanOutErr != nil {
 		return capacityprofile.Result{}, c.fanOutErr
 	}
@@ -665,5 +671,119 @@ func TestStoreConfig_ModeLatencyChainFallsBack(t *testing.T) {
 	}
 	if got := stored(t, e3); got.Concurrency != 20 {
 		t.Errorf("empty p95 concurrency = %d, want 20 (hint fallback at the floor)", got.Concurrency)
+	}
+}
+
+// --- Phase 98: staircase resolution ---------------------------------------
+
+// modeConfigSteps is modeConfig with a stated step count (the staircase's
+// fourth input; zero means unstated).
+func modeConfigSteps(e *modeTestEnv, mode string, qps, duration, steps int) loadprofile.Profile {
+	p := modeConfig(e, mode, qps, duration)
+	p.Tests[0].Steps = steps
+	return p
+}
+
+// The staircase happy path: one stored entry, resolved at the CEILING --
+// engines from fan-out at the stated rate, concurrency by Little's Law at
+// that same rate, ramp-up 0 (the step edges are the shape), steps riding
+// as the shape's count. An unstated steps defaults to 5.
+func TestStoreConfig_ModeResolutionStaircase(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	exec := execution.Execution{Engine: taurus.ExecutorJMeter}
+	e := newModeEnv(t, exec, 250*time.Millisecond, nil)
+	jobID := seedCalibrationJob(t, e, exec)
+	key := modeTestKey(e.scenarioID, exec)
+	e.capacity.profiles[key] = *freshProfile(10, jobID)
+	seedCalibrationReport(t, e, jobID, 0.5)
+
+	if err := e.svc.StoreConfig(ctx, e.executionID, modeConfigSteps(e, "staircase", 20, 300, 0)); err != nil {
+		t.Fatalf("StoreConfig: %v", err)
+	}
+	// Fan-out at the ceiling: ceil(20/10) = 2 engines; concurrency by
+	// Little's Law at the ceiling rate: ceil(20*0.5*3.0) = 30 VUs; steps
+	// defaulted to 5; ramp-up 0.
+	got := stored(t, e)
+	want := loadprofile.Entry{
+		ScenarioID: e.scenarioID, Concurrency: 30, Rampup: 0,
+		Engines: 2, Throughput: 20, Duration: 300, Mode: "staircase", Steps: 5,
+	}
+	if got != want {
+		t.Fatalf("stored entry = %+v, want %+v", got, want)
+	}
+
+	// The fan-out the resolution asked for was the ceiling, not a step
+	// rate: engines are sized once, for the top plateau.
+	if len(e.capacity.askedQPS) != 1 || e.capacity.askedQPS[0] != 20 {
+		t.Fatalf("fan-out asked at %v, want exactly the ceiling 20", e.capacity.askedQPS)
+	}
+
+	// The step table the deploy path will expand: derived from the stored
+	// ceiling numbers alone.
+	steps := loadmode.StaircaseSteps(got.Concurrency, got.Throughput, got.Steps)
+	wantSteps := []loadmode.StaircaseStep{
+		{Index: 0, Throughput: 4, Concurrency: 6},
+		{Index: 1, Throughput: 8, Concurrency: 12},
+		{Index: 2, Throughput: 12, Concurrency: 18},
+		{Index: 3, Throughput: 16, Concurrency: 24},
+		{Index: 4, Throughput: 20, Concurrency: 30},
+	}
+	if !slices.Equal(steps, wantSteps) {
+		t.Fatalf("step table = %+v, want %+v", steps, wantSteps)
+	}
+}
+
+// A stated steps count rides along; the bounds and the per-step duration
+// floor are enforced where every other entry rule is, at Validate.
+func TestStoreConfig_StaircaseInputRefusals(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	exec := execution.Execution{Engine: taurus.ExecutorJMeter}
+	e := newModeEnv(t, exec, 250*time.Millisecond, freshProfile(100, 0))
+
+	cases := []struct {
+		name                 string
+		qps, duration, steps int
+		want                 error
+	}{
+		{"steps below the minimum", 20, 300, 1, loadprofile.ErrStepsInvalid},
+		{"steps above the maximum", 20, 300, 11, loadprofile.ErrStepsInvalid},
+		{"per-step hold under 60s", 20, 59, 5, loadprofile.ErrStaircaseDuration},
+		{"per-step hold at the floor is legal", 20, 60, 5, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.svc.StoreConfig(ctx, e.executionID, modeConfigSteps(e, "staircase", tc.qps, tc.duration, tc.steps))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("StoreConfig() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("StoreConfig() = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// The 409-class refusal (no capacity profile) is unchanged by the new
+// mode: a staircase needs fan-out exactly like its siblings, and nothing
+// is persisted when it cannot be had.
+func TestStoreConfig_StaircaseRefusalIsTheOrdinaryModeRefusal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newModeEnv(t, execution.Execution{Engine: taurus.ExecutorJMeter}, 250*time.Millisecond, nil)
+	err := e.svc.StoreConfig(ctx, e.executionID, modeConfigSteps(e, "staircase", 20, 300, 4))
+	var refused *executionapp.ModeResolutionError
+	if !errors.As(err, &refused) {
+		t.Fatalf("StoreConfig err = %v, want a ModeResolutionError", err)
+	}
+	if refused.Status != capacityprofile.StatusNoProfile {
+		t.Fatalf("refusal status = %q, want no_profile", refused.Status)
+	}
+	if entries, err := e.store.LoadProfileFor(ctx, e.executionID); err != nil || len(entries) != 0 {
+		t.Fatalf("stored entries after refusal = %v (err %v), want none", entries, err)
 	}
 }

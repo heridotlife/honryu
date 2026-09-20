@@ -190,3 +190,129 @@ func TestSuggestedThresholds(t *testing.T) {
 		}
 	}
 }
+
+// --- Phase 98: staircase (multi-stage) load shapes ------------------------
+
+func TestStaircaseSteps(t *testing.T) {
+	cases := []struct {
+		name      string
+		conc, tp  int
+		steps     int
+		wantRates []int
+		wantConcs []int
+	}{
+		{
+			// The spec's own arithmetic: ceiling 500 rps over 5 steps
+			// rises 100/200/300/400/500; the ceiling concurrency (375,
+			// the phase-90 worked example's Little's-Law count) splits
+			// 75/150/225/300/375 -- the law is linear in the rate.
+			name: "spec worked example: 500 rps ceiling, 5 steps",
+			conc: 375, tp: 500, steps: 5,
+			wantRates: []int{100, 200, 300, 400, 500},
+			wantConcs: []int{75, 150, 225, 300, 375},
+		},
+		{
+			// Rounding, monotone rise, exact ceiling: 21 rps over 4
+			// steps is 5.25/10.5/15.75/21 -> 5/11/16/21 (round-half-away
+			// from zero), and 375 VUs -> 94/188/282/375 (ceil).
+			name: "rounding keeps the rise monotone and the top exact",
+			conc: 375, tp: 21, steps: 4,
+			wantRates: []int{5, 11, 16, 21},
+			wantConcs: []int{94, 188, 282, 375},
+		},
+		{
+			// The minimum shape: two plateaus, half rate then whole.
+			name: "two steps",
+			conc: 30, tp: 20, steps: 2,
+			wantRates: []int{10, 20},
+			wantConcs: []int{15, 30},
+		},
+		{
+			// A ceiling below the step count still gives every step a
+			// rate to hold (floor 1) -- a plateau that generates nothing
+			// is not a plateau.
+			name: "sub-step ceiling floors each rate at 1",
+			conc: 8, tp: 3, steps: 5,
+			wantRates: []int{1, 1, 2, 2, 3},
+			wantConcs: []int{2, 4, 5, 7, 8},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StaircaseSteps(tc.conc, tc.tp, tc.steps)
+			if len(got) != tc.steps {
+				t.Fatalf("StaircaseSteps(%d, %d, %d) returned %d steps, want %d", tc.conc, tc.tp, tc.steps, len(got), tc.steps)
+			}
+			for i, s := range got {
+				if s.Index != i {
+					t.Errorf("step %d Index = %d, want %d", i, s.Index, i)
+				}
+				if s.Throughput != tc.wantRates[i] {
+					t.Errorf("step %d Throughput = %d, want %d", i, s.Throughput, tc.wantRates[i])
+				}
+				if s.Concurrency != tc.wantConcs[i] {
+					t.Errorf("step %d Concurrency = %d, want %d", i, s.Concurrency, tc.wantConcs[i])
+				}
+			}
+			// Shape invariants, whatever the numbers: rates and users
+			// rise monotonically and the last step is exactly the
+			// ceiling -- a staircase that never reaches it, or overshoots
+			// it, is a different shape than the one asked for.
+			for i := 1; i < len(got); i++ {
+				if got[i].Throughput < got[i-1].Throughput || got[i].Concurrency < got[i-1].Concurrency {
+					t.Errorf("step %d falls below step %d: %+v after %+v", i, i-1, got[i], got[i-1])
+				}
+			}
+			if last := got[len(got)-1]; last.Throughput != tc.tp || last.Concurrency != tc.conc {
+				t.Errorf("last step = %+v, want exactly the ceiling %d rps / %d VUs", last, tc.tp, tc.conc)
+			}
+		})
+	}
+
+	// Bounds are the caller's (loadprofile.Validate's) to enforce; the
+	// derivation itself only refuses what it cannot arithmetic.
+	for _, steps := range []int{-1, 0, 1} {
+		if got := StaircaseSteps(30, 20, steps); got != nil {
+			t.Errorf("StaircaseSteps(..., %d) = %+v, want nil (not a staircase)", steps, got)
+		}
+	}
+}
+
+func TestStaircasePolicy(t *testing.T) {
+	// The step edges ARE the shape: no ramp inside a step.
+	if got := RampupSeconds(ModeStaircase, 600); got != 0 {
+		t.Errorf("RampupSeconds(staircase, 600) = %d, want 0", got)
+	}
+	// Widest defaults of the table: the point is finding the breaking
+	// plateau -- alerts should flag breakage, not proximity.
+	want := []threshold.Threshold{
+		{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.01},
+		{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 1000},
+	}
+	got := SuggestedThresholds(ModeStaircase, 500)
+	if len(got) != len(want) {
+		t.Fatalf("SuggestedThresholds(staircase, 500) = %+v, want %+v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// Rate-independent, like burst and ramp.
+	if fmt.Sprint(SuggestedThresholds(ModeStaircase, 10)) != fmt.Sprint(SuggestedThresholds(ModeStaircase, 10000)) {
+		t.Error("staircase contract varies with targetQPS; want rate-independent")
+	}
+}
+
+func TestParseModeStaircase(t *testing.T) {
+	got, err := ParseMode("staircase")
+	if err != nil || got != ModeStaircase {
+		t.Fatalf("ParseMode(staircase) = %q, %v; want staircase, nil", got, err)
+	}
+	if !Valid(ModeStaircase) {
+		t.Error("Valid(staircase) = false, want true")
+	}
+	if _, err := ParseMode("stairs"); !errors.Is(err, ErrModeInvalid) {
+		t.Errorf("ParseMode(stairs) err = %v, want ErrModeInvalid", err)
+	}
+}

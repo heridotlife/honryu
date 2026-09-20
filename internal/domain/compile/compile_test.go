@@ -490,3 +490,44 @@ func TestTaurus_CarriesHeaders(t *testing.T) {
 		}
 	})
 }
+
+// A sequential compile (the staircase deploy path) must carry the bzt
+// flag that makes the engine run its executions one at a time, and must
+// not invent it for an ordinary single-execution config.
+func TestTaurus_SequentialFlag(t *testing.T) {
+	t.Parallel()
+
+	in := portableInput()
+	in.Sequential = true
+	in.Profile.Tests = append(in.Profile.Tests, loadprofile.Entry{
+		ScenarioID: 11, Concurrency: 20, Rampup: 0, Duration: 60, Engines: 1, Throughput: 10,
+	})
+	cfg, err := compile.Taurus(in)
+	if err != nil {
+		t.Fatalf("Taurus: %v", err)
+	}
+	mod, ok := cfg.Modules["local"]
+	if !ok || mod.Sequential == nil || !*mod.Sequential {
+		t.Fatalf("Modules[local] = %+v, want sequential: true", cfg.Modules["local"])
+	}
+	// The flag marshals in bzt's own grammar: modules.local.sequential.
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), "sequential: true") {
+		t.Fatalf("compiled YAML lacks 'sequential: true':\n%s", raw)
+	}
+
+	// Single-execution configs (everything before phase 98) stay bare:
+	// the golden fixtures' byte-identity must not move.
+	single := portableInput()
+	single.Sequential = true
+	cfg, err = compile.Taurus(single)
+	if err != nil {
+		t.Fatalf("Taurus(single): %v", err)
+	}
+	if _, ok := cfg.Modules["local"]; ok {
+		t.Fatalf("single-execution config gained modules: %+v", cfg.Modules)
+	}
+}

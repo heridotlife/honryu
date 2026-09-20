@@ -364,3 +364,98 @@ func TestPutExecutionConfig_ModeRBACUnchanged(t *testing.T) {
 		t.Fatalf("viewer mode config put = %d, want 403 (%s)", rec.Code, rec.Body.String())
 	}
 }
+
+// Phase 98's wire contract: PUT accepts mode=staircase with an optional
+// steps count (defaulted server-side), resolves at the ceiling, and echoes
+// the entry with steps riding as provenance. Input refusals (steps out of
+// bounds, per-step hold under the 60s floor) are 400s; the 409 matrix
+// above covers staircase identically through the mode machinery it shares.
+func TestPutExecutionConfig_StaircaseResolvesAndEchoes(t *testing.T) {
+	t.Parallel()
+	profile := &capacityprofile.CapacityProfile{
+		PerPodQPS: 10, SaturatedBy: calibration.SaturatedByEngine,
+		ScenarioFingerprint: "fp", JobID: 0, // no report chain: the 250ms fallback sizes threads
+	}
+	h, _, execID, scenID := newModeRouter(t, profile)
+	path := "/api/executions/" + execID + "/config"
+
+	// Stated without steps: the default (5) is what persists.
+	body := fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"staircase","throughput":20,"duration":300}]}`, execID, scenID)
+	if rec := putConfigJSON(t, h, path, body); rec.Code != http.StatusOK {
+		t.Fatalf("staircase config put = %d (%s)", rec.Code, rec.Body.String())
+	}
+	cfg := getConfig(t, h, path)
+	tests := configTests(t, cfg)
+	if len(tests) != 1 {
+		t.Fatalf("tests = %d, want 1", len(tests))
+	}
+	got := tests[0]
+	// Engines ceil(20/10)=2 at the CEILING, concurrency ceil(20*0.25*3)=15
+	// floored at the 20-VU minimum, ramp-up 0, steps defaulted to 5.
+	for field, want := range map[string]float64{"engines": 2, "concurrency": 20, "rampup": 0, "throughput": 20, "duration": 300, "steps": 5} {
+		if got[field] != want {
+			t.Errorf("echoed %s = %v, want %v", field, got[field], want)
+		}
+	}
+	if got["mode"] != "staircase" {
+		t.Errorf("echoed mode = %v, want staircase", got["mode"])
+	}
+
+	// A stated steps count rides along verbatim.
+	body = fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"staircase","throughput":20,"duration":300,"steps":3}]}`, execID, scenID)
+	if rec := putConfigJSON(t, h, path, body); rec.Code != http.StatusOK {
+		t.Fatalf("staircase steps put = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if got := configTests(t, getConfig(t, h, path))[0]["steps"]; got != float64(3) {
+		t.Errorf("echoed steps = %v, want 3", got)
+	}
+}
+
+// The staircase's own input refusals are 400s, the same class as every
+// other entry rule -- not 409s, which name an unresolvable capacity
+// profile.
+func TestPutExecutionConfig_StaircaseInputRefusals(t *testing.T) {
+	t.Parallel()
+	profile := &capacityprofile.CapacityProfile{
+		PerPodQPS: 100, SaturatedBy: calibration.SaturatedByEngine, ScenarioFingerprint: "fp",
+	}
+	h, _, execID, scenID := newModeRouter(t, profile)
+	path := "/api/executions/" + execID + "/config"
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"steps below the minimum",
+			fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"staircase","throughput":20,"duration":300,"steps":1}]}`, execID, scenID),
+		},
+		{
+			"steps above the maximum",
+			fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"staircase","throughput":20,"duration":300,"steps":11}]}`, execID, scenID),
+		},
+		{
+			"per-step hold under the 60s floor",
+			fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"staircase","throughput":20,"duration":30}]}`, execID, scenID),
+		},
+		{
+			"steps on a non-staircase entry",
+			fmt.Sprintf(`{"name":"modeexec","project_id":1,"execution_id":%s,"tests":[{"name":"t","scenario_id":%s,"mode":"burst","throughput":20,"duration":300,"steps":5}]}`, execID, scenID),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Sequential on purpose: one execution behind one router, and
+			// the shared stub's fan-out log is not safe for parallel
+			// writers -- the refusal matrix gets its parallelism from
+			// per-case routers instead.
+			rec := putConfigJSON(t, h, path, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("put = %d, want 400 (%s)", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "steps") && !strings.Contains(rec.Body.String(), "duration") {
+				t.Errorf("400 body does not name the offending field: %s", rec.Body.String())
+			}
+		})
+	}
+}

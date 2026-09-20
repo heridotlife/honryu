@@ -662,3 +662,82 @@ func TestPercentiles_UnmarshalRejectsNonNumericKeys(t *testing.T) {
 		t.Errorf("p95 = %v, want 0.2", p[95])
 	}
 }
+
+// A stepped request (phase 98's staircase) is judged against its step
+// table, not the ceiling: most of the window runs below the ceiling BY
+// DESIGN, so a staircase that held every plateau faithfully would
+// otherwise read as engine-short on both the rate and volume readings.
+func TestShortfallReadings_JudgeSteppedRequestsAgainstTheTable(t *testing.T) {
+	t.Parallel()
+
+	// 5 steps, ceiling 20 rps, 60s each: the table implies mean 12 rps
+	// and 3600 samples over 300s.
+	stepped := report.Report{
+		Requested: report.Load{
+			Throughput: 20, DurationSeconds: 300,
+			Steps: []report.StepLoad{
+				{Index: 0, Throughput: 4, Concurrency: 6, DurationSeconds: 60},
+				{Index: 1, Throughput: 8, Concurrency: 12, DurationSeconds: 60},
+				{Index: 2, Throughput: 12, Concurrency: 18, DurationSeconds: 60},
+				{Index: 3, Throughput: 16, Concurrency: 24, DurationSeconds: 60},
+				{Index: 4, Throughput: 20, Concurrency: 30, DurationSeconds: 60},
+			},
+		},
+		Achieved: report.Load{Throughput: 12.2, Samples: 3550, DurationSeconds: 300},
+	}
+	if stepped.ShortOfRequest() {
+		t.Error("a run that held every plateau reads short against the CEILING; want judged against the table's mean (12 rps)")
+	}
+	if stepped.ShortOfVolume() {
+		t.Error("a run that produced the table's implied volume reads short; want judged against 3600 samples")
+	}
+
+	// The same table with a genuinely collapsed run: a third of the
+	// implied volume is short no matter how the request was shaped.
+	collapsed := stepped
+	collapsed.Achieved = report.Load{Throughput: 4, Samples: 1200, DurationSeconds: 300}
+	if !collapsed.ShortOfRequest() {
+		t.Error("a collapsed staircase does not read short on the rate reading")
+	}
+	if !collapsed.ShortOfVolume() {
+		t.Error("a collapsed staircase does not read short on the volume reading")
+	}
+
+	// A flat request is judged exactly as before: the step table is the
+	// only thing that changed the comparison basis.
+	flat := report.Report{
+		Requested: report.Load{Throughput: 20, DurationSeconds: 300},
+		Achieved:  report.Load{Throughput: 12.2, Samples: 3550, DurationSeconds: 300},
+	}
+	if !flat.ShortOfRequest() || !flat.ShortOfVolume() {
+		t.Error("a flat request under its target no longer reads short")
+	}
+}
+
+// The step table marshals on the wire with omitempty: a staircase report
+// carries its plateaus, every report before phase 98 stays byte-shaped as
+// it was.
+func TestLoadStepsWireShape(t *testing.T) {
+	t.Parallel()
+	js, err := json.Marshal(report.Load{Concurrency: 60, Throughput: 20, DurationSeconds: 300})
+	if err != nil {
+		t.Fatalf("marshal flat load: %v", err)
+	}
+	if strings.Contains(string(js), "steps") {
+		t.Fatalf("flat load gained a steps key: %s", js)
+	}
+	withSteps := report.Load{Throughput: 20, DurationSeconds: 300, Steps: []report.StepLoad{
+		{Index: 0, Throughput: 4, Concurrency: 12, DurationSeconds: 60},
+	}}
+	js, err = json.Marshal(withSteps)
+	if err != nil {
+		t.Fatalf("marshal stepped load: %v", err)
+	}
+	var back report.Load
+	if err := json.Unmarshal(js, &back); err != nil {
+		t.Fatalf("unmarshal stepped load: %v", err)
+	}
+	if len(back.Steps) != 1 || back.Steps[0].Throughput != 4 || back.Steps[0].Concurrency != 12 || back.Steps[0].DurationSeconds != 60 {
+		t.Fatalf("step round trip = %+v, want the plateau intact", back.Steps)
+	}
+}

@@ -6,7 +6,7 @@
 // csv_split), which is why throughput is inserted between engines and
 // duration rather than appended.
 
-/** One visual stage row. `throughput`/`csvSplit`/`mode` omitted = their defaults. */
+/** One visual stage row. `throughput`/`csvSplit`/`mode`/`steps` omitted = their defaults. */
 export interface StageRow {
   name: string;
   scenarioId: number;
@@ -18,8 +18,11 @@ export interface StageRow {
   duration: number;
   /** Split a CSV dataset across engines. Omitted/false = off. */
   csvSplit?: boolean;
-  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"). Omitted = advanced. */
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"/"staircase"). Omitted = advanced. */
   mode?: string;
+  /** Phase 98 staircase step count (2–10); only meaningful on a
+   * staircase row -- never emitted anywhere else. */
+  steps?: number;
 }
 
 /** One tests[] entry on the wire (loadprofile.Entry's JSON shape). */
@@ -34,6 +37,8 @@ export interface StageTestJSON {
   csv_split?: boolean;
   /** Phase 90 mode provenance; last field, mirroring Go's marshal order. */
   mode?: string;
+  /** Phase 98 staircase step count; after mode, mirroring Go's marshal order. */
+  steps?: number;
 }
 
 /** The wrapper the flow PUTs to /executions/{id}/config (buildConfig's shape). */
@@ -76,6 +81,9 @@ export function stagesToConfig(
         duration: r.duration,
         ...(r.csvSplit ? { csv_split: true as const } : {}),
         ...(r.mode ? { mode: r.mode } : {}),
+        // A staircase row's step count, after mode (Go's marshal order);
+        // never anywhere else -- the server refuses the field otherwise.
+        ...(r.mode === 'staircase' && r.steps ? { steps: r.steps } : {}),
       };
     }),
   };
@@ -158,7 +166,9 @@ export function configToStages(cfg: StagesConfigJSON): StageRow[] {
     csvSplit: t.csv_split ? true : undefined,
     // Phase 90: mode provenance MUST survive the round trip -- dropping
     // it here would silently launder a mode config into an advanced one
-    // the moment an editor re-serialized it.
+    // the moment an editor re-serialized it. Phase 98: the staircase's
+    // step count rides the same rule.
     mode: t.mode || undefined,
+    steps: t.steps || undefined,
   }));
 }

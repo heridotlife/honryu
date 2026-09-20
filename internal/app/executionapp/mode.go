@@ -239,6 +239,13 @@ func (s *Service) resolveModes(ctx context.Context, coll execution.Execution, en
 			// this too, but not before FanOut had divided by it.
 			return fmt.Errorf("%w: got %d", loadprofile.ErrModeThroughput, e.Throughput)
 		}
+		if mode == loadmode.ModeStaircase && e.Steps == 0 {
+			// The staircase's one optional input: an unstated step count
+			// takes the default HERE, before Validate, so the persisted
+			// entry always carries the count the shape actually resolved
+			// with -- the step table downstream derives from it.
+			e.Steps = loadmode.StaircaseStepsDefault
+		}
 
 		key := modeCapacityKey(coll, e.ScenarioID, s.modes.DefaultEngine)
 		result, err := s.modes.Capacity.FanOut(ctx, key, float64(e.Throughput))

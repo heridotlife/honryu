@@ -64,3 +64,18 @@ for C in api calibrator scheduler sidecar honryu-grafana; do
   [ "$PRESENT" = "True" ] || { echo "VERIFY_FAIL $C"; exit 1; }
 done
 echo "BUILD_PUSH_OK $TAG (verified in registry)"
+
+echo "== local image GC (keep current + previous phase only) =="
+# ct117 disk filled to 95% (2026-09-21) from phase images piling up locally.
+# Everything is verified in the registry above, so old local tags are pure
+# ballast. Keep $TAG and the phase right before it (rollback safety).
+(
+  PREV=$(python3 -c "print('phase%02d' % (int('${TAG#phase}') - 1))")
+  docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -E 'heri\.life/honryu/.*:phase[0-9]+$' \
+    | grep -vE ":($TAG|$PREV)$" \
+    | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  docker builder prune -f >/dev/null 2>&1 || true
+  docker volume prune -f >/dev/null 2>&1 || true
+) || true
+echo "GC_OK (kept $TAG + $PREV)"

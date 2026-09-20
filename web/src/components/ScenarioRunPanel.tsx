@@ -184,7 +184,15 @@ export default function ScenarioRunPanel({
   const prefill = (cfg: ExecutionConfig) => {
     const e = cfg.tests.find(t => t.scenario_id === scenarioId);
     if (e?.mode !== undefined) {
-      setForm({ mode: e.mode as LoadMode, qps: e.throughput ?? 0, ...secondsToModeForm(e.duration) });
+      setForm({
+        mode: e.mode as LoadMode,
+        qps: e.throughput ?? 0,
+        ...secondsToModeForm(e.duration),
+        // Phase 98: a stored staircase prefills its step count (always
+        // present on a stored entry; the fallback only guards a
+        // hand-written config).
+        steps: e.steps ?? 5,
+      });
     } else {
       setForm(null);
     }

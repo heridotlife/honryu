@@ -15,8 +15,10 @@ export interface ConfigTest {
   /** Target QPS; undefined = unlimited (omitted on the wire). */
   throughput?: number;
   csv_split?: boolean;
-  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"); undefined = advanced. */
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"/"staircase"); undefined = advanced. */
   mode?: string;
+  /** Phase 98 staircase step count (2–10); only on staircase entries. */
+  steps?: number;
 }
 
 /** The bare loadprofile.Profile the JSON PUT decodes (GET wraps it in
