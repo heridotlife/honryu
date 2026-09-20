@@ -59,7 +59,16 @@ const configFixture = {
   execution_id: 22,
   tests: [
     { name: 'other', scenario_id: 7, concurrency: 5, rampup: 30, engines: 1, duration: 300 },
-    { name: 'from-baseline', scenario_id: 42, concurrency: 48, rampup: 60, engines: 3, duration: 600, throughput: 200, mode: 'burst' },
+    {
+      name: 'from-baseline',
+      scenario_id: 42,
+      concurrency: 48,
+      rampup: 60,
+      engines: 3,
+      duration: 600,
+      throughput: 200,
+      mode: 'burst',
+    },
   ],
 };
 
@@ -71,6 +80,9 @@ const mutable = {
   deployCalls: 0,
   triggerCalls: 0,
   putConfigStatus: 200,
+  // Phase 97: the scenario's stored threshold set (GET) and the PUT's
+  // adopted answer — the SLO suggestion's zero-thresholds premise.
+  thresholds: [] as Array<{ metric: string; comparison: string; value: number }>,
 };
 
 let container: HTMLDivElement | null = null;
@@ -138,7 +150,16 @@ function stubFetch() {
             project_id: 1,
             execution_id: 99,
             tests: [
-              { name: 'from-baseline', scenario_id: 42, concurrency: 12, rampup: 60, engines: 3, duration: 600, throughput: 100, mode: 'burst' },
+              {
+                name: 'from-baseline',
+                scenario_id: 42,
+                concurrency: 12,
+                rampup: 60,
+                engines: 3,
+                duration: 600,
+                throughput: 100,
+                mode: 'burst',
+              },
             ],
           };
         }
@@ -168,6 +189,19 @@ function stubFetch() {
       if (path === '/api/executions/22/status') {
         return json({ phase: mutable.phase, pool_size: 0, status: [] });
       }
+      if (path === '/api/scenarios/42/thresholds' && method === 'GET') {
+        return json(mutable.thresholds);
+      }
+      if (path === '/api/scenarios/42/thresholds' && method === 'PUT') {
+        // The replace-all route's contract: the stored set (ids assigned)
+        // comes back and becomes the caller's new state.
+        mutable.thresholds = (JSON.parse(body ?? '{}').thresholds ?? []) as Array<{
+          metric: string;
+          comparison: string;
+          value: number;
+        }>;
+        return json(mutable.thresholds.map((t, i) => ({ id: i + 1, ...t })));
+      }
       if (path === '/api/scenarios/42/capacity-profile/fanout') {
         return json({ status: 'ok', engines: 3 });
       }
@@ -185,7 +219,7 @@ function stubFetch() {
         });
       }
       return json({ message: `no stub for ${method} ${url}` }, 500);
-    }),
+    })
   );
 }
 
@@ -214,7 +248,7 @@ async function renderPanel(opts: RenderOpts = {}) {
             onExecutionsChanged={onExecutionsChanged}
           />
         </SessionProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
   });
   await act(async () => {});
@@ -238,7 +272,7 @@ async function rerenderPanel(patch: Partial<RenderOpts> = {}) {
             onExecutionsChanged={onExecutionsChanged}
           />
         </SessionProvider>
-      </MemoryRouter>,
+      </MemoryRouter>
     );
   });
   await act(async () => {});
@@ -292,6 +326,7 @@ beforeEach(() => {
     deployCalls: 0,
     triggerCalls: 0,
     putConfigStatus: 200,
+    thresholds: [],
   });
 });
 
@@ -416,7 +451,7 @@ describe('ScenarioRunPanel — latest execution surfacing', () => {
               onExecutionsChanged={onExecutionsChanged}
             />
           </SessionProvider>
-        </MemoryRouter>,
+        </MemoryRouter>
       );
     });
     await act(async () => {});
@@ -495,7 +530,8 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
       if (method === 'PUT' && url.endsWith('/api/executions/22/config')) {
         return json(
           {
-            message: 'executionapp: mode config refused: capacity profile status "no_profile" for scenario 42 on jmeter (500m CPU / 512Mi memory)',
+            message:
+              'executionapp: mode config refused: capacity profile status "no_profile" for scenario 42 on jmeter (500m CPU / 512Mi memory)',
             details: {
               fanout_status: 'no_profile',
               hint: 'calibrate this scenario first (Runs tab → Calibrate), then re-apply',
@@ -627,7 +663,14 @@ describe('ScenarioRunPanel — always-visible inputs (phase 95)', () => {
 
     // The refetched list names 99 latest — the flow begins on its own…
     const executions99: ExecutionSummary[] = [
-      { id: 99, name: 'from-baseline', project_id: 1, engine: 'gatling', kind: 'load', created_time: '2026-09-19T10:00:00Z' },
+      {
+        id: 99,
+        name: 'from-baseline',
+        project_id: 1,
+        engine: 'gatling',
+        kind: 'load',
+        created_time: '2026-09-19T10:00:00Z',
+      },
     ];
     await rerenderPanel({ executions: executions99 });
 
@@ -758,7 +801,14 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
     // naming the new execution latest — the flow begins on its own.
     expect(onExecutionsChanged).toHaveBeenCalledTimes(1);
     const executions99: ExecutionSummary[] = [
-      { id: 99, name: 'from-baseline', project_id: 1, engine: 'gatling', kind: 'load', created_time: '2026-09-19T10:00:00Z' },
+      {
+        id: 99,
+        name: 'from-baseline',
+        project_id: 1,
+        engine: 'gatling',
+        kind: 'load',
+        created_time: '2026-09-19T10:00:00Z',
+      },
     ];
     await rerenderPanel({ executions: executions99 });
 
@@ -780,9 +830,7 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
     expect(container!.querySelector('[role="alert"]')?.textContent).toContain('no profile');
     // The honest half-state is named: the execution exists, unconfigured;
     // the remediation names this tab's Calibrate (no jump link left).
-    expect(byId('run-calibrate-remediation')?.textContent).toContain(
-      'the run was created but not configured'
-    );
+    expect(byId('run-calibrate-remediation')?.textContent).toContain('the run was created but not configured');
     expect(byId('run-calibrate-remediation')?.textContent).toContain('below the run history');
     expect(byId('run-calibrate-link')).toBeNull();
     // No flow began.
@@ -857,5 +905,124 @@ describe('ScenarioRunPanel — countdown preference affordances (phase 96)', () 
 
     await otherTabWrites('3');
     expect(byId('countdown-chip')?.textContent).toBe('3s');
+  });
+});
+
+describe('ScenarioRunPanel — SLO defaults suggestion (phase 97)', () => {
+  it('renders the burst suggestion with the mode’s rows when the stored set is empty', async () => {
+    await renderPanel();
+
+    const block = byId('run-slo-suggestion');
+    expect(block).not.toBeNull();
+    expect(block.textContent).toContain('No thresholds set');
+    // The rows are the table’s burst contract, wire spelling.
+    const rows = Array.from(block.querySelectorAll('[data-testid="run-slo-row"]')).map(r => r.textContent);
+    expect(rows).toEqual(['error_rate < 0.01', 'http_p95_ms < 500']);
+    expect(byId('run-slo-apply')).not.toBeNull();
+  });
+
+  it('derives the soak throughput floor from the entry’s stated rate', async () => {
+    mutable.config = {
+      name: 'checkout-load-2-load',
+      project_id: 1,
+      execution_id: 22,
+      tests: [
+        { name: 'other', scenario_id: 7, concurrency: 5, rampup: 30, engines: 1, duration: 300 },
+        {
+          name: 'from-baseline',
+          scenario_id: 42,
+          concurrency: 48,
+          rampup: 60,
+          engines: 3,
+          duration: 3600,
+          throughput: 200,
+          mode: 'soak',
+        },
+      ],
+    };
+    await renderPanel();
+
+    const rows = Array.from(byId('run-slo-suggestion').querySelectorAll('[data-testid="run-slo-row"]')).map(
+      r => r.textContent
+    );
+    expect(rows).toEqual(['error_rate < 0.005', 'http_p95_ms < 600', 'throughput_qps > 180']);
+  });
+
+  it('apply PUTs the suggested rows through the thresholds route, then hides the suggestion', async () => {
+    await renderPanel();
+
+    await click(byId('run-slo-apply'));
+
+    const put = calls.find(c => c.method === 'PUT' && c.url.endsWith('/api/scenarios/42/thresholds'));
+    expect(put).toBeDefined();
+    // The payload pin: exactly the burst table rows, the shape
+    // saveThresholds sends — ids are the server's business, not ours.
+    expect(JSON.parse(put!.body as string)).toEqual({
+      thresholds: [
+        { metric: 'error_rate', comparison: 'lt', value: 0.01 },
+        { metric: 'http_p95_ms', comparison: 'lt', value: 500 },
+      ],
+    });
+    // The stored answer (non-empty now) hides the suggestion — applying
+    // twice is not offered; the Editor tab owns edits from here.
+    expect(byId('run-slo-suggestion')).toBeNull();
+    expect(calls.filter(c => c.method === 'PUT' && c.url.endsWith('/api/scenarios/42/thresholds'))).toHaveLength(1);
+  });
+
+  it('non-empty stored thresholds: no suggestion rendered', async () => {
+    mutable.thresholds = [{ metric: 'http_p95_ms', comparison: 'lt', value: 300 }];
+    await renderPanel();
+
+    expect(byId('run-slo-suggestion')).toBeNull();
+    expect(byId('run-slo-apply')).toBeNull();
+  });
+
+  it('advanced entry (no mode) or a failed thresholds read: no suggestion', async () => {
+    // Advanced latest: a mode entry is not in hand.
+    mutable.config = {
+      name: 'checkout-load-2-load',
+      project_id: 1,
+      execution_id: 22,
+      tests: [{ name: 'from-baseline', scenario_id: 42, concurrency: 10, rampup: 30, engines: 2, duration: 300 }],
+    };
+    await renderPanel();
+    expect(byId('run-slo-suggestion')).toBeNull();
+  });
+
+  it('failed thresholds read: the set is unknown, so no suggestion', async () => {
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/scenarios/42/thresholds')) {
+        return json({ message: 'boom' }, 500);
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    expect(byId('run-slo-suggestion')).toBeNull();
+  });
+
+  it('without the scenario:update grant the affordance never mounts', async () => {
+    overrides.push((_method, url) => {
+      if (url.endsWith('/api/me')) {
+        return json({
+          subject: 'demo:erin',
+          name: 'Erin',
+          email: '',
+          global_roles: [],
+          tenants: {},
+          permissions: { execution: ['update'], run: ['create'], scenario: ['read'] },
+          demo: true,
+        });
+      }
+      return undefined;
+    });
+    await renderPanel();
+
+    // The statement and the edit form stay (execution:update held); only
+    // the one-click threshold write is withheld — it costs
+    // scenario:update.
+    expect(byId('run-edit')).not.toBeNull();
+    expect(byId('run-slo-suggestion')).toBeNull();
+    expect(byId('run-slo-apply')).toBeNull();
   });
 });
