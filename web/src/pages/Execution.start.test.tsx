@@ -508,4 +508,39 @@ describe('configurable launch countdown (phase 96)', () => {
     expect(remainingText()).toBe('Load test starts in 5s');
     expect(mutable.deployCalls).toBe(1); // no second deploy
   });
+
+  it('offers the countdown settings beside Start when idle, and during the countdown', async () => {
+    await renderStartPage();
+    await advance(500);
+
+    // Idle: the gear sits in the lifecycle group next to Start; the chip
+    // stays hidden while the preference equals the default.
+    const gearBtn = () => container!.querySelector('[data-testid="countdown-settings-button"]')!;
+    expect(gearBtn().getAttribute('aria-label')).toBe('Countdown settings');
+    expect(groupEl().contains(gearBtn())).toBe(true);
+    expect(container!.querySelector('[data-testid="countdown-chip"]')).toBeNull();
+
+    // The popover opens right from the hub and closes on its toggle.
+    await click(gearBtn());
+    expect(container!.querySelector('[data-testid="countdown-settings-popover"]')).not.toBeNull();
+    await click(gearBtn());
+    expect(container!.querySelector('[data-testid="countdown-settings-popover"]')).toBeNull();
+
+    // A non-default value (written by the popover elsewhere in this tab,
+    // or another tab) echoes as the chip beside Start.
+    await act(async () => {
+      localStorage.setItem(COUNTDOWN_STORAGE_KEY, '5');
+      window.dispatchEvent(new StorageEvent('storage', { key: COUNTDOWN_STORAGE_KEY, newValue: '5' }));
+    });
+    expect(container!.querySelector('[data-testid="countdown-chip"]')?.textContent).toBe('5s');
+
+    // During the countdown the gear stays mounted next to it (a retune
+    // applies to the next launch); the chip is Start's companion and
+    // waits with it.
+    await click(startBtn());
+    await act(async () => {});
+    expect(countdown()).not.toBeNull();
+    expect(container!.querySelector('[data-testid="countdown-settings-button"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="countdown-chip"]')).toBeNull();
+  });
 });
