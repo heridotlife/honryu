@@ -61,29 +61,34 @@ func Plan(e loadprofile.Entry, n int) ([]Shard, error) {
 	}
 
 	shards := make([]Shard, n)
-	baseConc, extraConc := e.Concurrency/n, e.Concurrency%n
-	baseTput, extraTput := e.Throughput/n, e.Throughput%n
-
 	for i := range shards {
-		s := Shard{
+		// The remainder goes to the earliest shards (Split's own rule)
+		// rather than being dropped; dropping it would under-shoot the
+		// requested load and make the target look healthier than it is.
+		shards[i] = Shard{
 			Index:           i,
-			Concurrency:     baseConc,
-			Throughput:      baseTput,
+			Concurrency:     Split(e.Concurrency, n, i),
+			Throughput:      Split(e.Throughput, n, i),
 			RampupSeconds:   e.Rampup,
 			DurationSeconds: e.Duration,
 		}
-		// The remainder goes to the earliest shards rather than being dropped;
-		// dropping it would under-shoot the requested load and make the target
-		// look healthier than it is.
-		if i < extraConc {
-			s.Concurrency++
-		}
-		if i < extraTput {
-			s.Throughput++
-		}
-		shards[i] = s
 	}
 	return shards, nil
+}
+
+// Split gives shard index i's share of total across n shards: the base
+// division with the remainder going to the earliest shards -- Plan's own
+// discipline, extracted (phase 98) so a multi-stage entry can split each
+// of its stages across the same pods the plan provisioned. Shares never
+// drop load (they sum to total) and never hand a later shard more than an
+// earlier one.
+func Split(total, n, i int) int {
+	base, extra := total/n, total%n
+	share := base
+	if i < extra {
+		share++
+	}
+	return share
 }
 
 // Total sums a plan's load, for asserting that a set of shards still adds up to

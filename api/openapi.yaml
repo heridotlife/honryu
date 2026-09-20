@@ -640,13 +640,23 @@ components:
         throughput: { type: integer }
         mode:
           type: string
-          enum: [burst, ramp, soak]
+          enum: [burst, ramp, soak, staircase]
           description: >-
             Simplified-mode provenance (phase 90): the entry was stated as a
             mode and resolved server-side before persisting. Absent = an
             advanced entry. The stored row always carries fully-resolved
             concurrency/engines/ramp-up; this field is how the config was
             asked for, never an input the run pipeline reads.
+        steps:
+          type: integer
+          minimum: 2
+          maximum: 10
+          description: >-
+            The staircase step count (phase 98), on a staircase entry only:
+            throughput names the CEILING plateau and the resolution derives
+            step i's rate as ceiling*(i+1)/steps, each held for duration.
+            Unstated defaults to 5; anything but 2-10 (or any value on a
+            non-staircase entry) is refused. Absent = not a staircase.
     ExecutionSummary:
       type: object
       properties:
@@ -1294,10 +1304,30 @@ components:
         concurrency: { type: integer }
         throughput:
           type: number
-          description: Requests per second. Zero means unlimited when requested, nothing measured when achieved.
+          description: >-
+            Requests per second. Zero means unlimited when requested,
+            nothing measured when achieved. For a stepped request this
+            names the CEILING plateau.
         duration_seconds: { type: integer }
+        steps:
+          type: array
+          description: >-
+            A stepped request's plateau table (phase 98 staircase): each
+            step's rate, users, and hold, in rise order. The shortfall
+            readings judge a stepped request against this table, not the
+            ceiling. Absent for every flat request.
+          items: { $ref: '#/components/schemas/StepLoad' }
         samples: { type: integer, format: int64 }
         failed: { type: integer, format: int64 }
+    StepLoad:
+      type: object
+      description: One plateau of a stepped request.
+      required: [index, throughput, concurrency, duration_seconds]
+      properties:
+        index: { type: integer, description: The step's position in the rise, 0-based. }
+        throughput: { type: number, description: The step's target request rate. }
+        concurrency: { type: integer, description: The step's virtual-user count. }
+        duration_seconds: { type: integer, description: The step's hold. }
     Attribution:
       type: object
       description: A run's failures, split by who caused them. All three are always present -- unknown is never folded into target or engine.
@@ -2574,7 +2604,7 @@ paths:
                       csv_split: { type: boolean }
                       mode:
                         type: string
-                        enum: [burst, ramp, soak]
+                        enum: [burst, ramp, soak, staircase]
                         description: >-
                           Stating a mode (phase 90) makes this entry simple:
                           send only mode, throughput (the target req/s), and
@@ -2584,6 +2614,17 @@ paths:
                           (mode policy) before validating and persisting.
                           Values sent in those fields are overwritten.
                           Entries without a mode are stored exactly as sent.
+                          A staircase (phase 98) adds steps (2-10, default
+                          5): throughput is the CEILING plateau, duration
+                          the per-step hold, and the per-step hold floor is
+                          60s.
+                      steps:
+                        type: integer
+                        minimum: 2
+                        maximum: 10
+                        description: >-
+                          The staircase step count, on a staircase entry
+                          only (phase 98); unstated defaults to 5.
             description: |
               The execution configuration directly, using loadprofile.Profile's
               JSON tags. Reaches the same validation as the multipart upload.

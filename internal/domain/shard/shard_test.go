@@ -208,3 +208,40 @@ func TestTotal(t *testing.T) {
 		t.Errorf("Total(nil) = (%d, %d), want (0, 0)", conc, tput)
 	}
 }
+
+// Split is Plan's own share discipline extracted for multi-stage entries
+// (phase 98's staircase): base division with the remainder to the earliest
+// shards, never dropping load and never handing a later shard more than an
+// earlier one.
+func TestSplit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		total, n int
+		want     []int
+	}{
+		{10, 2, []int{5, 5}},
+		{7, 3, []int{3, 2, 2}},
+		{2, 5, []int{1, 1, 0, 0, 0}},
+		{20, 1, []int{20}},
+	}
+	for _, tc := range cases {
+		got := make([]int, tc.n)
+		sum := 0
+		for i := range got {
+			got[i] = shard.Split(tc.total, tc.n, i)
+			sum += got[i]
+			if i > 0 && got[i] > got[i-1] {
+				t.Errorf("Split(%d, %d, %d) = %d rises above its predecessor %d", tc.total, tc.n, i, got[i], got[i-1])
+			}
+		}
+		if sum != tc.total {
+			t.Errorf("Split(%d, %d) summed %d, want %d", tc.total, tc.n, sum, tc.total)
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("Split(%d, %d) = %v, want %v", tc.total, tc.n, got, tc.want)
+				break
+			}
+		}
+	}
+}

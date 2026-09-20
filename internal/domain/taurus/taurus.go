@@ -160,6 +160,12 @@ type Settings struct {
 type Module struct {
 	Class string `yaml:"class,omitempty" json:"class,omitempty"`
 	Path  string `yaml:"path,omitempty" json:"path,omitempty"`
+	// Sequential marks a module-level flag the compiled config relies on
+	// (phase 98): bzt's local provisioner runs a config's executions one
+	// at a time when modules.local.sequential is true -- the mechanism a
+	// staircase's step blocks sequence through. Configs deep-merge in
+	// bzt, so setting it never disturbs the alias's class binding.
+	Sequential *bool `yaml:"sequential,omitempty" json:"sequential,omitempty"`
 }
 
 // Validate checks the invariants bzt would otherwise fail on at runtime, in a

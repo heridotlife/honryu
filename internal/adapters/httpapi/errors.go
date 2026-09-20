@@ -51,6 +51,9 @@ var badRequestErrors = []error{
 	// Phase 90: an unresolvable mode statement is the caller's input -- an
 	// unknown mode name, or a mode without the target rate it is defined by.
 	loadprofile.ErrModeInvalid, loadprofile.ErrModeThroughput,
+	// Phase 98: a malformed staircase statement (steps out of bounds, or
+	// a per-step hold under the 60s floor) is the caller's input too.
+	loadprofile.ErrStepsInvalid, loadprofile.ErrStaircaseDuration,
 	scenarioapp.ErrInvalidFilename, scenarioapp.ErrRequestsInvalid,
 	// An unusable JMeter plan is the caller's file, not a server fault: the
 	// import must say which of the three ways it was unusable.

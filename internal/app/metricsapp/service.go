@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/heridotlife/honryu/internal/domain/execution"
+	"github.com/heridotlife/honryu/internal/domain/loadmode"
 	"github.com/heridotlife/honryu/internal/domain/loadprofile"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/run"
@@ -386,6 +387,24 @@ func requestedLoad(profile []loadprofile.Entry) report.Load {
 	load := report.Load{Concurrency: run.VirtualUsers(loadprofile.Profile{Tests: profile})}
 	for _, e := range profile {
 		load.Throughput += float64(e.Throughput)
+		// A staircase entry's window is its Steps consecutive per-step
+		// holds, and its shape is the plateau table (phase 98): the
+		// ceiling rides as Throughput above, the steps ride as rows --
+		// concurrency in the same engines-multiplied accounting shape
+		// the flat figure uses, since the pods each hold their Split of
+		// every step.
+		if e.Steps > 1 {
+			for _, st := range loadmode.StaircaseSteps(e.Concurrency, e.Throughput, e.Steps) {
+				load.Steps = append(load.Steps, report.StepLoad{
+					Index: st.Index, Throughput: float64(st.Throughput),
+					Concurrency: st.Concurrency * e.Engines, DurationSeconds: e.Duration,
+				})
+			}
+			if d := e.Duration * e.Steps; d > load.DurationSeconds {
+				load.DurationSeconds = d
+			}
+			continue
+		}
 		if e.Duration > load.DurationSeconds {
 			load.DurationSeconds = e.Duration
 		}

@@ -81,9 +81,29 @@ type Load struct {
 	// run that was aborted or died early, and the achieved figure is what the
 	// achieved rate is measured over.
 	DurationSeconds int `json:"duration_seconds,omitempty"`
+	// Steps is a stepped request's plateau table (phase 98's staircase):
+	// Throughput names the CEILING plateau and Steps carries each step's
+	// rate, users, and hold, in rise order. Nil for every flat request.
+	// The shortfall readings judge a stepped request against this table,
+	// not the ceiling -- most of a staircase's window runs below the
+	// ceiling by design.
+	Steps []StepLoad `json:"steps,omitempty"`
 	// Samples and Failed count requests; only meaningful for achieved load.
 	Samples int64 `json:"samples,omitempty"`
 	Failed  int64 `json:"failed,omitempty"`
+}
+
+// StepLoad is one plateau of a stepped request: the rate the step holds,
+// the virtual users holding it, and how long it holds them.
+type StepLoad struct {
+	// Index is the step's position in the rise, 0-based.
+	Index int `json:"index"`
+	// Throughput is the step's target request rate.
+	Throughput float64 `json:"throughput"`
+	// Concurrency is the step's virtual-user count.
+	Concurrency int `json:"concurrency"`
+	// DurationSeconds is the step's hold.
+	DurationSeconds int `json:"duration_seconds"`
 }
 
 // StatusLabel is one HTTP status a label's requests returned, and how often.
@@ -278,11 +298,32 @@ const shortfallTolerance = 0.95
 // and drain, so an engine that kept pace throughout can still land a few points
 // under its request. Callers that must judge whether the engine produced the
 // work the hold asked for -- calibration's search -- use ShortOfVolume instead.
+// meanRequestedRate is the rate a request implies per second of its own
+// window: the flat request's target, or a stepped request's time-weighted
+// mean plateau -- a staircase spends most of its window below the ceiling
+// by design, so the ceiling is not a rate any honest run could average up
+// to. Callers that want the stated peak read Throughput directly.
+func (l Load) meanRequestedRate() float64 {
+	if len(l.Steps) == 0 {
+		return l.Throughput
+	}
+	var samples float64
+	secs := 0
+	for _, s := range l.Steps {
+		samples += s.Throughput * float64(s.DurationSeconds)
+		secs += s.DurationSeconds
+	}
+	if secs <= 0 {
+		return l.Throughput
+	}
+	return samples / float64(secs)
+}
+
 func (r Report) ShortOfRequest() bool {
 	if r.Requested.Throughput <= 0 {
 		return false // unlimited: there is no target rate to fall short of
 	}
-	return r.Achieved.Throughput < r.Requested.Throughput*shortfallTolerance
+	return r.Achieved.Throughput < r.Requested.meanRequestedRate()*shortfallTolerance
 }
 
 // ShortOfVolume reports whether the run produced materially fewer requests than
@@ -308,7 +349,10 @@ func (r Report) ShortOfVolume() bool {
 	if r.Requested.Throughput <= 0 {
 		return false // unlimited: there is no volume to fall short of
 	}
-	return float64(r.Achieved.Samples) < r.Requested.Throughput*float64(r.Requested.DurationSeconds)*shortfallTolerance
+	// A stepped request's implied volume is the mean plateau rate over
+	// its whole (multi-step) window -- exactly the sum of the table's
+	// per-step rate x hold.
+	return float64(r.Achieved.Samples) < r.Requested.meanRequestedRate()*float64(r.Requested.DurationSeconds)*shortfallTolerance
 }
 
 // Validate checks a report can be stored and read back meaningfully.
