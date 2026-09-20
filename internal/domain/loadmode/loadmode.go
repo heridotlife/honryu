@@ -14,6 +14,8 @@ package loadmode
 import (
 	"errors"
 	"math"
+
+	"github.com/heridotlife/honryu/internal/domain/threshold"
 )
 
 // Mode is a simplified execution mode: the operator's statement of intent
@@ -98,6 +100,75 @@ func RampupSeconds(m Mode, durationSeconds int) int {
 		return r
 	default:
 		return 0
+	}
+}
+
+// Suggested-threshold constants. Like the ramp-up policy above, each is
+// a product decision argued in the phase-97 spec and named so a tuning
+// pass can find and reason about every bound in one place.
+const (
+	// burstSuggestedErrorRate is the cold-start error budget: a blast's
+	// purpose is surviving the first second, so ordinary traffic is held
+	// to the plain 1% any load test answer should meet.
+	burstSuggestedErrorRate = 0.01
+	// burstSuggestedP95MS is a burst's latency ceiling: tight, because
+	// queue buildup during the cold start is exactly what the mode hunts.
+	burstSuggestedP95MS = 500
+	// rampSuggestedErrorRate matches burst's budget: rising load should
+	// not buy error allowance.
+	rampSuggestedErrorRate = 0.01
+	// rampSuggestedP95MS is looser than burst's: progressive load
+	// legitimately degrades latency as the rate climbs, and a ceiling as
+	// tight as burst's would fail every honest ramp.
+	rampSuggestedP95MS = 800
+	// soakSuggestedErrorRate is half the others: a long steady hold
+	// amplifies rare failures, and leak hunting assumes a quiet system.
+	soakSuggestedErrorRate = 0.005
+	// soakSuggestedP95MS sits between the two: warmed up, steady, but
+	// hours of sustained pressure forgive more than a cold blast.
+	soakSuggestedP95MS = 600
+	// soakThroughputFloor is the share of its target rate a soak must
+	// actually sustain -- a soak that silently undershoots is measuring
+	// the wrong load. 0.9 leaves honest headroom for scheduling jitter.
+	soakThroughputFloor = 0.9
+)
+
+// SuggestedThresholds returns the mode's default health contract: the
+// threshold rows a run of that mode is naturally judged by, in the
+// criteria evaluator's own grammar so a stored suggestion can actually
+// grade a report. The soak contract adds a throughput floor at
+// soakThroughputFloor × targetQPS; a non-positive targetQPS (an
+// unlimited-rate entry) states no floor -- there is no rate to undershoot.
+// Rows carry only Metric/Comparison/Value: the caller owns scenario
+// binding and persistence. An unknown mode (or the empty advanced marker)
+// has no contract and yields nil -- callers validate the mode before
+// relying on this, the same convention as RampupSeconds.
+func SuggestedThresholds(m Mode, targetQPS float64) []threshold.Threshold {
+	switch m {
+	case ModeBurst:
+		return []threshold.Threshold{
+			{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: burstSuggestedErrorRate},
+			{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: burstSuggestedP95MS},
+		}
+	case ModeRamp:
+		return []threshold.Threshold{
+			{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: rampSuggestedErrorRate},
+			{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: rampSuggestedP95MS},
+		}
+	case ModeSoak:
+		rows := []threshold.Threshold{
+			{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: soakSuggestedErrorRate},
+			{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: soakSuggestedP95MS},
+		}
+		if targetQPS > 0 {
+			rows = append(rows, threshold.Threshold{
+				Metric: threshold.MetricThroughputQPS, Comparison: threshold.ComparisonGT,
+				Value: targetQPS * soakThroughputFloor,
+			})
+		}
+		return rows
+	default:
+		return nil
 	}
 }
 

@@ -2,8 +2,11 @@ package loadmode
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"testing"
+
+	"github.com/heridotlife/honryu/internal/domain/threshold"
 )
 
 func TestParseMode(t *testing.T) {
@@ -93,5 +96,97 @@ func TestConcurrency(t *testing.T) {
 	// A slow target legitimately needs many threads; no ceiling exists.
 	if got := Concurrency(1000, 5.0); got != int(math.Ceil(1000*5.0*ConcurrencyHeadroom)) {
 		t.Errorf("Concurrency(1000, 5.0) = %d, want the unfloored little's-law count", got)
+	}
+}
+
+func TestSuggestedThresholds(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      Mode
+		targetQPS float64
+		want      []threshold.Threshold
+	}{
+		{
+			name: "burst: cold-start ceiling, ordinary error budget",
+			mode: ModeBurst, targetQPS: 20,
+			want: []threshold.Threshold{
+				{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.01},
+				{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 500},
+			},
+		},
+		{
+			name: "ramp: progressive load, looser latency ceiling",
+			mode: ModeRamp, targetQPS: 500,
+			want: []threshold.Threshold{
+				{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.01},
+				{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 800},
+			},
+		},
+		{
+			name: "soak: tighter error budget, throughput floor at 90% of target",
+			mode: ModeSoak, targetQPS: 200,
+			want: []threshold.Threshold{
+				{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.005},
+				{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 600},
+				{Metric: threshold.MetricThroughputQPS, Comparison: threshold.ComparisonGT, Value: 180},
+			},
+		},
+		{
+			name: "soak floor scales with targetQPS",
+			mode: ModeSoak, targetQPS: 100,
+			want: []threshold.Threshold{
+				{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.005},
+				{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 600},
+				{Metric: threshold.MetricThroughputQPS, Comparison: threshold.ComparisonGT, Value: 90},
+			},
+		},
+		{
+			name: "soak without a rate states no throughput floor",
+			mode: ModeSoak, targetQPS: 0,
+			want: []threshold.Threshold{
+				{Metric: threshold.MetricErrorRate, Comparison: threshold.ComparisonLT, Value: 0.005},
+				{Metric: threshold.MetricHTTPP95MS, Comparison: threshold.ComparisonLT, Value: 600},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SuggestedThresholds(tc.mode, tc.targetQPS)
+			if len(got) != len(tc.want) {
+				t.Fatalf("SuggestedThresholds(%q, %g) = %+v, want %+v", tc.mode, tc.targetQPS, got, tc.want)
+			}
+			for i := range got {
+				if got[i].Metric != tc.want[i].Metric || got[i].Comparison != tc.want[i].Comparison || got[i].Value != tc.want[i].Value {
+					t.Errorf("row %d = %+v, want %+v", i, got[i], tc.want[i])
+				}
+				// Every suggested row must be a bound the evaluator's
+				// own grammar accepts: a suggestion that cannot Validate
+				// could never be stored or judge a report.
+				row := got[i]
+				row.ScenarioID = 1
+				if err := row.Validate(); err != nil {
+					t.Errorf("row %d %+v does not Validate: %v", i, got[i], err)
+				}
+			}
+		})
+	}
+
+	// Burst and ramp are rate-independent: the targetQPS argument is the
+	// soak floor's alone.
+	for _, m := range []Mode{ModeBurst, ModeRamp} {
+		a := SuggestedThresholds(m, 10)
+		b := SuggestedThresholds(m, 10000)
+		if fmt.Sprint(a) != fmt.Sprint(b) {
+			t.Errorf("SuggestedThresholds(%q, ...) varies with targetQPS: %+v vs %+v", m, a, b)
+		}
+	}
+
+	// An unknown mode (or the advanced marker) has no contract to suggest;
+	// callers validate the mode before relying on this, as with
+	// RampupSeconds.
+	for _, m := range []Mode{"", "steady"} {
+		if got := SuggestedThresholds(m, 100); got != nil {
+			t.Errorf("SuggestedThresholds(%q, 100) = %+v, want nil", m, got)
+		}
 	}
 }
