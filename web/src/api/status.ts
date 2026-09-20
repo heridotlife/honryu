@@ -74,8 +74,10 @@ export interface LoadProfileEntry {
   engines: number;
   throughput?: number;
   duration: number;
-  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"); absent = advanced. */
+  /** Phase 90 mode provenance ("burst"/"ramp"/"soak"/"staircase"); absent = advanced. */
   mode?: string;
+  /** Phase 98 staircase step count (2–10); only on staircase entries. */
+  steps?: number;
 }
 
 /** A data file the execution references, as a served URL (executionapp.FileRef). */

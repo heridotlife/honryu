@@ -104,12 +104,12 @@ describe('ModeForm (phase 90)', () => {
     expect(warn.textContent).toContain('soak');
   });
 
-  it('offers exactly the three modes', async () => {
+  it('offers exactly the four modes', async () => {
     await render();
     const options = Array.from(container!.querySelectorAll('[data-testid="mode-select"] option')).map(
       o => (o as HTMLOptionElement).value
     );
-    expect(options).toEqual(['burst', 'ramp', 'soak']);
+    expect(options).toEqual(['burst', 'ramp', 'soak', 'staircase']);
   });
 
   it('renders no concurrency/engines/ramp-up inputs — the server resolves those', async () => {
@@ -119,5 +119,58 @@ describe('ModeForm (phase 90)', () => {
     expect(labels).not.toContain('engines');
     expect(labels).not.toContain('rampup');
     expect(container!.textContent).not.toMatch(/little'?s law/i);
+  });
+});
+
+// Phase 98: the staircase's fourth stated input. Steps renders ONLY for
+// staircase, mirrors the server's bounds inline, and the per-step hold
+// floor surfaces on the duration field the same way.
+describe('ModeForm staircase (phase 98)', () => {
+  async function selectMode(m: string) {
+    const select = container!.querySelector('[data-testid="mode-select"]') as HTMLSelectElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(select, m);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await rerender();
+  }
+
+  it('hides the steps input for other modes, shows it with the default for staircase', async () => {
+    await render();
+    expect(container!.querySelector('[data-testid="mode-steps"]')).toBeNull();
+    await selectMode('staircase');
+    const steps = container!.querySelector('[data-testid="mode-steps"]') as HTMLInputElement;
+    expect(steps.value).toBe('5');
+    // The duration helper names the per-step semantics.
+    expect(container!.textContent).toContain('PER-STEP');
+  });
+
+  it('mirrors the server bounds: steps 2–10, per-step hold >= 1m', async () => {
+    await render();
+    await selectMode('staircase');
+    expect(validity.at(-1)).toBe(true);
+    await setNumber('[data-testid="mode-steps"]', '1');
+    expect(container!.querySelector('[data-testid="mode-steps-error"]')?.textContent).toContain('2 and 10');
+    expect(validity.at(-1)).toBe(false);
+    await setNumber('[data-testid="mode-steps"]', '11');
+    expect(container!.querySelector('[data-testid="mode-steps-error"]')).not.toBeNull();
+    await setNumber('[data-testid="mode-steps"]', '4');
+    expect(container!.querySelector('[data-testid="mode-steps-error"]')).toBeNull();
+    // A 30-SECOND step is under the 60s floor (the server's own rule):
+    // in the form's minutes that is a fractional half-minute.
+    await setNumber('[data-testid="mode-duration"]', '0.5');
+    expect(container!.querySelector('[data-testid="mode-duration-error"]')?.textContent).toContain('step');
+    expect(validity.at(-1)).toBe(false);
+    await setNumber('[data-testid="mode-duration"]', '1');
+    expect(validity.at(-1)).toBe(true);
+    const unit = container!.querySelector('[data-testid="mode-duration-unit"]') as HTMLSelectElement;
+    const unitSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      unitSetter.call(unit, 'h');
+      unit.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await rerender();
+    expect(validity.at(-1)).toBe(true);
   });
 });

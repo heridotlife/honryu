@@ -38,6 +38,13 @@ export function suggestedThresholds(mode: LoadMode, targetQps: number): Threshol
       }
       return rows;
     }
+    case 'staircase':
+      // The widest latency ceiling in the table: the point is finding the
+      // breaking plateau -- alerts should flag breakage, not proximity.
+      return [
+        { metric: 'error_rate', comparison: 'lt', value: 0.01 },
+        { metric: 'http_p95_ms', comparison: 'lt', value: 1000 },
+      ];
     default:
       return [];
   }

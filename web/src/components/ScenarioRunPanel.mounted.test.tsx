@@ -496,7 +496,7 @@ describe('ScenarioRunPanel — inline mode/qps/duration edit', () => {
     // eagerly re-resolved fields.
     const edited = body.tests.find((t: { scenario_id: number }) => t.scenario_id === 42);
     expect(JSON.stringify(edited)).toBe(
-      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'ramp', qps: 500, duration: 1, unit: 'h' }))
+      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'ramp', qps: 500, duration: 1, unit: 'h', steps: 5 }))
     );
 
     // The co-execution scenario's entry round-trips untouched.
@@ -794,7 +794,7 @@ describe('ScenarioRunPanel — start flow and empty-state create', () => {
     expect(body.project_id).toBe(1);
     expect(body.execution_id).toBe(99);
     expect(JSON.stringify(body.tests[0])).toBe(
-      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'burst', qps: 100, duration: 10, unit: 'm' }))
+      JSON.stringify(buildModeTest('from-baseline', 42, { mode: 'burst', qps: 100, duration: 10, unit: 'm', steps: 5 }))
     );
 
     // The panel asked the page to refetch; simulate the refetched list

@@ -106,7 +106,28 @@ export default function ModeForm({ value, onChange, onValidityChange, disabled =
             </select>
           </span>
           {errors.duration && <FieldError message={errors.duration} testId="mode-duration-error" />}
+          {value.mode === 'staircase' && (
+            <span className="mt-1 block text-slate-400">the PER-STEP hold — the staircase runs steps × this</span>
+          )}
         </label>
+        {value.mode === 'staircase' && (
+          <label className="text-caption text-slate-600 dark:text-slate-300">
+            Steps
+            <input
+              type="number"
+              min={2}
+              max={10}
+              className={`${inputCls} mt-1 w-full`}
+              aria-label="steps"
+              data-testid="mode-steps"
+              value={Number.isFinite(value.steps) ? value.steps : ''}
+              disabled={disabled}
+              onChange={e => set({ steps: e.target.value === '' ? 0 : Number(e.target.value) })}
+            />
+            {errors.steps && <FieldError message={errors.steps} testId="mode-steps-error" />}
+            <span className="mt-1 block text-slate-400">plateaus rising to the target — 2–10</span>
+          </label>
+        )}
       </div>
       {soakWarning && (
         <p

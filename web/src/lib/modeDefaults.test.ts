@@ -42,3 +42,19 @@ describe('suggestedThresholds — the per-mode table', () => {
     }
   });
 });
+
+// Phase 98: the staircase row, pinned number-for-number against the Go
+// table (loadmode.SuggestedThresholds) -- widest latency ceiling in the
+// table, ordinary error budget, rate-independent like burst and ramp.
+describe('suggestedThresholds staircase (phase 98)', () => {
+  it('offers the widest defaults: error_rate < 1%, p95 < 1000ms', () => {
+    expect(suggestedThresholds('staircase', 500)).toEqual([
+      { metric: 'error_rate', comparison: 'lt', value: 0.01 },
+      { metric: 'http_p95_ms', comparison: 'lt', value: 1000 },
+    ]);
+  });
+
+  it('is rate-independent (no throughput floor for a staircase)', () => {
+    expect(suggestedThresholds('staircase', 10)).toEqual(suggestedThresholds('staircase', 10000));
+  });
+});
