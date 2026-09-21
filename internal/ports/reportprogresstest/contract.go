@@ -275,6 +275,38 @@ func Run(t *testing.T, newProgress NewProgress) {
 		}
 	})
 
+	// Phase 99: a second's latency tally (the soak trend's numerator and
+	// denominator) is merged additively like its concurrency, including
+	// across a batch boundary that splits the second and across shards --
+	// whatever path the rows take, the second's mean must come out the
+	// same as if they had arrived together.
+	t.Run("SecondLatencySurvivesAbsorbAndSnapshot", func(t *testing.T) {
+		p := newProgress(t)
+		if err := p.Absorb(ctx, batch(1, 0, "s1", false, iv(1, 1000, "cart", 10, 0, 4))); err != nil {
+			t.Fatalf("Absorb: %v", err)
+		}
+		if err := p.Absorb(ctx, batch(1, 1, "s1", false, iv(1, 1000, "pay", 6, 0, 3))); err != nil {
+			t.Fatalf("Absorb second shard: %v", err)
+		}
+
+		got := restore(t, p, 1)
+		var sec *report.SecondProgress
+		for i := range got.Seconds {
+			if got.Seconds[i].Second == 1000 {
+				sec = &got.Seconds[i]
+			}
+		}
+		if sec == nil {
+			t.Fatalf("second 1000 missing from snapshot: %+v", got.Seconds)
+		}
+		if sec.LatencySamples != 16 {
+			t.Errorf("latency samples = %d, want 16 across both shards", sec.LatencySamples)
+		}
+		if d := sec.LatencySum - 0.16; d < -1e-9 || d > 1e-9 {
+			t.Errorf("latency sum = %v, want 0.16s (16 samples at 0.01s)", sec.LatencySum)
+		}
+	})
+
 	// The whole point of persisting the working state: what is read back has to
 	// produce the same report as the accumulator that wrote it.
 	t.Run("SnapshotRebuildsTheSameReport", func(t *testing.T) {

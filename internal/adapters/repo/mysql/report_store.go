@@ -21,7 +21,7 @@ const reportColumns = `run_id, execution_id, scenario_id, engine, cluster, corre
 	requested_concurrency, requested_throughput, requested_duration_seconds, requested_steps,
 	achieved_concurrency, achieved_throughput, achieved_duration_seconds,
 	achieved_samples, achieved_failed, error_rate,
-	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results`
+	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results, soak_trend`
 
 // SaveReport stores a run's report. The first report saved for a run is the
 // one that survives -- saving again for the same run is a no-op, not a
@@ -67,6 +67,14 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 			return fmt.Errorf("mysql: encode requested steps: %w", err)
 		}
 	}
+	// The soak trend rides the same way (0077): NULL for every run whose
+	// window was too short to trend, the finding for a long steady one.
+	var soakTrend any
+	if rep.SoakTrend != nil {
+		if soakTrend, err = json.Marshal(rep.SoakTrend); err != nil {
+			return fmt.Errorf("mysql: encode soak trend: %w", err)
+		}
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -74,14 +82,14 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_report (`+reportColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rep.RunID, rep.ExecutionID, rep.ScenarioID, string(rep.Engine), rep.Cluster, rep.CorrelationID, string(rep.Outcome),
 		rep.StartedAt.UTC(), rep.EndedAt.UTC(),
 		rep.Requested.Concurrency, rep.Requested.Throughput, rep.Requested.DurationSeconds, requestedSteps,
 		rep.Achieved.Concurrency, rep.Achieved.Throughput, rep.Achieved.DurationSeconds,
 		rep.Achieved.Samples, rep.Achieved.Failed, rep.ErrorRate,
 		rep.Attribution.Target, rep.Attribution.Engine, rep.Attribution.Unknown,
-		latency, labels, clusterResults,
+		latency, labels, clusterResults, soakTrend,
 	); err != nil {
 		if isDuplicateKey(err) {
 			// Someone else's finalisation already won for this run; nothing to
@@ -241,6 +249,7 @@ func scanReport(s rowScanner) (report.Report, error) {
 		latency, labels []byte
 		clusterResults  []byte // JSON array or NULL
 		requestedSteps  []byte // JSON step table or NULL (0076)
+		soakTrend       []byte // JSON trend or NULL (0077)
 	)
 	if err := s.Scan(
 		&rep.RunID, &rep.ExecutionID, &rep.ScenarioID, &engine, &rep.Cluster, &rep.CorrelationID, &outcome,
@@ -249,7 +258,7 @@ func scanReport(s rowScanner) (report.Report, error) {
 		&rep.Achieved.Concurrency, &rep.Achieved.Throughput, &rep.Achieved.DurationSeconds,
 		&rep.Achieved.Samples, &rep.Achieved.Failed, &rep.ErrorRate,
 		&rep.Attribution.Target, &rep.Attribution.Engine, &rep.Attribution.Unknown,
-		&latency, &labels, &clusterResults,
+		&latency, &labels, &clusterResults, &soakTrend,
 	); err != nil {
 		return report.Report{}, err
 	}
@@ -266,6 +275,9 @@ func scanReport(s rowScanner) (report.Report, error) {
 	}
 	if err := decodeJSON(requestedSteps, &rep.Requested.Steps); err != nil {
 		return report.Report{}, fmt.Errorf("mysql: decode requested steps: %w", err)
+	}
+	if err := decodeJSON(soakTrend, &rep.SoakTrend); err != nil {
+		return report.Report{}, fmt.Errorf("mysql: decode soak trend: %w", err)
 	}
 	return rep, nil
 }

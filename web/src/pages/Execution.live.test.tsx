@@ -83,7 +83,8 @@ async function renderExecution(
   calls: string[] = [],
   infoOver: Record<string, unknown> = {},
   statusOver: Record<string, unknown> = {},
-  initialState: unknown = undefined
+  initialState: unknown = undefined,
+  reports: unknown = [],
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -121,7 +122,7 @@ async function renderExecution(
         return json({ ...statusFixture(phase), ...statusOver });
       }
       if (url.endsWith('/api/executions/5/reports')) {
-        return json([]);
+        return json(reports);
       }
       if (url.includes('/api/scenarios/1/capacity-profile/fanout')) {
         return json({ status: 'no_profile' });
@@ -895,5 +896,50 @@ describe('Execution page mode surfaces (phase 90)', () => {
   it('renders no banner for an arrival without config state', async () => {
     await renderExecution('idle', [], { execution_id: 5, grouped_by: 'label', groups: [] });
     expect(container!.querySelector('[data-testid="config-error-banner"]')).toBeNull();
+  });
+});
+
+// Phase 99's render matrix on the execution page: the Past runs card is the
+// report surface here, and a leak-suspected run's row carries the amber
+// banner under it -- nothing for a flat trend (data, not a finding) or a run
+// without one (every window under two minutes).
+describe('Execution past-runs soak leak banner (phase 99)', () => {
+  const row = (over: Record<string, unknown>) => ({
+    run_id: 9,
+    outcome: 'passed',
+    started_at: '2026-09-05T10:00:00Z',
+    ...over,
+  });
+
+  it('renders the banner under a leak-suspected run only, carrying the figures', async () => {
+    await renderExecution('running', [], undefined, [], {}, {}, undefined, [
+      row({
+        run_id: 21,
+        soak_trend: { first_half_ms: 174.6, second_half_ms: 325.4, slope_ms_per_min: 120.8, leak_suspected: true },
+      }),
+      row({
+        run_id: 22,
+        soak_trend: { first_half_ms: 200.2, second_half_ms: 199.8, slope_ms_per_min: 0, leak_suspected: false },
+      }),
+      row({ run_id: 23 }),
+    ]);
+
+    const banners = container!.querySelectorAll('[data-testid="soak-leak-banner"]');
+    expect(banners.length).toBe(1);
+    expect(banners[0].textContent).toContain('175ms → 325ms');
+    expect(banners[0].textContent).toContain('+121ms/min');
+    expect(banners[0].textContent).toContain('consistent with a resource leak at steady load');
+  });
+
+  it('renders nothing when no run is suspected', async () => {
+    await renderExecution('running', [], undefined, [], {}, {}, undefined, [
+      row({
+        run_id: 22,
+        soak_trend: { first_half_ms: 200.2, second_half_ms: 199.8, slope_ms_per_min: 0, leak_suspected: false },
+      }),
+      row({ run_id: 23 }),
+    ]);
+
+    expect(container!.querySelectorAll('[data-testid="soak-leak-banner"]').length).toBe(0);
   });
 });

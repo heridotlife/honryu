@@ -11,6 +11,7 @@ import type { ErrorSignatureHistory, SignatureGroupBy, TrendPoint } from '../api
 import { sortSignatureGroups } from './ReportsTrend';
 import TaurusEditor from '../components/TaurusEditor';
 import CapacityPanel, { isCalibrationExecution } from '../components/CapacityPanel';
+import SoakTrendBanner from '../components/SoakTrendBanner';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
 import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { stopExecution } from '../api/lifecycle';
@@ -1189,23 +1190,32 @@ export default function Execution() {
             ) : (
               <ul className="divide-y divide-slate-200 dark:divide-slate-700">
                 {reports.map(rep => (
-                  <li key={rep.run_id} className="flex items-center justify-between p-4">
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeBadge(rep.outcome)}`}
+                  <li key={rep.run_id} className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeBadge(rep.outcome)}`}
+                        >
+                          {rep.outcome}
+                        </span>
+                        <span className="text-caption text-slate-500 dark:text-slate-400">
+                          {shortTime(rep.started_at)}
+                        </span>
+                      </div>
+                      <Link
+                        to={`/reports/${rep.run_id}`}
+                        className="rounded text-sm font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
                       >
-                        {rep.outcome}
-                      </span>
-                      <span className="text-caption text-slate-500 dark:text-slate-400">
-                        {shortTime(rep.started_at)}
-                      </span>
+                        Report →
+                      </Link>
                     </div>
-                    <Link
-                      to={`/reports/${rep.run_id}`}
-                      className="rounded text-sm font-medium text-sky-600 hover:underline focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-sky-400"
-                    >
-                      Report →
-                    </Link>
+                    {/* Phase 99: the leak finding rides under its run's row,
+                        inside the li so the two read as one unit. */}
+                    {rep.soak_trend?.leak_suspected && (
+                      <div className="mt-2">
+                        <SoakTrendBanner trend={rep.soak_trend} />
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

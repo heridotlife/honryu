@@ -123,15 +123,19 @@ func lockShard(ctx context.Context, tx *sql.Tx, b ports.ProgressBatch) (int64, e
 
 // mergeProgress adds one batch's worth of accumulation to what is stored.
 func mergeProgress(ctx context.Context, tx *sql.Tx, runID int64, s report.Snapshot) error {
-	// Concurrency is a plain sum, so the database can do it without reading.
+	// Concurrency is a plain sum, so the database can do it without reading;
+	// so is the second's latency tally (phase 99), merged the same way.
 	for _, sec := range s.Seconds {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO report_progress_second (run_id, second, engine_concurrency, label_concurrency)
-			 VALUES (?,?,?,?)
+			`INSERT INTO report_progress_second
+				(run_id, second, engine_concurrency, label_concurrency, latency_sum, latency_samples)
+			 VALUES (?,?,?,?,?,?)
 			 ON DUPLICATE KEY UPDATE
 				engine_concurrency=engine_concurrency+VALUES(engine_concurrency),
-				label_concurrency=label_concurrency+VALUES(label_concurrency)`,
-			runID, sec.Second, sec.Engine, sec.Labels); err != nil {
+				label_concurrency=label_concurrency+VALUES(label_concurrency),
+				latency_sum=latency_sum+VALUES(latency_sum),
+				latency_samples=latency_samples+VALUES(latency_samples)`,
+			runID, sec.Second, sec.Engine, sec.Labels, sec.LatencySum, sec.LatencySamples); err != nil {
 			return fmt.Errorf("mysql: merge second %d: %w", sec.Second, err)
 		}
 	}
@@ -393,8 +397,8 @@ func (r *Repository) Snapshot(ctx context.Context, runID int64) (report.Snapshot
 	}
 
 	seconds, err := r.db.QueryContext(ctx,
-		`SELECT second, engine_concurrency, label_concurrency FROM report_progress_second
-		 WHERE run_id=? ORDER BY second`, runID)
+		`SELECT second, engine_concurrency, label_concurrency, latency_sum, latency_samples
+		 FROM report_progress_second WHERE run_id=? ORDER BY second`, runID)
 	if err != nil {
 		return report.Snapshot{}, err
 	}
@@ -442,7 +446,7 @@ func scanSecondProgress(rows *sql.Rows) ([]report.SecondProgress, error) {
 	var out []report.SecondProgress
 	for rows.Next() {
 		var sec report.SecondProgress
-		if err := rows.Scan(&sec.Second, &sec.Engine, &sec.Labels); err != nil {
+		if err := rows.Scan(&sec.Second, &sec.Engine, &sec.Labels, &sec.LatencySum, &sec.LatencySamples); err != nil {
 			return nil, err
 		}
 		out = append(out, sec)
