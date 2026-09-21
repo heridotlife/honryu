@@ -251,6 +251,45 @@ func Run(t *testing.T, newStore NewStore) {
 			t.Error("SaveReport accepted a report with no run")
 		}
 	})
+
+	// Phase 98's lesson, applied to phase 99's field: a derived value that
+	// is present on the built report but missing from the store's write or
+	// read path reads as "computed then silently dropped". The soak trend
+	// rides SaveReport/GetReport like every other finding, and a run
+	// without one (the common case: every window under two minutes) reads
+	// back without it rather than as an error or a zeroed trend.
+	t.Run("SoakTrendRoundTrips", func(t *testing.T) {
+		s := newStore(t)
+		want := sample(1, 70, time.Unix(2000, 0))
+		want.SoakTrend = &report.SoakTrend{
+			FirstHalfMs: 174.5, SecondHalfMs: 325.5, SlopeMsPerMin: 120.8, LeakSuspected: true,
+		}
+		if err := s.SaveReport(ctx, want); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+		got, err := s.GetReport(ctx, 70)
+		if err != nil {
+			t.Fatalf("GetReport: %v", err)
+		}
+		if got.SoakTrend == nil {
+			t.Fatalf("soak trend did not survive storage: %+v", got)
+		}
+		if *got.SoakTrend != *want.SoakTrend {
+			t.Errorf("soak trend = %+v, want %+v", *got.SoakTrend, *want.SoakTrend)
+		}
+
+		flat := sample(1, 71, time.Unix(2000, 0))
+		if err := s.SaveReport(ctx, flat); err != nil {
+			t.Fatalf("SaveReport(no trend): %v", err)
+		}
+		gotFlat, err := s.GetReport(ctx, 71)
+		if err != nil {
+			t.Fatalf("GetReport(no trend): %v", err)
+		}
+		if gotFlat.SoakTrend != nil {
+			t.Errorf("report without a trend read back with one: %+v", gotFlat.SoakTrend)
+		}
+	})
 }
 
 // sample is a report with enough substance that a store dropping a field is

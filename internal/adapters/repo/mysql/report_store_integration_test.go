@@ -117,6 +117,86 @@ func TestMySQLReportStore_ErrorSignaturesRoundTrip(t *testing.T) {
 	}
 }
 
+// A report row written before 0077 added the column reads back with no
+// soak trend -- the migration's NULL is what those rows carry, and a read
+// must never turn that into an error or a zeroed trend.
+func TestMySQLReportStore_PreSoakTrendRowReadsNone(t *testing.T) {
+	db := dbtest.StartMySQL(t)
+	truncateAll(t, db)
+	store := mysqladapter.NewRepository(db)
+	ctx := context.Background()
+
+	// Insert the way a pre-0077 writer would have: no soak_trend column, so
+	// the row takes the migration's NULL default.
+	if _, err := db.Exec(`INSERT INTO execution_report
+		(run_id, execution_id, scenario_id, engine, outcome, started_at, ended_at)
+		VALUES (91, 1, 10, 'jmeter', 'passed', '2026-01-01 00:00:00', '2026-01-01 00:01:00')`); err != nil {
+		t.Fatalf("insert pre-soak-trend row: %v", err)
+	}
+
+	got, err := store.GetReport(ctx, 91)
+	if err != nil {
+		t.Fatalf("GetReport(pre-soak-trend row): %v", err)
+	}
+	if got.SoakTrend != nil {
+		t.Errorf("soak trend = %+v, want none on a pre-0077 row", got.SoakTrend)
+	}
+	list, err := store.ListReports(ctx, 1, 0)
+	if err != nil {
+		t.Fatalf("ListReports: %v", err)
+	}
+	if len(list) != 1 || list[0].SoakTrend != nil {
+		t.Errorf("ListReports = %+v, want the old row with no trend", list)
+	}
+}
+
+// Phase 98's lesson made a test: every field a report grows must survive
+// SaveReport -> GetReport, because a column the summary projection forgets
+// reads as "derived but dropped". The soak trend rides the same round trip
+// with its verdict and all three figures.
+func TestMySQLReportStore_SoakTrendRoundTrip(t *testing.T) {
+	db := dbtest.StartMySQL(t)
+	truncateAll(t, db)
+	store := mysqladapter.NewRepository(db)
+	ctx := context.Background()
+
+	// A soak-shaped run: 150 seconds rising 0.1s -> 0.4s, built through the
+	// genuine Accumulator so what is stored is what a run would produce.
+	intervals := make([]metrics.Interval, 0, 150)
+	for i := range 150 {
+		lat := 0.1 + 0.3*float64(i)/149
+		intervals = append(intervals, metrics.Interval{
+			Timestamp: 9000 + int64(i), Label: "checkout", Concurrency: 5,
+			Samples: 10, Succeeded: 10, Latency: metrics.Histogram{lat: 10},
+		})
+	}
+	want := report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: 2, RunID: 92,
+		Engine:    taurus.ExecutorJMeter,
+		StartedAt: time.Unix(9000, 0).UTC(), EndedAt: time.Unix(9150, 0).UTC(),
+		Outcome:   taurus.OutcomePassed,
+		Requested: report.Load{Concurrency: 5, Throughput: 10, DurationSeconds: 150},
+		Intervals: intervals,
+	})
+	if want.SoakTrend == nil || !want.SoakTrend.LeakSuspected {
+		t.Fatalf("fixture lost its trend: %+v", want.SoakTrend)
+	}
+	if err := store.SaveReport(ctx, want); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	got, err := store.GetReport(ctx, 92)
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if got.SoakTrend == nil {
+		t.Fatalf("soak trend did not survive storage: %+v", got)
+	}
+	if *got.SoakTrend != *want.SoakTrend {
+		t.Errorf("soak trend = %+v, want %+v", *got.SoakTrend, *want.SoakTrend)
+	}
+}
+
 // A re-saved run keeps its first attempt's signatures rather than replacing
 // them with a second, differing attempt's. A run has one outcome, decided
 // once by whichever finalisation actually persisted first; a later save
