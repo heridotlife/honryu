@@ -73,7 +73,7 @@ echo "== local image GC (keep current + previous phase only) =="
 # Everything is verified in the registry above, so old local tags are pure
 # ballast. Keep $TAG and the phase right before it (rollback safety).
 (
-  PREV=$(python3 -c "print('phase%02d' % (int('${TAG#phase}') - 1))")
+  PREV="phase$((10#${TAG#phase} - 1))"
   docker images --format '{{.Repository}}:{{.Tag}}' \
     | grep -E 'heri\.life/honryu/.*:phase[0-9]+$' \
     | grep -vE ":($TAG|$PREV)$" \
