@@ -35,11 +35,18 @@ type labelState struct {
 	latency metrics.Histogram
 }
 
-// secondState holds the two readings of a second's concurrency that
-// peakConcurrency chooses between.
+// secondState holds the readings a second's concurrency chooses between
+// and, since phase 99, the second's own response-time tally.
 type secondState struct {
 	engine int
 	labels int
+	// latSum is the second's Σ(bucket × count) and latSamples its Σ count:
+	// the numerator and denominator of the second's mean response time, kept
+	// per second so a soak's latency trend can be read after the fact. Fed
+	// from label rows only -- the engine's aggregate row re-counts the
+	// requests beside it (see Add).
+	latSum     float64
+	latSamples int64
 }
 
 // NewAccumulator returns an empty accumulator.
@@ -66,6 +73,22 @@ func (a *Accumulator) Add(iv metrics.Interval) {
 		return
 	}
 	sec.labels += iv.Concurrency
+	if len(iv.Latency) > 0 {
+		// Summed in bucket order, not map order: float addition is not
+		// associative, and a snapshot's bytes must not depend on Go's
+		// randomised map iteration -- the same state has to write down the
+		// same latency sum every time.
+		rts := make([]float64, 0, len(iv.Latency))
+		for rt := range iv.Latency {
+			rts = append(rts, rt)
+		}
+		sort.Float64s(rts)
+		for _, rt := range rts {
+			n := iv.Latency[rt]
+			sec.latSum += rt * float64(n)
+			sec.latSamples += n
+		}
+	}
 
 	st, ok := a.labels[iv.Label]
 	if !ok {
@@ -148,6 +171,7 @@ func (a *Accumulator) Report(m Meta) Report {
 	rep.ErrorRate = rate(rep.Achieved.Failed, rep.Achieved.Samples)
 	rep.Latency = overall.Percentiles(reportedPercentiles...)
 	rep.Errors, rep.Attribution = a.errors()
+	rep.SoakTrend = soakTrend(a.seconds)
 	return rep
 }
 
@@ -276,7 +300,8 @@ type LabelProgress struct {
 	Codes map[string]int64
 }
 
-// SecondProgress is one second's concurrency, as each source reported it.
+// SecondProgress is one second's concurrency, as each source reported it,
+// plus the second's response-time tally (phase 99).
 type SecondProgress struct {
 	Second int64
 	// Engine is the sum of the shards' own aggregate rows for this second;
@@ -284,6 +309,15 @@ type SecondProgress struct {
 	// is meaningful depends on what the engine sent -- see Accumulator.peak.
 	Engine int
 	Labels int
+	// LatencySum and LatencySamples are the second's mean response time's
+	// numerator and denominator: Σ(bucket × count) and Σ count across the
+	// label rows that landed in this second. The soak trend is computed from
+	// them, so they must survive the round trip a restarted run depends on.
+	// A snapshot written before phase 99 decodes with both zero: such a second
+	// carries no mean, and the trend skips it rather than counting it as a
+	// zero-latency one.
+	LatencySum     float64
+	LatencySamples int64
 }
 
 // Snapshot is an accumulator's state in a form a store can write down and read
@@ -308,7 +342,10 @@ func (a *Accumulator) Snapshot() Snapshot {
 	sort.Slice(s.Labels, func(i, j int) bool { return s.Labels[i].Label < s.Labels[j].Label })
 
 	for ts, sec := range a.seconds {
-		s.Seconds = append(s.Seconds, SecondProgress{Second: ts, Engine: sec.engine, Labels: sec.labels})
+		s.Seconds = append(s.Seconds, SecondProgress{
+			Second: ts, Engine: sec.engine, Labels: sec.labels,
+			LatencySum: sec.latSum, LatencySamples: sec.latSamples,
+		})
 	}
 	sort.Slice(s.Seconds, func(i, j int) bool { return s.Seconds[i].Second < s.Seconds[j].Second })
 
@@ -338,7 +375,10 @@ func Restore(s Snapshot) *Accumulator {
 		}
 	}
 	for _, sec := range s.Seconds {
-		a.seconds[sec.Second] = &secondState{engine: sec.Engine, labels: sec.Labels}
+		a.seconds[sec.Second] = &secondState{
+			engine: sec.Engine, labels: sec.Labels,
+			latSum: sec.LatencySum, latSamples: sec.LatencySamples,
+		}
 	}
 	for _, e := range s.Signatures {
 		sig := e

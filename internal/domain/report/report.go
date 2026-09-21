@@ -236,6 +236,14 @@ type Report struct {
 	// (exit codes are per shard, and shard indexes repeat across clusters)
 	// exists to say otherwise.
 	ClusterResults []ClusterResult `json:"cluster_results,omitempty"`
+
+	// SoakTrend is the run's latency trend across its own window (phase
+	// 99): mean response time of each half, the per-second slope, and
+	// whether the two together look like a resource leak at steady load.
+	// nil unless the run held latency-carrying seconds for two minutes or
+	// more; a finding for a reader, never a verdict input (the criteria
+	// grammar has no slope subject).
+	SoakTrend *SoakTrend `json:"soak_trend,omitempty"`
 }
 
 // ClusterResult is one cluster's share of a fan-out run.
