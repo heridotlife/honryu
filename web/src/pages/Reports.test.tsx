@@ -543,6 +543,42 @@ describe('ReportsList compare link (mounted)', () => {
   });
 });
 
+// Phase 99's render matrix: the amber degradation banner appears under a
+// leak-suspected run's row with its own figures, and nowhere else -- a flat
+// trend is data, not a finding, and a run without a trend (every window
+// under two minutes) has nothing to say either way.
+describe('ReportsList soak leak banner (phase 99)', () => {
+  const leakReport: Report = {
+    ...reportFixture,
+    run_id: 21,
+    soak_trend: { first_half_ms: 174.6, second_half_ms: 325.4, slope_ms_per_min: 120.8, leak_suspected: true },
+  };
+  const flatReport: Report = {
+    ...reportFixture,
+    run_id: 22,
+    soak_trend: { first_half_ms: 200.2, second_half_ms: 199.8, slope_ms_per_min: 0, leak_suspected: false },
+  };
+  const shortReport: Report = { ...reportFixture, run_id: 23 };
+
+  it('renders under a leak-suspected run row only, carrying the trend\'s own figures', async () => {
+    await renderReportsList(navPersonas.alice, [leakReport, flatReport, shortReport]);
+    await loadExecution();
+
+    const banners = container!.querySelectorAll('[data-testid="soak-leak-banner"]');
+    expect(banners.length).toBe(1);
+    expect(banners[0].textContent).toContain('175ms → 325ms');
+    expect(banners[0].textContent).toContain('+121ms/min');
+    expect(banners[0].textContent).toContain('consistent with a resource leak at steady load');
+  });
+
+  it('renders nothing when no run is suspected', async () => {
+    await renderReportsList(navPersonas.alice, [flatReport, shortReport]);
+    await loadExecution();
+
+    expect(container!.querySelectorAll('[data-testid="soak-leak-banner"]').length).toBe(0);
+  });
+});
+
 describe('ReportsList empty + loading states (phase 76)', () => {
   it('shows the shared empty state with the one action when the caller has no executions', async () => {
     await renderReportsList(navPersonas.alice, [], []);

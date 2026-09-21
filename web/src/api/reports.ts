@@ -120,6 +120,25 @@ export interface Report {
    * definition snapshot plus observed/satisfied (null = unknown, with a
    * reason). */
   threshold_results?: ThresholdResult[] | null;
+  /** Phase 99: the latency trend a long steady window produced -- each
+   * half's mean response time, the per-second slope, and whether the two
+   * together look like a resource leak at steady load. Absent on runs
+   * whose window held under two minutes of latency-carrying seconds. */
+  soak_trend?: SoakTrend;
+}
+
+/** Phase 99's soak finding: response time behaviour across the run's own
+ * window. A finding for a reader, never a graded verdict. */
+export interface SoakTrend {
+  /** Sample-weighted mean response time of the window's first half, ms. */
+  first_half_ms: number;
+  /** Sample-weighted mean response time of the window's second half, ms. */
+  second_half_ms: number;
+  /** Least-squares slope of the per-second mean response times, ms/min. */
+  slope_ms_per_min: number;
+  /** True when the second half ran materially slower than the first AND
+   * the per-second means rose throughout -- the leak signature. */
+  leak_suspected: boolean;
 }
 
 /** One scenario-threshold result on a run report (phase 72). observed and

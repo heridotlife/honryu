@@ -15,6 +15,7 @@ import OutcomeBadge from '../components/ui/OutcomeBadge';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
 import RecommendationsCard from '../components/RecommendationsCard';
+import SoakTrendBanner from '../components/SoakTrendBanner';
 import ThresholdResultsCard from '../components/ThresholdResultsCard';
 import Sparkline from '../components/Sparkline';
 import ShareRunModal from '../components/ShareRunModal';
@@ -370,6 +371,13 @@ function ReportsList() {
                         {(r.error_rate * 100).toFixed(1)}% errors
                       </div>
                     </Link>
+                    {/* Phase 99: the leak finding rides under its run's row,
+                        inside the li so the two read as one unit. */}
+                    {r.soak_trend?.leak_suspected && (
+                      <div className="px-4 pb-4">
+                        <SoakTrendBanner trend={r.soak_trend} />
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
