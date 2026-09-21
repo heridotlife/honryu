@@ -72,8 +72,8 @@ echo "== local image GC (keep current + previous phase only) =="
 # ct117 disk filled to 95% (2026-09-21) from phase images piling up locally.
 # Everything is verified in the registry above, so old local tags are pure
 # ballast. Keep $TAG and the phase right before it (rollback safety).
+PREV="phase$((10#${TAG#phase} - 1))"
 (
-  PREV="phase$((10#${TAG#phase} - 1))"
   docker images --format '{{.Repository}}:{{.Tag}}' \
     | grep -E 'heri\.life/honryu/.*:phase[0-9]+$' \
     | grep -vE ":($TAG|$PREV)$" \
