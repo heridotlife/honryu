@@ -10,6 +10,7 @@ import Button from '../components/ui/Button';
 import { fetchShared } from '../api/reports';
 import type { Report } from '../api/reports';
 import { ReportWorkspace } from './Reports';
+import PerLabelSoakBanner from '../components/PerLabelSoakBanner';
 
 /**
  * Invalid-link states, deliberately one message for every cause (unknown,
@@ -86,6 +87,12 @@ export default function SharedReport() {
 
   return (
     <div className="space-y-6" data-testid="shared-report">
+      {/* Phase 103: the per-label leak finding, up top where the aggregate
+          finding sits on the reports list. The shared workspace below is the
+          session'd run detail's tree, which phase 99 deliberately left
+          banner-less -- this banner is the finding a share recipient must
+          not miss, and it renders only when a label actually leaked. */}
+      {state.report.soak_trend && <PerLabelSoakBanner trend={state.report.soak_trend} />}
       {/* Read-only, for everyone the same: no share button, no prev/next
           run jumps, no siblings (so no compare card) — just the report. */}
       <ReportWorkspace report={state.report} siblings={null} />

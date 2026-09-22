@@ -16,6 +16,7 @@ import { TabPanel, Tabs } from '../components/ui/Tabs';
 import LabelsTable from '../components/LabelsTable';
 import RecommendationsCard from '../components/RecommendationsCard';
 import SoakTrendBanner from '../components/SoakTrendBanner';
+import PerLabelSoakBanner from '../components/PerLabelSoakBanner';
 import ThresholdResultsCard from '../components/ThresholdResultsCard';
 import Sparkline from '../components/Sparkline';
 import ShareRunModal from '../components/ShareRunModal';
@@ -371,13 +372,19 @@ function ReportsList() {
                         {(r.error_rate * 100).toFixed(1)}% errors
                       </div>
                     </Link>
-                    {/* Phase 99: the leak finding rides under its run's row,
-                        inside the li so the two read as one unit. */}
-                    {r.soak_trend?.leak_suspected && (
-                      <div className="px-4 pb-4">
-                        <SoakTrendBanner trend={r.soak_trend} />
-                      </div>
-                    )}
+                    {/* Phases 99/103: the leak findings ride under their
+                        run's row, inside the li so the two read as one unit.
+                        The per-label banner shows even when the aggregate
+                        stayed quiet -- a leak in one label is diluted by its
+                        healthy siblings, and the row must still say so. */}
+                    {r.soak_trend &&
+                      (r.soak_trend.leak_suspected ||
+                        r.soak_trend.labels?.some((l) => l.leak_suspected)) && (
+                        <div className="space-y-2 px-4 pb-4">
+                          {r.soak_trend.leak_suspected && <SoakTrendBanner trend={r.soak_trend} />}
+                          <PerLabelSoakBanner trend={r.soak_trend} />
+                        </div>
+                      )}
                   </li>
                 ))}
               </ul>

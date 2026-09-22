@@ -153,22 +153,33 @@ func TestMySQLReportStore_PreSoakTrendRowReadsNone(t *testing.T) {
 // Phase 98's lesson made a test: every field a report grows must survive
 // SaveReport -> GetReport, because a column the summary projection forgets
 // reads as "derived but dropped". The soak trend rides the same round trip
-// with its verdict and all three figures.
+// with its verdict and all three figures -- and since phase 103, with its
+// per-label breakdown nested inside the same JSON column (no new column):
+// a two-label window whose leaking checkout is diluted by a flat,
+// nine-tenths-of-traffic browse, so the aggregate stays quiet while the
+// label trend fires.
 func TestMySQLReportStore_SoakTrendRoundTrip(t *testing.T) {
 	db := dbtest.StartMySQL(t)
 	truncateAll(t, db)
 	store := mysqladapter.NewRepository(db)
 	ctx := context.Background()
 
-	// A soak-shaped run: 150 seconds rising 0.1s -> 0.4s, built through the
+	// A soak-shaped run: 150 seconds, checkout rising 0.1s -> 0.4s at 10
+	// samples/s, browse flat 0.2s at 100 samples/s -- built through the
 	// genuine Accumulator so what is stored is what a run would produce.
-	intervals := make([]metrics.Interval, 0, 150)
+	intervals := make([]metrics.Interval, 0, 300)
 	for i := range 150 {
+		ts := 9000 + int64(i)
 		lat := 0.1 + 0.3*float64(i)/149
-		intervals = append(intervals, metrics.Interval{
-			Timestamp: 9000 + int64(i), Label: "checkout", Concurrency: 5,
-			Samples: 10, Succeeded: 10, Latency: metrics.Histogram{lat: 10},
-		})
+		intervals = append(intervals,
+			metrics.Interval{
+				Timestamp: ts, Label: "checkout", Concurrency: 2,
+				Samples: 10, Succeeded: 10, Latency: metrics.Histogram{lat: 10},
+			},
+			metrics.Interval{
+				Timestamp: ts, Label: "browse", Concurrency: 2,
+				Samples: 100, Succeeded: 100, Latency: metrics.Histogram{0.2: 100},
+			})
 	}
 	want := report.Build(report.Input{
 		ExecutionID: 1, ScenarioID: 2, RunID: 92,
@@ -178,8 +189,17 @@ func TestMySQLReportStore_SoakTrendRoundTrip(t *testing.T) {
 		Requested: report.Load{Concurrency: 5, Throughput: 10, DurationSeconds: 150},
 		Intervals: intervals,
 	})
-	if want.SoakTrend == nil || !want.SoakTrend.LeakSuspected {
-		t.Fatalf("fixture lost its trend: %+v", want.SoakTrend)
+	if want.SoakTrend == nil || want.SoakTrend.LeakSuspected {
+		t.Fatalf("fixture lost its quiet aggregate: %+v", want.SoakTrend)
+	}
+	var checkout *report.LabelSoakTrend
+	for i := range want.SoakTrend.Labels {
+		if want.SoakTrend.Labels[i].Label == "checkout" {
+			checkout = &want.SoakTrend.Labels[i]
+		}
+	}
+	if checkout == nil || !checkout.LeakSuspected {
+		t.Fatalf("fixture lost checkout's leak: %+v", want.SoakTrend.Labels)
 	}
 	if err := store.SaveReport(ctx, want); err != nil {
 		t.Fatalf("SaveReport: %v", err)
@@ -192,9 +212,45 @@ func TestMySQLReportStore_SoakTrendRoundTrip(t *testing.T) {
 	if got.SoakTrend == nil {
 		t.Fatalf("soak trend did not survive storage: %+v", got)
 	}
-	if *got.SoakTrend != *want.SoakTrend {
+	// Compared field-by-field with a tolerance, not DeepEqual: the figures
+	// are a genuine accumulator's non-round doubles, and MySQL's JSON
+	// column stores them as DOUBLE whose decimal rendering is not
+	// guaranteed to round-trip every value to the last ULP. The verdicts
+	// and the label set are exact; only the rendering may drift a hair.
+	if !sameSoakTrend(got.SoakTrend, want.SoakTrend) {
 		t.Errorf("soak trend = %+v, want %+v", *got.SoakTrend, *want.SoakTrend)
 	}
+}
+
+// sameSoakTrend compares two trends for the storage round trip: verdicts
+// and label identity exact, figures within a rendering tolerance (a
+// fraction of a microsecond -- far below anything a reader could see).
+func sameSoakTrend(got, want *report.SoakTrend) bool {
+	if got.LeakSuspected != want.LeakSuspected || len(got.Labels) != len(want.Labels) {
+		return false
+	}
+	if !nearly(got.FirstHalfMs, want.FirstHalfMs) ||
+		!nearly(got.SecondHalfMs, want.SecondHalfMs) ||
+		!nearly(got.SlopeMsPerMin, want.SlopeMsPerMin) {
+		return false
+	}
+	for i := range want.Labels {
+		g, w := got.Labels[i], want.Labels[i]
+		if g.Label != w.Label || g.LeakSuspected != w.LeakSuspected {
+			return false
+		}
+		if !nearly(g.FirstHalfMs, w.FirstHalfMs) ||
+			!nearly(g.SecondHalfMs, w.SecondHalfMs) ||
+			!nearly(g.SlopeMsPerMin, w.SlopeMsPerMin) {
+			return false
+		}
+	}
+	return true
+}
+
+// nearly reports got within ±1e-9 of want.
+func nearly(got, want float64) bool {
+	return got-want >= -1e-9 && got-want <= 1e-9
 }
 
 // A re-saved run keeps its first attempt's signatures rather than replacing

@@ -139,6 +139,31 @@ export interface SoakTrend {
   /** True when the second half ran materially slower than the first AND
    * the per-second means rose throughout -- the leak signature. */
   leak_suspected: boolean;
+  /** Phase 103: each label's own trend across the same window, for every
+   * label that held two minutes of its own latency-sampled seconds. The
+   * aggregate is diluted by healthy labels; a label's own trend is not.
+   * Absent when no label qualified. */
+  labels?: LabelSoakTrend[];
+}
+
+/** Phase 103's per-label soak finding: one label's own response-time
+ * behaviour across the run's window, judged on that label's rows alone
+ * with the aggregate's own rule. */
+export interface LabelSoakTrend {
+  /** The request path (or engine label) these figures belong to. */
+  label: string;
+  /** Sample-weighted mean response time of the label's own sampled
+   * seconds' first half, ms. */
+  first_half_ms: number;
+  /** Sample-weighted mean response time of the label's own sampled
+   * seconds' second half, ms. */
+  second_half_ms: number;
+  /** Least-squares slope of the label's per-second mean response times,
+   * ms/min. */
+  slope_ms_per_min: number;
+  /** True when this label's own halves and slope crossed the leak
+   * thresholds -- even while the run's aggregate stayed quiet. */
+  leak_suspected: boolean;
 }
 
 /** One scenario-threshold result on a run report (phase 72). observed and

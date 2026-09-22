@@ -140,6 +140,16 @@ func mergeProgress(ctx context.Context, tx *sql.Tx, runID int64, s report.Snapsh
 		}
 	}
 
+	// The per-label latency tally (phase 103) is additive too, but a JSON
+	// column can only be merged in Go, so it takes the locked
+	// read-merge-write path the label histograms take (mergeLabels'
+	// discipline): shards flush independently, two of them covering the
+	// same second is routine, and an unlocked merge would let whichever
+	// committed last discard the other's tally.
+	if err := mergeSecondLabels(ctx, tx, runID, s.Seconds); err != nil {
+		return err
+	}
+
 	// Buckets and exemplars need the old value to merge against, so these are
 	// read under the shard lock already held.
 	if err := mergeLabels(ctx, tx, runID, s.Labels); err != nil {
@@ -147,6 +157,91 @@ func mergeProgress(ctx context.Context, tx *sql.Tx, runID int64, s report.Snapsh
 	}
 	if err := mergeSignatures(ctx, tx, runID, s.Signatures); err != nil {
 		return err
+	}
+	return nil
+}
+
+// mergeSecondLabels folds a batch's per-second per-label latency tallies
+// into what is stored. The second rows themselves already exist -- the
+// additive loop in mergeProgress inserted them -- so this only locks and
+// rewrites the JSON column, batched across the batch's seconds the way
+// mergeLabels batches across its labels: one lock query and one write
+// query for a whole flush, not two per second.
+func mergeSecondLabels(ctx context.Context, tx *sql.Tx, runID int64, seconds []report.SecondProgress) error {
+	pending := make([]report.SecondProgress, 0, len(seconds))
+	for _, sec := range seconds {
+		if len(sec.LabelLatency) > 0 {
+			pending = append(pending, sec)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	inClause := make([]string, len(pending))
+	inArgs := make([]any, 0, len(pending)+1)
+	inArgs = append(inArgs, runID)
+	for i, sec := range pending {
+		inClause[i] = "?"
+		inArgs = append(inArgs, sec.Second)
+	}
+	// #nosec G202 -- inClause elements are the literal "?"; values bound via inArgs.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT second, label_latency FROM report_progress_second
+		 WHERE run_id=? AND second IN (`+strings.Join(inClause, ",")+`) FOR UPDATE`,
+		inArgs...)
+	if err != nil {
+		return fmt.Errorf("mysql: lock second label latency: %w", err)
+	}
+	stored := make(map[int64]map[string]report.LabelLatencyTally, len(pending))
+	for rows.Next() {
+		var (
+			second int64
+			raw    []byte
+		)
+		if err := rows.Scan(&second, &raw); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("mysql: scan second label latency: %w", err)
+		}
+		var tally map[string]report.LabelLatencyTally
+		if err := decodeJSON(raw, &tally); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("mysql: decode second label latency: %w", err)
+		}
+		stored[second] = tally
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
+	mergeRows := make([]string, len(pending))
+	mergeArgs := make([]any, 0, len(pending)*3)
+	for i, sec := range pending {
+		merged := make(map[string]report.LabelLatencyTally, len(sec.LabelLatency))
+		for label, tally := range stored[sec.Second] {
+			merged[label] = tally
+		}
+		for label, delta := range sec.LabelLatency {
+			tally := merged[label]
+			tally.Sum += delta.Sum
+			tally.Samples += delta.Samples
+			merged[label] = tally
+		}
+		encoded, err := json.Marshal(merged)
+		if err != nil {
+			return fmt.Errorf("mysql: encode second label latency: %w", err)
+		}
+		mergeRows[i] = "(?,?,?)"
+		mergeArgs = append(mergeArgs, runID, sec.Second, encoded)
+	}
+	// #nosec G202 -- mergeRows elements are the literal "(?,?,?)"; values bound via mergeArgs.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO report_progress_second (run_id, second, label_latency) VALUES `+strings.Join(mergeRows, ",")+`
+		 ON DUPLICATE KEY UPDATE label_latency=VALUES(label_latency)`,
+		mergeArgs...); err != nil {
+		return fmt.Errorf("mysql: merge second label latency: %w", err)
 	}
 	return nil
 }
@@ -397,7 +492,7 @@ func (r *Repository) Snapshot(ctx context.Context, runID int64) (report.Snapshot
 	}
 
 	seconds, err := r.db.QueryContext(ctx,
-		`SELECT second, engine_concurrency, label_concurrency, latency_sum, latency_samples
+		`SELECT second, engine_concurrency, label_concurrency, latency_sum, latency_samples, label_latency
 		 FROM report_progress_second WHERE run_id=? ORDER BY second`, runID)
 	if err != nil {
 		return report.Snapshot{}, err
@@ -445,9 +540,18 @@ func scanSecondProgress(rows *sql.Rows) ([]report.SecondProgress, error) {
 	defer func() { _ = rows.Close() }()
 	var out []report.SecondProgress
 	for rows.Next() {
-		var sec report.SecondProgress
-		if err := rows.Scan(&sec.Second, &sec.Engine, &sec.Labels, &sec.LatencySum, &sec.LatencySamples); err != nil {
+		var (
+			sec      report.SecondProgress
+			labelRaw []byte // JSON tally or NULL (0085)
+		)
+		if err := rows.Scan(&sec.Second, &sec.Engine, &sec.Labels, &sec.LatencySum, &sec.LatencySamples, &labelRaw); err != nil {
 			return nil, err
+		}
+		// NULL -- every row written before phase 103 -- decodes to no tally:
+		// the second contributes no per-label observation, and a label's
+		// trend is judged only on the seconds that carry one.
+		if err := decodeJSON(labelRaw, &sec.LabelLatency); err != nil {
+			return nil, fmt.Errorf("mysql: decode second label latency: %w", err)
 		}
 		out = append(out, sec)
 	}
