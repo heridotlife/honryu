@@ -170,3 +170,25 @@ active:scale-95 was "used elsewhere in the repo" — it wasn't (nowhere
 in web/src); added it fresh on the new buttons. Not done: e2e
 boot-harness pin (spec marked optional; countdown needs timer control
 the boot harness lacks). No push, no PR, no merge.
+
+## 2026-09-22 — phase 103 complete (per-label soak leak trends, 5 commits)
+On develop (spec: .cortex/2026-09-22-phase103-per-label-soak/). Phase 99's
+aggregate SoakTrend is diluted by healthy labels; now every label with
+>=120 of its own latency-sampled seconds gets its own trend (same math
+via shared soakFigures, same thresholds, sorted by name) in
+SoakTrend.Labels, fed from secondState.labelLatency (bucket-sorted,
+snapshot/restore-cloned). UI: PerLabelSoakBanner — one amber row per
+leaking label — under the run rows on Reports + Execution past-runs and
+above the workspace on SharedReport; aggregate banner untouched.
+DEVIATION (flagged in plan.md): spec said "NO new migration", but §2 also
+required labelLatency to survive the per-second working state, and
+production finalize reads that state back from MySQL — so 0085 adds
+report_progress_second.label_latency JSON (locked Go merge, mergeLabels
+pattern). No report column: Labels nests in soak_trend JSON (0077).
+MySQL JSON DOUBLE rendering shifts the last ULP of some floats, so the
+accumulator-built store fixture compares ±1e-9 (conformance stays
+DeepEqual on hand-picked figures). Gates: unit race green; staticcheck/
+goimports/golangci-lint v2.12.2 clean; vitest 86 files / 877 tests;
+typecheck clean; targeted integration + phase99/103 e2e green; full
+cover-gate rerun after commits. Commits 285261f 0942176 37fbc07 1edf5bc
+32ac870. No push, no PR.
