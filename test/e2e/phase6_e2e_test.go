@@ -24,6 +24,7 @@ import (
 	"github.com/heridotlife/honryu/internal/app/metricsapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/app/scenarioapp"
+	"github.com/heridotlife/honryu/internal/domain/campaign"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
 	"github.com/heridotlife/honryu/internal/ports/fake"
 	"github.com/heridotlife/honryu/test/dbtest"
@@ -141,9 +142,20 @@ func TestPhase6_CampaignFreezeVerdictEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ActiveCampaigns: %v", err)
 	}
-	if len(active) != 1 {
-		t.Fatalf("ActiveCampaigns = %+v, want exactly the one open campaign", active)
+	// The marketplace seed (0084) pre-creates a 'Supersale Readiness'
+	// campaign with a 15-day window, so a fresh DB is never campaign-free.
+	// Filter to the campaign this test opened by name.
+	var ours *campaign.Campaign
+	for i := range active {
+		if active[i].Name == "Launch Readiness" {
+			ours = &active[i]
+		}
 	}
+	if ours == nil {
+		t.Fatalf("ActiveCampaigns = %+v, want our Launch Readiness campaign", active)
+	}
+	active = active[:0]
+	active = append(active, *ours)
 	inScope, err := campaigns.InScopeExecutions(ctx, active[0].ID)
 	if err != nil {
 		t.Fatalf("InScopeExecutions: %v", err)
