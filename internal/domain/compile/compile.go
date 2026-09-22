@@ -121,9 +121,13 @@ func Taurus(in Input) (taurus.Config, error) {
 	}
 
 	if len(in.Criteria) > 0 {
+		// Floor assertions ("p95<800ms") compile to their violation form
+		// ("p95>=800ms"): bzt's passfail grammar reads criteria as failure
+		// conditions, so a literal floor would fail every fast target
+		// (phase 104; live run 1 went failed on 73850 clean samples).
 		cfg.Reporting = append(cfg.Reporting, taurus.Reporter{
 			Module:   "passfail",
-			Criteria: append([]string(nil), in.Criteria...),
+			Criteria: FloorCriteriaToViolation(in.Criteria),
 		})
 	}
 

@@ -28,10 +28,14 @@ type FailedCriterion struct {
 // as unparsed rather than misread.
 var criterionPattern = regexp.MustCompile(`^\s*([a-zA-Z0-9_-]+)\s*(>=|<=|==|>|<|=)\s*([0-9]+(?:\.[0-9]+)?)\s*(%|ms|s)?\s*$`)
 
-// EvaluateCriteria checks each of criteria (Taurus pass/fail expressions,
-// e.g. "failures>10%", "p95>500ms") against r's own measured fields, and
-// returns every one that triggered, or whose subject/syntax fell outside
-// the practical subset understood. A criterion that did not trigger is
+// EvaluateCriteria checks each of criteria (pass/fail expressions in the
+// user-facing floor grammar, e.g. "p95<500ms", or already-violation forms
+// like "failures>10%") against r's own measured fields, and returns every
+// one that triggered, or whose subject/syntax fell outside the practical
+// subset understood. Floor assertions are rewritten to their violation
+// form first (the same rewrite compile.FloorCriteriaToViolation applies to
+// the engine's config, phase 104), so the served verdict layer and bzt's
+// own exit code judge one grammar. A criterion that did not trigger is
 // omitted entirely -- the result names only what actually failed (or
 // couldn't be read), never the full configured list.
 //
@@ -42,6 +46,7 @@ var criterionPattern = regexp.MustCompile(`^\s*([a-zA-Z0-9_-]+)\s*(>=|<=|==|>|<|
 // with no unit suffix defaults to milliseconds, bzt's own usual convention
 // for response-time criteria).
 func (r Report) EvaluateCriteria(criteria []string) []FailedCriterion {
+	criteria = floorsToViolations(criteria)
 	var out []FailedCriterion
 	for _, c := range criteria {
 		if fc := r.evaluateOne(c); fc != nil {
@@ -114,4 +119,40 @@ func criterionTriggered(measured float64, op string, threshold float64) bool {
 	default:
 		return false
 	}
+}
+
+// floorCriterion matches the floor subset of the practical grammar: the
+// same shape criterionPattern understands (subject, < or <=, threshold,
+// optional unit) so the rewrite and the evaluator cannot drift apart.
+var floorCriterion = regexp.MustCompile(`^\s*([a-zA-Z0-9_-]+)\s*(<=|<)\s*([0-9]+(?:\.[0-9]+)?)\s*(%|ms|s)?\s*$`)
+
+// floorsToViolations rewrites floor assertions ("p95<800ms") to their
+// violation form ("p95>=800ms") -- bzt's criteria are failure
+// conditions, so judging a floor literally fails every run that
+// satisfies it. Already-violation forms and unknown shapes pass through
+// unchanged; the evaluator reports the unknowns as unparsed either way.
+// Mirrors compile.FloorCriteriaToViolation; this copy exists because
+// report cannot import compile (compile imports taurus, report does
+// not) -- the two grammars are pinned together by unit tests on both
+// sides asserting identical output for the same inputs.
+func floorsToViolations(criteria []string) []string {
+	if len(criteria) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(criteria))
+	for _, c := range criteria {
+		m := floorCriterion.FindStringSubmatch(c)
+		if m == nil {
+			out = append(out, c)
+			continue
+		}
+		subject, op, threshold, unit := m[1], m[2], m[3], m[4]
+		inverted := ">"
+		if op == "<" {
+			inverted = ">="
+		}
+		rewritten := subject + inverted + threshold + unit
+		out = append(out, rewritten)
+	}
+	return out
 }
