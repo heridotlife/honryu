@@ -48,11 +48,14 @@ func TestRespondError_OverQuotaDetails(t *testing.T) {
 			wantHint: "PUT /api/tenants/{tenant_id}/quota ceiling=9",
 		},
 		{
-			name:     "unconfigured ceiling",
-			err:      &quotaapp.OverQuotaError{TenantID: 7, Cluster: "prod", Requested: 4, Used: 0, Ceiling: 0, NoQuotaConfigured: true},
+			// Phase 104: a ceiling of 0 can only be an explicitly configured
+			// block (missing rows read the platform default), so the hint
+			// says the ceiling is set to 0 rather than that no row exists.
+			name:     "explicit zero ceiling",
+			err:      &quotaapp.OverQuotaError{TenantID: 7, Cluster: "prod", Requested: 4, Used: 0, Ceiling: 0, ZeroCeiling: true},
 			wantUsed: 0,
 			wantCeil: 0,
-			wantHint: "PUT /api/tenants/{tenant_id}/quota ceiling=0; no quota row exists for this tenant+cluster",
+			wantHint: "PUT /api/tenants/{tenant_id}/quota ceiling=0; ceiling is set to 0 for this tenant+cluster",
 		},
 		{
 			// Callers re-wrap (Trigger's own %w chains); the typed form must

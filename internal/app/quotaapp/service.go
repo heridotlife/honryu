@@ -32,18 +32,19 @@ type OverQuotaError struct {
 	Requested int
 	Used      int
 	Ceiling   int
-	// NoQuotaConfigured marks the ceiling-0 branch: an absent quota row
-	// reads as 0 (migrations/0028), so the remediation is to set a ceiling,
-	// not to free capacity.
-	NoQuotaConfigured bool
+	// ZeroCeiling marks the ceiling-0 branch. Since phase 104 a missing
+	// quota row reads as the platform default (reservation.DefaultCeiling)
+	// rather than 0, so a ceiling of 0 can only be an explicitly configured
+	// block: the remediation is to raise it, not to free capacity.
+	ZeroCeiling bool
 }
 
-// Error keeps the exact text of the wrap this type replaced, including the
-// ceiling-0 remediation sentence.
+// Error keeps the exact shape of the wrap this type replaced, including the
+// zero-ceiling remediation sentence.
 func (e *OverQuotaError) Error() string {
-	if e.NoQuotaConfigured {
+	if e.ZeroCeiling {
 		return fmt.Sprintf(
-			"%s: tenant %d cluster %q wants %d engines, %d already reserved in this window, ceiling %d — no quota configured for this tenant+cluster; set one via PUT /api/tenants/{tenant_id}/quota",
+			"%s: tenant %d cluster %q wants %d engines, %d already reserved in this window, ceiling %d — quota ceiling is set to 0 for this tenant+cluster; raise it via PUT /api/tenants/{tenant_id}/quota",
 			ErrOverQuota, e.TenantID, e.Cluster, e.Requested, e.Used, e.Ceiling)
 	}
 	return fmt.Sprintf(
@@ -145,9 +146,16 @@ func (s *Service) Reserve(ctx context.Context, tenantID int64, cluster string, e
 	}
 
 	err := s.repo.WithTenantLock(ctx, tenantID, cluster, func(ctx context.Context) error {
-		ceiling, err := s.repo.GetCeiling(ctx, tenantID, cluster)
+		quota, err := s.repo.GetQuota(ctx, tenantID, cluster)
 		if err != nil {
 			return err
+		}
+		ceiling := quota.Ceiling
+		if !quota.Configured {
+			// No row means the platform default, not 0 (phase 104): a new
+			// tenant is runnable out of the box, and a row -- written only
+			// by an explicit admin PUT -- overrides at any value.
+			ceiling = reservation.DefaultCeiling
 		}
 		used, overrun, err := s.usedCapacity(ctx, tenantID, cluster, start, end)
 		if err != nil {
@@ -162,16 +170,17 @@ func (s *Service) Reserve(ctx context.Context, tenantID int64, cluster string, e
 			used -= freed
 		}
 		if used+engineCount > ceiling {
-			// A ceiling of 0 means no quota was ever configured for this
-			// tenant+cluster (absent reads as 0 -- migrations/0028), not that
-			// one was configured and exhausted: say so, so an operator knows
-			// the remediation is to set a ceiling, not to free capacity. The
-			// typed error carries the numbers for the HTTP details envelope.
+			// A ceiling of 0 can only be a quota row an admin explicitly
+			// wrote as 0 -- a deliberate block, not an unconfigured tenant
+			// (those read the platform default above): say so, so an operator
+			// knows the remediation is to raise the ceiling, not to free
+			// capacity. The typed error carries the numbers for the HTTP
+			// details envelope.
 			if ceiling == 0 {
 				return &OverQuotaError{
 					TenantID: tenantID, Cluster: cluster,
 					Requested: engineCount, Used: used, Ceiling: ceiling,
-					NoQuotaConfigured: true,
+					ZeroCeiling: true,
 				}
 			}
 			return &OverQuotaError{

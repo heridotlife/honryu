@@ -17,6 +17,15 @@ var (
 	ErrWindowInvalid      = errors.New("reservation: end must be after start")
 )
 
+// DefaultCeiling is the engine-unit quota ceiling a tenant+cluster reads
+// when no quota row exists -- the platform's out-of-the-box default, so a
+// fresh install or a new tenant can trigger without an admin first PUT-ing
+// a quota. It lives here, in the domain rather than config, because the
+// platform ships with a defined default; deployments override it per
+// tenant by writing a quota row (any value, including an explicit 0 to
+// block), which then wins over this constant.
+const DefaultCeiling = 10
+
 // Reservation is a tenant's claim on engine capacity for a bounded window,
 // owned by the execution (manual trigger or a schedule's occurrence) that
 // made it.

@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/heridotlife/honryu/internal/domain/rbac"
+	"github.com/heridotlife/honryu/internal/domain/reservation"
 	"github.com/heridotlife/honryu/internal/domain/tenant"
 	"github.com/heridotlife/honryu/internal/ports"
 )
@@ -66,9 +67,10 @@ func (s *Service) SetStatus(ctx context.Context, id int64, status string) error 
 	return s.tenants.SetTenantStatus(ctx, id, status)
 }
 
-// SetQuota sets a tenant's per-cluster engine quota ceiling. An unset ceiling
-// reads as 0 (GetQuota) -- nothing runs until a ceiling is explicitly
-// configured, never an accidental unlimited default.
+// SetQuota sets a tenant's per-cluster engine quota ceiling. The row is
+// what makes a ceiling explicit: until it exists the tenant reads the
+// platform default (reservation.DefaultCeiling), and any written value --
+// including 0, a deliberate block -- overrides that default.
 func (s *Service) SetQuota(ctx context.Context, tenantID int64, cluster string, ceiling int) error {
 	if ceiling < 0 {
 		return ErrCeilingInvalid
@@ -79,13 +81,30 @@ func (s *Service) SetQuota(ctx context.Context, tenantID int64, cluster string, 
 	return s.reservations.SetCeiling(ctx, tenantID, cluster, ceiling)
 }
 
-// GetQuota returns a tenant's per-cluster engine quota ceiling (0 if never
-// configured).
-func (s *Service) GetQuota(ctx context.Context, tenantID int64, cluster string) (int, error) {
+// Quota is a tenant's effective per-cluster ceiling: Ceiling is what
+// admission actually checks, and Defaulted reports whether it comes from
+// the platform default (no quota row) rather than an explicit PUT -- the
+// signal a UI badges so an operator knows nothing has been pinned yet.
+type Quota struct {
+	Ceiling   int
+	Defaulted bool
+}
+
+// GetQuota returns a tenant's effective per-cluster engine quota ceiling.
+// An unconfigured tenant+cluster answers the platform default with
+// Defaulted true; a configured row answers its own ceiling at any value.
+func (s *Service) GetQuota(ctx context.Context, tenantID int64, cluster string) (Quota, error) {
 	if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {
-		return 0, err
+		return Quota{}, err
 	}
-	return s.reservations.GetCeiling(ctx, tenantID, cluster)
+	q, err := s.reservations.GetQuota(ctx, tenantID, cluster)
+	if err != nil {
+		return Quota{}, err
+	}
+	if !q.Configured {
+		return Quota{Ceiling: reservation.DefaultCeiling, Defaulted: true}, nil
+	}
+	return Quota{Ceiling: q.Ceiling, Defaulted: false}, nil
 }
 
 // AssignRole grants a role to a subject after checking the role exists, its

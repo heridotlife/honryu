@@ -180,8 +180,8 @@ func respondError(w http.ResponseWriter, err error) {
 		var oqe *quotaapp.OverQuotaError
 		if errors.As(err, &oqe) {
 			hint := fmt.Sprintf("PUT /api/tenants/{tenant_id}/quota ceiling=%d", oqe.Ceiling)
-			if oqe.NoQuotaConfigured {
-				hint += "; no quota row exists for this tenant+cluster"
+			if oqe.ZeroCeiling {
+				hint += "; ceiling is set to 0 for this tenant+cluster"
 			}
 			writeErrorDetails(w, http.StatusTooManyRequests, "reservation would exceed tenant quota", map[string]any{
 				"tenant_id": oqe.TenantID,

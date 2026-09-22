@@ -80,13 +80,23 @@ func TestReserve_RejectsWhenOverCeiling(t *testing.T) {
 // rejected -- unconfigured means nothing runs, not unlimited. The error
 // must carry the remediation (set a ceiling via the quota endpoint), since
 // "ceiling 0" alone reads like a configured limit of zero.
-func TestReserve_ZeroCeilingRejectsEverything(t *testing.T) {
+// The pinned byte-for-byte form of the zero-ceiling branch's message:
+// the explicit-zero remediation sentence (phase 104's copy -- a zero can
+// only be a configured block, since missing rows read the default).
+func TestReserve_ZeroCeilingErrorTextIsPinned(t *testing.T) {
 	t.Parallel()
-	svc, _ := newQuotaService(t)
-	if _, err := svc.Reserve(context.Background(), 1, "default", 1, at(0), at(60), 100); !errors.Is(err, quotaapp.ErrOverQuota) {
-		t.Fatalf("Reserve(unconfigured ceiling) = %v, want ErrOverQuota", err)
-	} else if !strings.Contains(err.Error(), "no quota configured for this tenant+cluster; set one via PUT /api/tenants/{tenant_id}/quota") {
-		t.Fatalf("Reserve(unconfigured ceiling) error = %q, want remediation naming the quota endpoint", err)
+	svc, store := newQuotaService(t)
+	ctx := context.Background()
+	if err := store.SetCeiling(ctx, 1, "default", 0); err != nil {
+		t.Fatalf("SetCeiling(0): %v", err)
+	}
+	_, err := svc.Reserve(ctx, 1, "default", 1, at(0), at(60), 100)
+	if !errors.Is(err, quotaapp.ErrOverQuota) {
+		t.Fatalf("Reserve(explicit zero) = %v, want ErrOverQuota", err)
+	}
+	const want = `quotaapp: reservation would exceed quota: tenant 1 cluster "default" wants 1 engines, 0 already reserved in this window, ceiling 0 — quota ceiling is set to 0 for this tenant+cluster; raise it via PUT /api/tenants/{tenant_id}/quota`
+	if err.Error() != want {
+		t.Fatalf("error text = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -112,32 +122,10 @@ func TestReserve_OverQuotaErrorCarriesNumbers(t *testing.T) {
 	if oqe.TenantID != 1 || oqe.Cluster != "default" || oqe.Requested != 5 || oqe.Used != 8 || oqe.Ceiling != 10 {
 		t.Fatalf("OverQuotaError fields = %+v, want the admission numbers", *oqe)
 	}
-	if oqe.NoQuotaConfigured {
+	if oqe.ZeroCeiling {
 		t.Fatalf("exhausted ceiling must not claim quota is unconfigured: %+v", *oqe)
 	}
 	const want = `quotaapp: reservation would exceed quota: tenant 1 cluster "default" wants 5 engines, 8 already reserved in this window, ceiling 10`
-	if err.Error() != want {
-		t.Fatalf("error text = %q, want %q", err.Error(), want)
-	}
-}
-
-// The zero-ceiling branch is the one with a remediation sentence in the
-// message; its typed form must keep that text and flag itself so the HTTP
-// layer's hint can say "no quota row exists" rather than "lower your
-// ask".
-func TestReserve_ZeroCeilingErrorIsFlaggedUnconfigured(t *testing.T) {
-	t.Parallel()
-	svc, _ := newQuotaService(t)
-
-	_, err := svc.Reserve(context.Background(), 7, "prod", 1, at(0), at(60), 100)
-	var oqe *quotaapp.OverQuotaError
-	if !errors.As(err, &oqe) {
-		t.Fatalf("Reserve (unconfigured ceiling) = %T (%v), want *OverQuotaError", err, err)
-	}
-	if oqe.TenantID != 7 || oqe.Cluster != "prod" || oqe.Requested != 1 || oqe.Used != 0 || oqe.Ceiling != 0 || !oqe.NoQuotaConfigured {
-		t.Fatalf("OverQuotaError fields = %+v, want zero-ceiling numbers + NoQuotaConfigured", *oqe)
-	}
-	const want = `quotaapp: reservation would exceed quota: tenant 7 cluster "prod" wants 1 engines, 0 already reserved in this window, ceiling 0 — no quota configured for this tenant+cluster; set one via PUT /api/tenants/{tenant_id}/quota`
 	if err.Error() != want {
 		t.Fatalf("error text = %q, want %q", err.Error(), want)
 	}
@@ -148,10 +136,13 @@ func TestReserve_ZeroCeilingErrorIsFlaggedUnconfigured(t *testing.T) {
 // intervening wrap.
 func TestOverQuotaError_SentinelAndTypeSurviveWrapping(t *testing.T) {
 	t.Parallel()
-	svc, _ := newQuotaService(t)
+	svc, store := newQuotaService(t)
+	if err := store.SetCeiling(context.Background(), 1, "default", 0); err != nil {
+		t.Fatalf("SetCeiling(0): %v", err)
+	}
 	_, err := svc.Reserve(context.Background(), 1, "default", 1, at(0), at(60), 100)
 	if err == nil {
-		t.Fatal("Reserve (unconfigured) = nil, want an error")
+		t.Fatal("Reserve (explicit zero) = nil, want an error")
 	}
 	wrapped := fmt.Errorf("trigger: %w", err)
 	if !errors.Is(wrapped, quotaapp.ErrOverQuota) {
@@ -161,8 +152,59 @@ func TestOverQuotaError_SentinelAndTypeSurviveWrapping(t *testing.T) {
 	if !errors.As(wrapped, &oqe) {
 		t.Fatal("errors.As(wrapped, &OverQuotaError) = false, want true")
 	}
-	if oqe.Ceiling != 0 || !oqe.NoQuotaConfigured {
+	if oqe.Ceiling != 0 || !oqe.ZeroCeiling {
 		t.Fatalf("wrapped fields = %+v, want the zero-ceiling branch", *oqe)
+	}
+}
+
+// Phase 104: a tenant with no quota row at all runs out of the box -- the
+// read path substitutes the platform default ceiling (10 engine units) for
+// a missing row, so the default is exactly as admitting as a row set to
+// 10. The row only exists once an admin PUTs one, which then overrides.
+func TestReserve_MissingQuotaRowAdmitsUpToDefaultCeiling(t *testing.T) {
+	t.Parallel()
+	svc, _ := newQuotaService(t)
+	ctx := context.Background()
+
+	if _, err := svc.Reserve(ctx, 2, "home", 10, at(0), at(60), 100); err != nil {
+		t.Fatalf("Reserve (no quota row, exactly the default) = %v, want admitted", err)
+	}
+
+	_, err := svc.Reserve(ctx, 2, "home", 1, at(0), at(60), 101)
+	var oqe *quotaapp.OverQuotaError
+	if !errors.As(err, &oqe) {
+		t.Fatalf("Reserve (default exceeded) = %T (%v), want *OverQuotaError", err, err)
+	}
+	if oqe.Ceiling != 10 || oqe.Used != 10 || oqe.Requested != 1 {
+		t.Fatalf("OverQuotaError fields = %+v, want the defaulted ceiling of 10 in the numbers", *oqe)
+	}
+	if oqe.ZeroCeiling {
+		t.Fatalf("a defaulted ceiling must not claim quota is unconfigured: %+v", *oqe)
+	}
+}
+
+// Phase 104: ceiling 0 remains reachable -- an admin can explicitly pin a
+// tenant to zero (block) -- and that branch must say so: the remediation is
+// to raise the ceiling, not to free capacity, and with defaults afoot a
+// zero can only ever be deliberate.
+func TestReserve_ExplicitZeroCeilingBlocksEverything(t *testing.T) {
+	t.Parallel()
+	svc, store := newQuotaService(t)
+	ctx := context.Background()
+	if err := store.SetCeiling(ctx, 7, "prod", 0); err != nil {
+		t.Fatalf("SetCeiling(0): %v", err)
+	}
+
+	_, err := svc.Reserve(ctx, 7, "prod", 1, at(0), at(60), 100)
+	var oqe *quotaapp.OverQuotaError
+	if !errors.As(err, &oqe) {
+		t.Fatalf("Reserve (explicit zero) = %T (%v), want *OverQuotaError", err, err)
+	}
+	if oqe.Ceiling != 0 || !oqe.ZeroCeiling {
+		t.Fatalf("OverQuotaError fields = %+v, want the zero-ceiling branch", *oqe)
+	}
+	if !strings.Contains(err.Error(), "quota ceiling is set to 0 for this tenant+cluster") {
+		t.Fatalf("error text = %q, want the explicit-zero remediation naming the PUT", err)
 	}
 }
 

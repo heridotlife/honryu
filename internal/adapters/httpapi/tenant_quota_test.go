@@ -43,9 +43,9 @@ func newTenantRouter(t *testing.T) http.Handler {
 	})
 }
 
-// An unconfigured ceiling reads as 0 through the HTTP layer too, and setting
-// one round-trips.
-func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
+// The read answers the platform default before any row exists (defaulted
+// true), and setting one round-trips the configured value.
+func TestTenantQuota_GetDefaultsAndSetRoundTrips(t *testing.T) {
 	t.Parallel()
 	h := newTenantRouter(t)
 
@@ -55,8 +55,8 @@ func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get quota = %d (%s)", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"ceiling":0`) {
-		t.Fatalf("get quota before configured = %s, want ceiling 0", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"ceiling":10`) || !strings.Contains(rec.Body.String(), `"defaulted":true`) {
+		t.Fatalf("get quota before configured = %s, want the default ceiling 10 flagged defaulted", rec.Body.String())
 	}
 
 	rec = putForm(t, h, "/api/tenants/"+itoa(tenantID)+"/quota", url.Values{"ceiling": {"5"}})
@@ -65,8 +65,8 @@ func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
 	}
 
 	rec = do(t, h, http.MethodGet, "/api/tenants/"+itoa(tenantID)+"/quota")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ceiling":5`) {
-		t.Fatalf("get quota after set = %d %s, want ceiling 5", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ceiling":5`) || !strings.Contains(rec.Body.String(), `"defaulted":false`) {
+		t.Fatalf("get quota after set = %d %s, want ceiling 5 not defaulted", rec.Code, rec.Body.String())
 	}
 }
 
@@ -78,6 +78,57 @@ func TestTenantQuota_RejectsNegativeCeiling(t *testing.T) {
 	rec := putForm(t, h, "/api/tenants/"+itoa(tenantID)+"/quota", url.Values{"ceiling": {"-1"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("set negative quota = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Phase 104: the quota read reports the EFFECTIVE ceiling -- a tenant with
+// no quota row answers the platform default (10) with defaulted:true, so a
+// UI can badge it; once a row exists (any value, including 0) the answer is
+// the configured ceiling with defaulted:false.
+func TestTenantQuota_GetReportsEffectiveCeilingAndDefaulted(t *testing.T) {
+	t.Parallel()
+	h := newTenantRouter(t)
+	tenantID := decodeID(t, postForm(t, h, "/api/tenants", url.Values{"name": {"acme"}, "display_name": {"Acme"}}))
+
+	get := func() struct {
+		Cluster   string `json:"cluster"`
+		Ceiling   int    `json:"ceiling"`
+		Defaulted bool   `json:"defaulted"`
+	} {
+		t.Helper()
+		rec := do(t, h, http.MethodGet, "/api/tenants/"+itoa(tenantID)+"/quota")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get quota = %d (%s)", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Cluster   string `json:"cluster"`
+			Ceiling   int    `json:"ceiling"`
+			Defaulted bool   `json:"defaulted"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("get quota body = %s: %v", rec.Body.String(), err)
+		}
+		return body
+	}
+
+	if got := get(); got.Ceiling != 10 || !got.Defaulted {
+		t.Fatalf("quota before any row = %+v, want the default ceiling 10 with defaulted:true", got)
+	}
+
+	if rec := putForm(t, h, "/api/tenants/"+itoa(tenantID)+"/quota", url.Values{"ceiling": {"4"}}); rec.Code != http.StatusOK {
+		t.Fatalf("set quota = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if got := get(); got.Ceiling != 4 || got.Defaulted {
+		t.Fatalf("quota after explicit set = %+v, want ceiling 4 with defaulted:false", got)
+	}
+
+	// An explicit zero overrides the default too -- a deliberate block, not
+	// an unconfigured tenant.
+	if rec := putForm(t, h, "/api/tenants/"+itoa(tenantID)+"/quota", url.Values{"ceiling": {"0"}}); rec.Code != http.StatusOK {
+		t.Fatalf("set quota to zero = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if got := get(); got.Ceiling != 0 || got.Defaulted {
+		t.Fatalf("quota after explicit zero = %+v, want ceiling 0 with defaulted:false", got)
 	}
 }
 

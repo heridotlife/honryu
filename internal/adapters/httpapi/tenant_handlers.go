@@ -186,8 +186,10 @@ func (h *handlers) setTenantQuota(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "quota updated"})
 }
 
-// getTenantQuota returns a tenant's per-cluster engine quota ceiling (0 if
-// never configured). cluster defaults to "" when the query omits it.
+// getTenantQuota returns a tenant's effective per-cluster engine quota
+// ceiling: the platform default (defaulted true) when no quota row exists,
+// the configured ceiling otherwise. cluster defaults to "" when the query
+// omits it.
 func (h *handlers) getTenantQuota(w http.ResponseWriter, r *http.Request) {
 	if !h.tenantAdminGate(w, r) {
 		return
@@ -198,12 +200,12 @@ func (h *handlers) getTenantQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cluster := r.URL.Query().Get("cluster")
-	ceiling, err := h.deps.Tenants.GetQuota(r.Context(), id, cluster)
+	quota, err := h.deps.Tenants.GetQuota(r.Context(), id, cluster)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"cluster": cluster, "ceiling": ceiling})
+	writeJSON(w, http.StatusOK, map[string]any{"cluster": cluster, "ceiling": quota.Ceiling, "defaulted": quota.Defaulted})
 }
 
 func (h *handlers) assignTenantRole(w http.ResponseWriter, r *http.Request) {

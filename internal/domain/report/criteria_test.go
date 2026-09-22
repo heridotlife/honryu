@@ -1,6 +1,7 @@
 package report_test
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/domain/report"
@@ -43,8 +44,12 @@ func TestReport_EvaluateCriteria(t *testing.T) {
 		{"bzt's fuller grammar (a 'for' window) is out of scope, unparsed", "failures>10% for 5s", 1, false},
 		{"boundary: exactly-at-threshold with > does not trigger", "failures>15%", 0, false},
 		{"boundary: exactly-at-threshold with >= triggers", "failures>=15%", 1, true},
-		{"less-than operator triggers when measured is below threshold", "failures<50%", 1, true},
-		{"less-than operator does not trigger when measured is above threshold", "failures<10%", 0, false},
+		// Phase 104: less-than reads as a floor assertion (pass-when-under),
+		// rewritten to its violation form before evaluation. A floor that
+		// holds (15% < 50%) does not trigger; a violated floor (15% >= 10%)
+		// triggers and is reported in its violation form.
+		{"floor holds (15% is under 50%) does not trigger", "failures<50%", 0, false},
+		{"floor violated (15% reaches 10%) triggers, reported as failures>=10%", "failures<10%", 1, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,8 +61,20 @@ func TestReport_EvaluateCriteria(t *testing.T) {
 			if tt.wantLen == 0 {
 				return
 			}
-			if got[0].Criterion != tt.criterion {
-				t.Errorf("Criterion = %q, want %q (must preserve the original text)", got[0].Criterion, tt.criterion)
+			// A floor criterion is judged (and reported) in its violation
+			// form; everything else preserves its original text. The
+			// grammar is compact (no spaces around the operator), matching
+			// criterionPattern.
+			want := tt.criterion
+			if m := floorRe.FindStringSubmatch(tt.criterion); m != nil {
+				inv := ">"
+				if m[2] == "<" {
+					inv = ">="
+				}
+				want = m[1] + inv + m[3] + m[4]
+			}
+			if got[0].Criterion != want {
+				t.Errorf("Criterion = %q, want %q", got[0].Criterion, want)
 			}
 			if got[0].Unparsed == tt.wantFail {
 				t.Errorf("Unparsed = %v, want %v", got[0].Unparsed, !tt.wantFail)
@@ -82,13 +99,14 @@ func TestReport_EvaluateCriteria_MultipleCriteriaEachEvaluatedIndependently(t *t
 	t.Parallel()
 	r := report.Report{ErrorRate: 0.20, Latency: report.Percentiles{95: 1.000}} // 1000ms
 
-	got := r.EvaluateCriteria([]string{"failures>10%", "p95<2000ms", "failures>50%"})
+	got := r.EvaluateCriteria([]string{"failures>10%", "p95<500ms", "failures>50%"})
 	if len(got) != 2 {
-		t.Fatalf("EvaluateCriteria = %+v, want exactly 2 (failures>10%% and p95<2000ms both trigger, failures>50%% does not)", got)
+		t.Fatalf("EvaluateCriteria = %+v, want exactly 2 (failures>10%% and the violated floor p95<500ms, failures>50%% does not)", got)
 	}
+	// The floor is reported in its violation form (p95>=500ms).
 	criteria := map[string]bool{got[0].Criterion: true, got[1].Criterion: true}
-	if !criteria["failures>10%"] || !criteria["p95<2000ms"] {
-		t.Fatalf("EvaluateCriteria = %+v, want failures>10%% and p95<2000ms", got)
+	if !criteria["failures>10%"] || !criteria["p95>=500ms"] {
+		t.Fatalf("EvaluateCriteria = %+v, want failures>10%% and p95>=500ms", got)
 	}
 }
 
@@ -99,3 +117,7 @@ func TestReport_EvaluateCriteria_EmptyInputReturnsEmpty(t *testing.T) {
 		t.Fatalf("EvaluateCriteria(nil) = %+v, want none", got)
 	}
 }
+
+// floorRe mirrors the domain's floor grammar (compact, no spaces) for the
+// violation-form expectation above.
+var floorRe = regexp.MustCompile(`^\s*([a-zA-Z0-9_-]+)\s*(<=|<)\s*([0-9]+(?:\.[0-9]+)?)\s*(%|ms|s)?\s*$`)

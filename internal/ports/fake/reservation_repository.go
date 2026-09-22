@@ -82,12 +82,14 @@ type quotaKey struct {
 	cluster  string
 }
 
-// GetCeiling returns a tenant's quota ceiling for cluster, or 0 if never
-// configured.
-func (s *Store) GetCeiling(_ context.Context, tenantID int64, cluster string) (int, error) {
+// GetQuota returns a tenant's quota for cluster and whether one is
+// configured. Absence means {0, false}: the unconfigured state the caller
+// applies the platform default to.
+func (s *Store) GetQuota(_ context.Context, tenantID int64, cluster string) (ports.Quota, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.quotaCeilings[quotaKey{tenantID, cluster}], nil
+	ceiling, configured := s.quotaCeilings[quotaKey{tenantID, cluster}]
+	return ports.Quota{Ceiling: ceiling, Configured: configured}, nil
 }
 
 // SetCeiling sets a tenant's per-cluster quota ceiling, overwriting whatever
