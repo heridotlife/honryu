@@ -307,6 +307,46 @@ func Run(t *testing.T, newProgress NewProgress) {
 		}
 	})
 
+	// Phase 103: the same tally per label. The run's aggregate trend is
+	// diluted by healthy labels, so each label's own per-second mean must
+	// survive the working state separately -- two shards flushing different
+	// labels into the same second is the routine shape a multi-label soak
+	// produces.
+	t.Run("SecondLabelLatencySurvivesAbsorbAndSnapshot", func(t *testing.T) {
+		p := newProgress(t)
+		if err := p.Absorb(ctx, batch(1, 0, "s1", false, iv(1, 1000, "cart", 10, 0, 4))); err != nil {
+			t.Fatalf("Absorb: %v", err)
+		}
+		if err := p.Absorb(ctx, batch(1, 1, "s1", false, iv(1, 1000, "pay", 6, 0, 3))); err != nil {
+			t.Fatalf("Absorb second shard: %v", err)
+		}
+
+		got := restore(t, p, 1)
+		var sec *report.SecondProgress
+		for i := range got.Seconds {
+			if got.Seconds[i].Second == 1000 {
+				sec = &got.Seconds[i]
+			}
+		}
+		if sec == nil {
+			t.Fatalf("second 1000 missing from snapshot: %+v", got.Seconds)
+		}
+		cart, ok := sec.LabelLatency["cart"]
+		if !ok {
+			t.Fatalf("cart missing from the second's label tally: %+v", sec.LabelLatency)
+		}
+		if cart.Samples != 10 || !nearly(cart.Sum, 0.10) {
+			t.Errorf("cart tally = %v/%d, want 0.10s/10", cart.Sum, cart.Samples)
+		}
+		pay, ok := sec.LabelLatency["pay"]
+		if !ok {
+			t.Fatalf("pay missing from the second's label tally: %+v", sec.LabelLatency)
+		}
+		if pay.Samples != 6 || !nearly(pay.Sum, 0.06) {
+			t.Errorf("pay tally = %v/%d, want 0.06s/6", pay.Sum, pay.Samples)
+		}
+	})
+
 	// The whole point of persisting the working state: what is read back has to
 	// produce the same report as the accumulator that wrote it.
 	t.Run("SnapshotRebuildsTheSameReport", func(t *testing.T) {
@@ -369,6 +409,12 @@ func iv(seq, ts int64, label string, samples, failed int64, concurrency int) met
 		Concurrency: concurrency,
 		Latency:     metrics.Histogram{0.01: samples},
 	}
+}
+
+// nearly reports got within ±1e-9 of want -- exact for the tallies here,
+// whose every term is a small float sum bound to one rounding.
+func nearly(got, want float64) bool {
+	return got-want >= -1e-9 && got-want <= 1e-9
 }
 
 func restore(t *testing.T, p ports.ReportProgress, runID int64) report.Snapshot {
