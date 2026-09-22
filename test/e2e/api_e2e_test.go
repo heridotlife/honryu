@@ -39,11 +39,14 @@ func TestAPI_ProjectsEndToEnd(t *testing.T) {
 		t.Fatalf("healthz status = %q, want ok", health["status"])
 	}
 
-	// Projects list starts empty.
-	var empty []map[string]any
-	getJSON(t, client, srv.URL+"/api/projects", http.StatusOK, &empty)
-	if len(empty) != 0 {
-		t.Fatalf("initial projects = %v, want empty", empty)
+	// Projects list starts without OUR project (the 0079-0084 marketplace
+	// seed migrations pre-populate tenants/projects in every fresh DB).
+	var before []map[string]any
+	getJSON(t, client, srv.URL+"/api/projects", http.StatusOK, &before)
+	for _, p := range before {
+		if p["name"] == "web-api" {
+			t.Fatalf("initial projects already contain web-api: %v", before)
+		}
 	}
 
 	// Seed a project through the real service → MySQL write path.
@@ -60,8 +63,19 @@ func TestAPI_ProjectsEndToEnd(t *testing.T) {
 		SID   string `json:"sid"`
 	}
 	getJSON(t, client, srv.URL+"/api/projects", http.StatusOK, &listed)
-	if len(listed) != 1 || listed[0].Name != "web-api" || listed[0].SID != "77" {
-		t.Fatalf("projects = %+v, want one web-api with sid 77", listed)
+	var ours *struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Owner string `json:"owner"`
+		SID   string `json:"sid"`
+	}
+	for i := range listed {
+		if listed[i].Name == "web-api" {
+			ours = &listed[i]
+		}
+	}
+	if ours == nil || ours.SID != "77" {
+		t.Fatalf("projects = %+v, want our web-api with sid 77", listed)
 	}
 
 	// Fetch the single project by ID.
