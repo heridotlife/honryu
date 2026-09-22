@@ -137,40 +137,52 @@ func RunReservationRepositoryContract(t *testing.T, newRepo NewReservationRepo) 
 		}
 	})
 
-	// An unconfigured ceiling reads as 0 -- unconfigured, not unlimited -- and
-	// is scoped per cluster, not shared across a tenant's clusters.
-	t.Run("CeilingDefaultsToZeroAndIsPerCluster", func(t *testing.T) {
+	// An unconfigured quota reads as {0, false} -- unconfigured, not
+	// unlimited -- and is scoped per cluster, not shared across a tenant's
+	// clusters. Configured-ness is the signal callers use to apply the
+	// platform default (phase 104): a configured row reads its own ceiling
+	// at any value, 0 included.
+	t.Run("QuotaReportsConfiguredCeilingPerCluster", func(t *testing.T) {
 		repo := newRepo(t)
 		ctx := context.Background()
 
-		got, err := repo.GetCeiling(ctx, 1, "default")
+		got, err := repo.GetQuota(ctx, 1, "default")
 		if err != nil {
-			t.Fatalf("GetCeiling before configured: %v", err)
+			t.Fatalf("GetQuota before configured: %v", err)
 		}
-		if got != 0 {
-			t.Fatalf("GetCeiling before configured = %d, want 0", got)
+		if got != (ports.Quota{Ceiling: 0, Configured: false}) {
+			t.Fatalf("GetQuota before configured = %+v, want {0 false}", got)
 		}
 
 		if err := repo.SetCeiling(ctx, 1, "default", 10); err != nil {
 			t.Fatalf("SetCeiling: %v", err)
 		}
-		got, err = repo.GetCeiling(ctx, 1, "default")
+		got, err = repo.GetQuota(ctx, 1, "default")
 		if err != nil {
-			t.Fatalf("GetCeiling: %v", err)
+			t.Fatalf("GetQuota: %v", err)
 		}
-		if got != 10 {
-			t.Fatalf("GetCeiling = %d, want 10", got)
+		if got != (ports.Quota{Ceiling: 10, Configured: true}) {
+			t.Fatalf("GetQuota = %+v, want {10 true}", got)
 		}
 
-		if got, err := repo.GetCeiling(ctx, 1, "eu-west"); err != nil || got != 0 {
-			t.Fatalf("GetCeiling(other cluster) = %d,%v, want 0,nil -- ceiling is per cluster", got, err)
+		if got, err := repo.GetQuota(ctx, 1, "eu-west"); err != nil || got != (ports.Quota{Ceiling: 0, Configured: false}) {
+			t.Fatalf("GetQuota(other cluster) = %+v,%v, want {0 false},nil -- quota is per cluster", got, err)
+		}
+
+		// An explicit zero is a configured row (a deliberate block), not the
+		// unconfigured state.
+		if err := repo.SetCeiling(ctx, 1, "zeroed", 0); err != nil {
+			t.Fatalf("SetCeiling(0): %v", err)
+		}
+		if got, err := repo.GetQuota(ctx, 1, "zeroed"); err != nil || got != (ports.Quota{Ceiling: 0, Configured: true}) {
+			t.Fatalf("GetQuota(explicit zero) = %+v,%v, want {0 true}", got, err)
 		}
 
 		if err := repo.SetCeiling(ctx, 1, "default", 20); err != nil {
 			t.Fatalf("SetCeiling (overwrite): %v", err)
 		}
-		if got, err := repo.GetCeiling(ctx, 1, "default"); err != nil || got != 20 {
-			t.Fatalf("GetCeiling after overwrite = %d,%v, want 20,nil", got, err)
+		if got, err := repo.GetQuota(ctx, 1, "default"); err != nil || got != (ports.Quota{Ceiling: 20, Configured: true}) {
+			t.Fatalf("GetQuota after overwrite = %+v,%v, want {20 true},nil", got, err)
 		}
 	})
 
@@ -201,7 +213,7 @@ func RunReservationRepositoryContract(t *testing.T, newRepo NewReservationRepo) 
 		}
 
 		// An overwrite is the row's new truth -- the same contract
-		// GetCeiling's overwrite case pins for one tenant.
+		// GetQuota's overwrite case pins for one tenant.
 		if err := repo.SetCeiling(ctx, 1, "default", 4); err != nil {
 			t.Fatalf("SetCeiling (overwrite): %v", err)
 		}

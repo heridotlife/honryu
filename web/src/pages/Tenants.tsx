@@ -84,6 +84,9 @@ export default function Tenants() {
   const [clusterNames, setClusterNames] = useState<string[] | null>(null);
   const [quotaCluster, setQuotaCluster] = useState('');
   const [ceiling, setCeiling] = useState('0');
+  // True while the shown ceiling is the platform default (no quota row) --
+  // the "default" chip's signal.
+  const [quotaDefaulted, setQuotaDefaulted] = useState(false);
   const [quotaBusy, setQuotaBusy] = useState(false);
   const [quotaMsg, setQuotaMsg] = useState<string | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
@@ -142,6 +145,7 @@ export default function Tenants() {
     getTenantQuota(tenantId, cluster)
       .then((q) => {
         setCeiling(String(q.ceiling));
+        setQuotaDefaulted(q.defaulted);
         setQuotaError(null);
       })
       .catch((err: unknown) => setQuotaError(errMsg(err, 'Failed to load quota.')));
@@ -199,6 +203,8 @@ export default function Tenants() {
     try {
       await setTenantQuota(selectedId, quotaCluster, parsed);
       setQuotaMsg(`Quota saved: ${quotaCluster || 'default'} ceiling ${parsed}.`);
+      // The saved row ends the defaulted state, whatever it was.
+      setQuotaDefaulted(false);
     } catch (err) {
       setQuotaMsg(null);
       setQuotaError(errMsg(err, 'Failed to save quota.'));
@@ -477,7 +483,7 @@ export default function Tenants() {
                 Quota — {selected.display_name || selected.name}
               </h2>
               <p className="text-caption text-slate-500 dark:text-slate-400">
-                Engine ceiling per cluster. An unset ceiling reads 0 — nothing runs until one is configured.
+                Engine ceiling per cluster. An unset cluster uses the platform default (10 engines) until a ceiling is saved.
               </p>
               <div className="flex flex-wrap items-end gap-3">
                 <div className="w-48">
@@ -507,6 +513,14 @@ export default function Tenants() {
                     onChange={(e) => setCeiling(e.target.value)}
                     aria-label="quota ceiling"
                   />
+                  {quotaDefaulted && (
+                    <span
+                      data-testid="quota-default-chip"
+                      className="mt-2 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                    >
+                      default
+                    </span>
+                  )}
                 </div>
                 <Button onClick={() => void saveQuota()} disabled={quotaBusy} data-testid="quota-save-btn">
                   Save quota

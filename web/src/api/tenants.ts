@@ -14,10 +14,13 @@ export interface Tenant {
   created_time: string;
 }
 
-/** GET /api/tenants/{id}/quota: the ceiling for one cluster (0 = unset). */
+/** GET /api/tenants/{id}/quota: the effective ceiling for one cluster.
+ * `defaulted` is true while no quota row exists — the ceiling shown is the
+ * platform default (10 engines), not a value anyone pinned. */
 export interface TenantQuota {
   cluster: string;
   ceiling: number;
+  defaulted: boolean;
 }
 
 /** One member-roster entry from GET /api/tenants/{id}/roles. */

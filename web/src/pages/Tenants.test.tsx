@@ -149,6 +149,8 @@ function stubTenantApi(me: SessionInfo) {
   const calls: Call[] = [];
   const tenants = [...tenantsFixture];
   const grants = [...grantsFixture];
+  // The quota the GET answers -- tests mutate it (the defaulted case).
+  let quotaResponse: unknown = { cluster: '', ceiling: 3, defaulted: false };
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
@@ -171,7 +173,7 @@ function stubTenantApi(me: SessionInfo) {
       return json(tenants[tenants.length - 1], 201);
     }
     if (url.includes('/api/tenants/5/quota')) {
-      return json({ cluster: '', ceiling: 3 });
+      return json(quotaResponse);
     }
     if (url.includes('/api/tenants/5/roles')) {
       if (method === 'DELETE') {
@@ -199,7 +201,7 @@ function stubTenantApi(me: SessionInfo) {
     }
     return json({ message: `no stub for ${method} ${url}` }, 500);
   });
-  return { fetchMock, calls };
+  return { fetchMock, calls, setQuota: (q: unknown) => (quotaResponse = q) };
 }
 
 let container: HTMLDivElement | null = null;
@@ -282,6 +284,8 @@ describe('Tenants page (mounted)', () => {
 
     const ceiling = container!.querySelector('input[aria-label="quota ceiling"]') as HTMLInputElement;
     expect(ceiling.value).toBe('3');
+    // A configured quota (defaulted false) shows no chip.
+    expect(container!.querySelector('[data-testid="quota-default-chip"]')).toBeNull();
 
     const table = container!.querySelector('[data-testid="members-table"]');
     expect(table?.textContent).toContain('demo:bob');
@@ -291,6 +295,24 @@ describe('Tenants page (mounted)', () => {
     const summary = container!.textContent ?? '';
     expect(summary).toContain('2 reservations');
     expect(summary).toContain('2 engines on edge');
+  });
+
+  it('a defaulted quota shows the default chip; saving clears it', async () => {
+    const api = await renderTenants();
+    api.setQuota({ cluster: '', ceiling: 10, defaulted: true });
+
+    await click(container!.querySelector('[data-testid="tenant-row-5"]')!);
+    await act(async () => {});
+
+    const ceiling = container!.querySelector('input[aria-label="quota ceiling"]') as HTMLInputElement;
+    expect(ceiling.value).toBe('10');
+    const chip = container!.querySelector('[data-testid="quota-default-chip"]');
+    expect(chip?.textContent).toContain('default');
+
+    // Saving pins a row: the chip must clear without waiting for a reload.
+    await click(container!.querySelector('[data-testid="quota-save-btn"]')!);
+    await act(async () => {});
+    expect(container!.querySelector('[data-testid="quota-default-chip"]')).toBeNull();
   });
 
   it('revoke issues the DELETE with subject/role and refreshes the roster', async () => {

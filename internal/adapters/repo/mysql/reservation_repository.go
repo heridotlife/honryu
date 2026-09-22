@@ -143,20 +143,21 @@ func scanReservation(s rowScanner) (reservation.Reservation, error) {
 	return res, nil
 }
 
-// GetCeiling returns a tenant's quota ceiling for cluster, or 0 if never
-// configured -- absence is not an error, it is the normal unconfigured state.
-func (r *Repository) GetCeiling(ctx context.Context, tenantID int64, cluster string) (int, error) {
+// GetQuota returns a tenant's quota for cluster: the stored ceiling and
+// whether a row exists at all. Absence is not an error, it is the normal
+// unconfigured state the caller applies the platform default to.
+func (r *Repository) GetQuota(ctx context.Context, tenantID int64, cluster string) (ports.Quota, error) {
 	var ceiling int
 	err := r.db.QueryRowContext(ctx,
 		"SELECT ceiling FROM tenant_quota WHERE tenant_id = ? AND cluster = ?",
 		tenantID, cluster).Scan(&ceiling)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+		return ports.Quota{Ceiling: 0, Configured: false}, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("mysql: get ceiling: %w", err)
+		return ports.Quota{}, fmt.Errorf("mysql: get quota: %w", err)
 	}
-	return ceiling, nil
+	return ports.Quota{Ceiling: ceiling, Configured: true}, nil
 }
 
 // SetCeiling sets a tenant's per-cluster quota ceiling, overwriting whatever

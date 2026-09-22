@@ -43,9 +43,9 @@ func newTenantRouter(t *testing.T) http.Handler {
 	})
 }
 
-// An unconfigured ceiling reads as 0 through the HTTP layer too, and setting
-// one round-trips.
-func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
+// The read answers the platform default before any row exists (defaulted
+// true), and setting one round-trips the configured value.
+func TestTenantQuota_GetDefaultsAndSetRoundTrips(t *testing.T) {
 	t.Parallel()
 	h := newTenantRouter(t)
 
@@ -55,8 +55,8 @@ func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get quota = %d (%s)", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"ceiling":0`) {
-		t.Fatalf("get quota before configured = %s, want ceiling 0", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"ceiling":10`) || !strings.Contains(rec.Body.String(), `"defaulted":true`) {
+		t.Fatalf("get quota before configured = %s, want the default ceiling 10 flagged defaulted", rec.Body.String())
 	}
 
 	rec = putForm(t, h, "/api/tenants/"+itoa(tenantID)+"/quota", url.Values{"ceiling": {"5"}})
@@ -65,8 +65,8 @@ func TestTenantQuota_GetDefaultsToZeroAndSetRoundTrips(t *testing.T) {
 	}
 
 	rec = do(t, h, http.MethodGet, "/api/tenants/"+itoa(tenantID)+"/quota")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ceiling":5`) {
-		t.Fatalf("get quota after set = %d %s, want ceiling 5", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ceiling":5`) || !strings.Contains(rec.Body.String(), `"defaulted":false`) {
+		t.Fatalf("get quota after set = %d %s, want ceiling 5 not defaulted", rec.Code, rec.Body.String())
 	}
 }
 

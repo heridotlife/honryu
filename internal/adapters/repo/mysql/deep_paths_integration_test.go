@@ -180,8 +180,8 @@ func TestMySQLCapacityOrphanReservation_ErrorsWhenDBClosed(t *testing.T) {
 			_, e := repo.ReservationsForTenant(ctx, 1, "home")
 			return e
 		},
-		"GetCeiling": func() error {
-			_, e := repo.GetCeiling(ctx, 1, "home")
+		"GetQuota": func() error {
+			_, e := repo.GetQuota(ctx, 1, "home")
 			return e
 		},
 		"SetCeiling": func() error { return repo.SetCeiling(ctx, 1, "home", 3) },

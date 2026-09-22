@@ -14,6 +14,16 @@ type TenantQuota struct {
 	Ceiling  int
 }
 
+// Quota is the result of reading one tenant+cluster's ceiling: the stored
+// ceiling (0 when absent) plus whether a row exists at all. The split is
+// what lets callers tell "no quota configured" -- the platform default
+// (reservation.DefaultCeiling) applies -- from "configured as 0", a
+// deliberate block only an admin PUT can have written.
+type Quota struct {
+	Ceiling    int
+	Configured bool
+}
+
 // ReservationRepository persists time-bounded engine-capacity reservations --
 // the ledger that makes quota a guarantee rather than a best-effort check.
 type ReservationRepository interface {
@@ -31,15 +41,18 @@ type ReservationRepository interface {
 	// reservations whose declared end has already passed.
 	ReservationsForTenant(ctx context.Context, tenantID int64, cluster string) ([]reservation.Reservation, error)
 
-	// GetCeiling returns a tenant's engine quota ceiling for cluster, or 0 if
-	// never configured -- nothing runs until a ceiling is explicitly set,
-	// rather than defaulting to unlimited.
-	GetCeiling(ctx context.Context, tenantID int64, cluster string) (int, error)
+	// GetQuota returns a tenant's engine quota ceiling for cluster and
+	// whether one is configured. An unconfigured tenant+cluster reads
+	// {Ceiling: 0, Configured: false}: callers apply the platform default
+	// (reservation.DefaultCeiling) rather than treating 0 as a ceiling,
+	// so new tenants run out of the box; a configured row wins at any
+	// value, including an explicit 0.
+	GetQuota(ctx context.Context, tenantID int64, cluster string) (Quota, error)
 	// SetCeiling sets a tenant's per-cluster engine quota ceiling.
 	SetCeiling(ctx context.Context, tenantID int64, cluster string, ceiling int) error
 	// ListClusterQuotas returns every tenant quota configured for cluster,
 	// ordered by tenant ID -- the cluster-scoped read an aggregate capacity
-	// view sums across tenants (GetCeiling answers one tenant at a time).
+	// view sums across tenants (GetQuota answers one tenant at a time).
 	// No rows is an empty slice, not an error: a cluster nobody configured a
 	// ceiling on is the normal unconfigured state.
 	ListClusterQuotas(ctx context.Context, cluster string) ([]TenantQuota, error)

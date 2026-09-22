@@ -68,8 +68,10 @@ func TestSetStatus(t *testing.T) {
 	}
 }
 
-// An unconfigured ceiling reads as 0 -- unconfigured, not unlimited -- until
-// explicitly set, and stays scoped per cluster.
+// An unconfigured tenant+cluster reads the platform default with
+// Defaulted set -- runnable out of the box (phase 104) -- while an explicit
+// row, at any value including 0, overrides and clears the flag. Stays
+// scoped per cluster.
 func TestQuota(t *testing.T) {
 	t.Parallel()
 	svc, _ := newSvc(t)
@@ -77,20 +79,29 @@ func TestQuota(t *testing.T) {
 	tn, _ := svc.Create(ctx, "acme", "Acme")
 
 	got, err := svc.GetQuota(ctx, tn.ID, "default")
-	if err != nil || got != 0 {
-		t.Fatalf("GetQuota before configured = %d, %v, want 0, nil", got, err)
+	if err != nil || got != (tenantapp.Quota{Ceiling: 10, Defaulted: true}) {
+		t.Fatalf("GetQuota before configured = %+v, %v, want the default {10 true}", got, err)
 	}
 
 	if err := svc.SetQuota(ctx, tn.ID, "default", 5); err != nil {
 		t.Fatalf("SetQuota: %v", err)
 	}
 	got, err = svc.GetQuota(ctx, tn.ID, "default")
-	if err != nil || got != 5 {
-		t.Fatalf("GetQuota = %d, %v, want 5, nil", got, err)
+	if err != nil || got != (tenantapp.Quota{Ceiling: 5, Defaulted: false}) {
+		t.Fatalf("GetQuota = %+v, %v, want {5 false}", got, err)
 	}
 
-	if got, err := svc.GetQuota(ctx, tn.ID, "eu-west"); err != nil || got != 0 {
-		t.Fatalf("GetQuota(other cluster) = %d, %v, want 0, nil", got, err)
+	// An explicit zero is a configured block, not the defaulted state.
+	if err := svc.SetQuota(ctx, tn.ID, "default", 0); err != nil {
+		t.Fatalf("SetQuota(0): %v", err)
+	}
+	got, err = svc.GetQuota(ctx, tn.ID, "default")
+	if err != nil || got != (tenantapp.Quota{Ceiling: 0, Defaulted: false}) {
+		t.Fatalf("GetQuota(explicit zero) = %+v, %v, want {0 false}", got, err)
+	}
+
+	if got, err := svc.GetQuota(ctx, tn.ID, "eu-west"); err != nil || got != (tenantapp.Quota{Ceiling: 10, Defaulted: true}) {
+		t.Fatalf("GetQuota(other cluster) = %+v, %v, want the default again", got, err)
 	}
 }
 
