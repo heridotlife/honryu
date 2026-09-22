@@ -199,3 +199,42 @@ func requireBinary(t *testing.T, name string) {
 		t.Skipf("%s is not on PATH; install it to run this test", name)
 	}
 }
+
+// Phase 104's regression: the marketplace validation's criterion shape --
+// a floor phrased as an assertion ("p95 must stay under 800ms") -- must not
+// fail a healthy run. bzt's passfail grammar reads criteria as FAILURE
+// conditions, so a literal pass-through makes `p95<800ms for 1s` trip on
+// every fast target (run 1: 73850 samples, 0 failures, p95=2ms, exit 3).
+// compile must hand bzt the assertion's VIOLATION condition instead, so a
+// clean flat run passes while a genuinely slow one still fails.
+func TestPassfailFloorCriteriaCleanRunPasses(t *testing.T) {
+	requireBinary(t, "bzt")
+
+	target := startTarget(t, http.StatusOK)
+	si := portableScenario(t, target)
+
+	t.Run("healthy target passes with floor criteria", func(t *testing.T) {
+		criteria := []string{"p95<800ms for 1s"}
+		out := runCompiled(t, taurus.ExecutorJMeter, si, criteria)
+		if out != taurus.OutcomePassed {
+			t.Errorf("outcome = %q, want %q -- a fast target satisfies p95<800ms; the run must pass", out, taurus.OutcomePassed)
+		}
+	})
+
+	t.Run("slow target still trips the floor", func(t *testing.T) {
+		// A target slower than the assertion's ceiling violates it: the run
+		// must fail, proving the rewrite did not blunt the criterion.
+		slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(1200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(slow.Close)
+		slowSi := portableScenario(t, slow.URL)
+		criteria := []string{"p95<800ms for 1s"}
+		out := runCompiled(t, taurus.ExecutorJMeter, slowSi, criteria)
+		if out != taurus.OutcomeFailed {
+			t.Errorf("outcome = %q, want %q -- a 1.2s target violates p95<800ms", out, taurus.OutcomeFailed)
+		}
+	})
+}

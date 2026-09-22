@@ -166,6 +166,57 @@ func TestOverQuotaError_SentinelAndTypeSurviveWrapping(t *testing.T) {
 	}
 }
 
+// Phase 104: a tenant with no quota row at all runs out of the box -- the
+// read path substitutes the platform default ceiling (10 engine units) for
+// a missing row, so the default is exactly as admitting as a row set to
+// 10. The row only exists once an admin PUTs one, which then overrides.
+func TestReserve_MissingQuotaRowAdmitsUpToDefaultCeiling(t *testing.T) {
+	t.Parallel()
+	svc, _ := newQuotaService(t)
+	ctx := context.Background()
+
+	if _, err := svc.Reserve(ctx, 2, "home", 10, at(0), at(60), 100); err != nil {
+		t.Fatalf("Reserve (no quota row, exactly the default) = %v, want admitted", err)
+	}
+
+	_, err := svc.Reserve(ctx, 2, "home", 1, at(0), at(60), 101)
+	var oqe *quotaapp.OverQuotaError
+	if !errors.As(err, &oqe) {
+		t.Fatalf("Reserve (default exceeded) = %T (%v), want *OverQuotaError", err, err)
+	}
+	if oqe.Ceiling != 10 || oqe.Used != 10 || oqe.Requested != 1 {
+		t.Fatalf("OverQuotaError fields = %+v, want the defaulted ceiling of 10 in the numbers", *oqe)
+	}
+	if oqe.NoQuotaConfigured {
+		t.Fatalf("a defaulted ceiling must not claim quota is unconfigured: %+v", *oqe)
+	}
+}
+
+// Phase 104: ceiling 0 remains reachable -- an admin can explicitly pin a
+// tenant to zero (block) -- and that branch must say so: the remediation is
+// to raise the ceiling, not to free capacity, and with defaults afoot a
+// zero can only ever be deliberate.
+func TestReserve_ExplicitZeroCeilingBlocksEverything(t *testing.T) {
+	t.Parallel()
+	svc, store := newQuotaService(t)
+	ctx := context.Background()
+	if err := store.SetCeiling(ctx, 7, "prod", 0); err != nil {
+		t.Fatalf("SetCeiling(0): %v", err)
+	}
+
+	_, err := svc.Reserve(ctx, 7, "prod", 1, at(0), at(60), 100)
+	var oqe *quotaapp.OverQuotaError
+	if !errors.As(err, &oqe) {
+		t.Fatalf("Reserve (explicit zero) = %T (%v), want *OverQuotaError", err, err)
+	}
+	if oqe.Ceiling != 0 || !oqe.NoQuotaConfigured {
+		t.Fatalf("OverQuotaError fields = %+v, want the zero-ceiling branch", *oqe)
+	}
+	if !strings.Contains(err.Error(), "quota ceiling is set to 0 for this tenant+cluster") {
+		t.Fatalf("error text = %q, want the explicit-zero remediation naming the PUT", err)
+	}
+}
+
 // A reservation elsewhere in time must not count against a window it does
 // not overlap -- the whole point of InWindow scoping the sum, not a running
 // total across all time.
