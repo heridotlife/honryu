@@ -5,6 +5,7 @@ package reportstoretest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -257,12 +258,20 @@ func Run(t *testing.T, newStore NewStore) {
 	// read path reads as "computed then silently dropped". The soak trend
 	// rides SaveReport/GetReport like every other finding, and a run
 	// without one (the common case: every window under two minutes) reads
-	// back without it rather than as an error or a zeroed trend.
+	// back without it rather than as an error or a zeroed trend. The trend's
+	// per-label breakdown (phase 103) nests inside the same value, so it
+	// rides the same round trip -- compared deeply: a slice cannot be
+	// compared with ==, and shallow equality would pass a store that kept
+	// the aggregate but silently dropped every label's own trend.
 	t.Run("SoakTrendRoundTrips", func(t *testing.T) {
 		s := newStore(t)
 		want := sample(1, 70, time.Unix(2000, 0))
 		want.SoakTrend = &report.SoakTrend{
 			FirstHalfMs: 174.5, SecondHalfMs: 325.5, SlopeMsPerMin: 120.8, LeakSuspected: true,
+			Labels: []report.LabelSoakTrend{
+				{Label: "browse", FirstHalfMs: 200.2, SecondHalfMs: 199.8},
+				{Label: "checkout", FirstHalfMs: 174.5, SecondHalfMs: 325.5, SlopeMsPerMin: 120.8, LeakSuspected: true},
+			},
 		}
 		if err := s.SaveReport(ctx, want); err != nil {
 			t.Fatalf("SaveReport: %v", err)
@@ -274,7 +283,7 @@ func Run(t *testing.T, newStore NewStore) {
 		if got.SoakTrend == nil {
 			t.Fatalf("soak trend did not survive storage: %+v", got)
 		}
-		if *got.SoakTrend != *want.SoakTrend {
+		if !reflect.DeepEqual(got.SoakTrend, want.SoakTrend) {
 			t.Errorf("soak trend = %+v, want %+v", *got.SoakTrend, *want.SoakTrend)
 		}
 
