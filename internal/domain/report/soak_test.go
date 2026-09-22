@@ -256,6 +256,255 @@ func TestSoakTrend_SnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+// soakLabelIntervals is one label's own soak window: a row per second,
+// every sample of second i in the bucket lat(i) returns, at that label's
+// own sample count. The shape phase 103 judges per label.
+func soakLabelIntervals(base int64, n int, name string, samples int64, lat func(i int) float64) []metrics.Interval {
+	out := make([]metrics.Interval, 0, n)
+	for i := range n {
+		out = append(out, metrics.Interval{
+			Timestamp: base + int64(i), Label: name,
+			Concurrency: 2, Samples: samples, Succeeded: samples,
+			Latency: metrics.Histogram{lat(i): samples},
+		})
+	}
+	return out
+}
+
+// A leak in one label is diluted by its healthy siblings at the aggregate
+// level -- phase 103's whole reason. Per label, the same window says exactly
+// what each label did: the leaking one is flagged with its own halves and
+// slope, the healthy one is reported unflagged, and the aggregate stays
+// quiet the whole time.
+func TestSoakTrend_PerLabelTrendFlagsOnlyTheLeakingLabel(t *testing.T) {
+	t.Parallel()
+
+	// checkout: 10 samples/s rising 0.1s -> 0.4s (ratio ~1.86, slope
+	// ~120.8 ms/min). browse: 100 samples/s flat 0.2s -- nine tenths of the
+	// traffic, so the aggregate's halves read ~198ms -> ~211ms (ratio ~1.07)
+	// and stay under 1.5x.
+	acc := report.NewAccumulator()
+	for i := range 150 {
+		ts := int64(1000 + i)
+		leak := linearGrowth(0.1, 0.4, 150)(i)
+		acc.Add(metrics.Interval{
+			Timestamp: ts, Label: "checkout", Concurrency: 2,
+			Samples: 10, Succeeded: 10, Latency: metrics.Histogram{leak: 10},
+		})
+		acc.Add(metrics.Interval{
+			Timestamp: ts, Label: "browse", Concurrency: 2,
+			Samples: 100, Succeeded: 100, Latency: metrics.Histogram{0.2: 100},
+		})
+	}
+	rep := acc.Report(soakMeta())
+
+	tr := rep.SoakTrend
+	if tr == nil {
+		t.Fatalf("no aggregate trend on a 150-second run: %+v", rep)
+	}
+	if tr.LeakSuspected {
+		t.Errorf("aggregate suspected the diluted leak: %+v", tr)
+	}
+	if len(tr.Labels) != 2 {
+		t.Fatalf("label trends = %+v, want one per label", tr.Labels)
+	}
+	byName := map[string]report.LabelSoakTrend{}
+	for _, lt := range tr.Labels {
+		byName[lt.Label] = lt
+	}
+	leaking, ok := byName["checkout"]
+	if !ok {
+		t.Fatalf("checkout missing from label trends: %+v", tr.Labels)
+	}
+	if !leaking.LeakSuspected {
+		t.Errorf("checkout's own trend did not suspect the leak: %+v", leaking)
+	}
+	if !approx(leaking.FirstHalfMs, 174.5, 5) || !approx(leaking.SecondHalfMs, 325.5, 5) {
+		t.Errorf("checkout halves = %v/%v ms, want ~174.5/~325.5",
+			leaking.FirstHalfMs, leaking.SecondHalfMs)
+	}
+	if !approx(leaking.SlopeMsPerMin, 120.8, 5) {
+		t.Errorf("checkout slope = %v ms/min, want ~120.8", leaking.SlopeMsPerMin)
+	}
+	healthy, ok := byName["browse"]
+	if !ok {
+		t.Fatalf("browse missing from label trends: %+v", tr.Labels)
+	}
+	if healthy.LeakSuspected {
+		t.Errorf("browse's flat trend suspected a leak: %+v", healthy)
+	}
+	if !approx(healthy.FirstHalfMs, 200, 1) || !approx(healthy.SecondHalfMs, 200, 1) {
+		t.Errorf("browse halves = %v/%v ms, want ~200/200",
+			healthy.FirstHalfMs, healthy.SecondHalfMs)
+	}
+	// Sorted by label name, so two reports of the same run match.
+	if tr.Labels[0].Label != "browse" || tr.Labels[1].Label != "checkout" {
+		t.Errorf("label trends not sorted by name: %+v", tr.Labels)
+	}
+}
+
+// The two-minute floor is each label's own, not the window's: a label that
+// only reported for part of a long soak has no trend of its own -- its few
+// seconds are noise, exactly the aggregate's reasoning.
+func TestSoakTrend_SparseLabelHasNoTrend(t *testing.T) {
+	t.Parallel()
+
+	acc := report.NewAccumulator()
+	// checkout spans the whole 150-second window; browse only its first
+	// 100 seconds -- under the 120-second floor even though the run's own
+	// window is plenty long.
+	for _, iv := range soakLabelIntervals(1000, 150, "checkout", 10, linearGrowth(0.1, 0.4, 150)) {
+		acc.Add(iv)
+	}
+	for _, iv := range soakLabelIntervals(1000, 100, "browse", 10, func(int) float64 { return 0.2 }) {
+		acc.Add(iv)
+	}
+	tr := acc.Report(soakMeta()).SoakTrend
+	if tr == nil {
+		t.Fatalf("no aggregate trend: %+v", tr)
+	}
+	if len(tr.Labels) != 1 || tr.Labels[0].Label != "checkout" {
+		t.Fatalf("label trends = %+v, want checkout only", tr.Labels)
+	}
+	if !tr.Labels[0].LeakSuspected {
+		t.Errorf("checkout's leak was not suspected: %+v", tr.Labels[0])
+	}
+}
+
+// A label absent from some seconds is judged only on the seconds it did
+// report -- missing observations, not zero-latency ones, the same rule the
+// aggregate applies to empty seconds.
+func TestSoakTrend_LabelJudgedOnItsOwnSampledSeconds(t *testing.T) {
+	t.Parallel()
+
+	// browse reports on 2 of every 3 seconds: exactly 120 sampled of a
+	// 180-second window -- at the floor, and judged only on its own 120
+	// (flat 0.2s -> halves ~200/200), while checkout reports all 180 and
+	// rises.
+	acc := report.NewAccumulator()
+	leak := linearGrowth(0.1, 0.4, 180)
+	for i := range 180 {
+		ts := int64(1000 + i)
+		acc.Add(metrics.Interval{
+			Timestamp: ts, Label: "checkout", Concurrency: 2,
+			Samples: 10, Succeeded: 10, Latency: metrics.Histogram{leak(i): 10},
+		})
+		if i%3 != 0 {
+			acc.Add(metrics.Interval{
+				Timestamp: ts, Label: "browse", Concurrency: 2,
+				Samples: 10, Succeeded: 10, Latency: metrics.Histogram{0.2: 10},
+			})
+		}
+	}
+	tr := acc.Report(soakMeta()).SoakTrend
+	if tr == nil {
+		t.Fatalf("no aggregate trend: %+v", tr)
+	}
+	var browse *report.LabelSoakTrend
+	for i := range tr.Labels {
+		if tr.Labels[i].Label == "browse" {
+			browse = &tr.Labels[i]
+		}
+	}
+	if browse == nil {
+		t.Fatalf("browse trend missing: %+v", tr.Labels)
+	}
+	if browse.LeakSuspected {
+		t.Errorf("browse's two-of-three-seconds flat trend suspected a leak: %+v", browse)
+	}
+	if !approx(browse.FirstHalfMs, 200, 1) || !approx(browse.SecondHalfMs, 200, 1) {
+		t.Errorf("browse halves = %v/%v ms, want ~200/200 -- its own sampled seconds only",
+			browse.FirstHalfMs, browse.SecondHalfMs)
+	}
+}
+
+// The per-label tally rides the snapshot like the aggregate does: a run
+// that outlives the process measuring it keeps every label's trend, and
+// what was written down rebuilds the same report as uninterrupted
+// measuring -- labels included.
+func TestSoakTrend_PerLabelSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	build := func(from, to int) []metrics.Interval {
+		out := []metrics.Interval{}
+		for i := from; i < to; i++ {
+			ts := int64(1000 + i)
+			leak := linearGrowth(0.1, 0.4, 150)(i)
+			out = append(out,
+				metrics.Interval{
+					Timestamp: ts, Label: "checkout", Concurrency: 2,
+					Samples: 10, Succeeded: 10, Latency: metrics.Histogram{leak: 10},
+				},
+				metrics.Interval{
+					Timestamp: ts, Label: "browse", Concurrency: 2,
+					Samples: 100, Succeeded: 100, Latency: metrics.Histogram{0.2: 100},
+				})
+		}
+		return out
+	}
+
+	first := report.NewAccumulator()
+	for _, iv := range build(0, 75) {
+		first.Add(iv)
+	}
+	snap := first.Snapshot()
+	var sawLabelTally bool
+	for _, sec := range snap.Seconds {
+		if len(sec.LabelLatency) > 0 {
+			sawLabelTally = true
+			if _, ok := sec.LabelLatency["checkout"]; !ok {
+				t.Errorf("second %d: checkout missing from the label tally: %+v",
+					sec.Second, sec.LabelLatency)
+			}
+		}
+	}
+	if !sawLabelTally {
+		t.Error("snapshot carried no per-label latency tally at all")
+	}
+
+	resumed := report.Restore(snap)
+	for _, iv := range build(75, 150) {
+		resumed.Add(iv)
+	}
+	uninterrupted := report.NewAccumulator()
+	for _, iv := range build(0, 150) {
+		uninterrupted.Add(iv)
+	}
+	got, want := resumed.Report(soakMeta()), uninterrupted.Report(soakMeta())
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("a restart changed the per-label trends:\n got %+v\nwant %+v",
+			got.SoakTrend, want.SoakTrend)
+	}
+	if want.SoakTrend == nil || len(want.SoakTrend.Labels) != 2 {
+		t.Fatalf("the fixture lost its label trends: %+v", want.SoakTrend)
+	}
+	leaking := false
+	for _, lt := range want.SoakTrend.Labels {
+		if lt.Label == "checkout" {
+			leaking = lt.LeakSuspected
+		}
+	}
+	if !leaking {
+		t.Fatalf("the fixture's checkout trend did not suspect its leak: %+v",
+			want.SoakTrend.Labels)
+	}
+}
+
+// A run too short for an aggregate trend has no per-label trends either:
+// no label can hold 120 sampled seconds inside a window that does not, so
+// Labels rides only an existing trend.
+func TestSoakTrend_ShortRunHasNoLabelTrends(t *testing.T) {
+	t.Parallel()
+
+	acc := report.NewAccumulator()
+	for _, iv := range soakLabelIntervals(1000, 100, "checkout", 10, func(int) float64 { return 0.2 }) {
+		acc.Add(iv)
+	}
+	if tr := acc.Report(soakMeta()).SoakTrend; tr != nil {
+		t.Errorf("trend on a 100-second run: %+v", tr)
+	}
+}
+
 // The engine's own aggregate row re-counts the label rows beside it, so
 // its histogram must add nothing to the second it shares: the trend feeds
 // on label rows only, the same exclusion the run's own totals use.
