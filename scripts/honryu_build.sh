@@ -44,14 +44,14 @@ echo "grafana: built"
 echo "== push via skopeo (docker login is broken on this host) =="
 for C in api calibrator scheduler sidecar; do
   docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-    quay.io/skopeo/stable:latest copy --dest-tls-verify=false \
+    quay.io/skopeo/stable@sha256:ab4c269c9e2bd11affe2666b860fb651a15afec121c15986b052b02e09d86239 copy --dest-tls-verify=false \
     --dest-creds "$U:$P" \
     "docker-daemon:$REG/honryu/honryu-$C:$TAG" \
     "docker://$REG/honryu/honryu-$C:$TAG" >/dev/null || { echo "PUSH_FAIL $C"; exit 1; }
   echo "$C: pushed $TAG"
 done
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  quay.io/skopeo/stable:latest copy --dest-tls-verify=false \
+  quay.io/skopeo/stable@sha256:ab4c269c9e2bd11affe2666b860fb651a15afec121c15986b052b02e09d86239 copy --dest-tls-verify=false \
   --dest-creds "$U:$P" \
   "docker-daemon:$REG/honryu/grafana:$TAG" \
   "docker://$REG/honryu/grafana:$TAG" >/dev/null || { echo "PUSH_FAIL grafana"; exit 1; }
