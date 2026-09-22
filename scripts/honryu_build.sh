@@ -59,11 +59,13 @@ echo "grafana: pushed $TAG"
 
 echo "== verify tags landed in registry =="
 for C in api calibrator scheduler sidecar; do
-  PRESENT=$(curl -sk -u "$AUTH" "https://$REG/v2/honryu/honryu-$C/tags/list" | python3 -c "import json,sys; print('$TAG' in json.load(sys.stdin).get('tags',[]))")
+  curl -sk -u "$AUTH" "https://$REG/v2/honryu/honryu-$C/tags/list" -o /tmp/tags_$C.json
+  grep -q "\"$TAG\"" /tmp/tags_$C.json && PRESENT=True || PRESENT=False
   echo "$C tag $TAG present: $PRESENT"
   [ "$PRESENT" = "True" ] || { echo "VERIFY_FAIL $C"; exit 1; }
 done
-PRESENT=$(curl -sk -u "$AUTH" "https://$REG/v2/honryu/grafana/tags/list" | python3 -c "import json,sys; print('$TAG' in json.load(sys.stdin).get('tags',[]))")
+curl -sk -u "$AUTH" "https://$REG/v2/honryu/grafana/tags/list" -o /tmp/tags_grafana.json
+grep -q "\"$TAG\"" /tmp/tags_grafana.json && PRESENT=True || PRESENT=False
 echo "grafana tag $TAG present: $PRESENT"
 [ "$PRESENT" = "True" ] || { echo "VERIFY_FAIL grafana"; exit 1; }
 echo "BUILD_PUSH_OK $TAG (verified in registry)"
