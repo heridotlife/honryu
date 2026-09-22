@@ -12,6 +12,7 @@ import { sortSignatureGroups } from './ReportsTrend';
 import TaurusEditor from '../components/TaurusEditor';
 import CapacityPanel, { isCalibrationExecution } from '../components/CapacityPanel';
 import SoakTrendBanner from '../components/SoakTrendBanner';
+import PerLabelSoakBanner from '../components/PerLabelSoakBanner';
 import type { ExecutionInfo, ExecutionStatus, Phase, ScenarioStatus } from '../api/status';
 import type { LiveSeriesPoint } from '../lib/liveSeries';
 import { stopExecution } from '../api/lifecycle';
@@ -1209,13 +1210,19 @@ export default function Execution() {
                         Report →
                       </Link>
                     </div>
-                    {/* Phase 99: the leak finding rides under its run's row,
-                        inside the li so the two read as one unit. */}
-                    {rep.soak_trend?.leak_suspected && (
-                      <div className="mt-2">
-                        <SoakTrendBanner trend={rep.soak_trend} />
-                      </div>
-                    )}
+                    {/* Phases 99/103: the leak findings ride under their
+                        run's row, inside the li so the two read as one unit.
+                        The per-label banner shows even when the aggregate
+                        stayed quiet -- a leak in one label is diluted by its
+                        healthy siblings, and the row must still say so. */}
+                    {rep.soak_trend &&
+                      (rep.soak_trend.leak_suspected ||
+                        rep.soak_trend.labels?.some((l) => l.leak_suspected)) && (
+                        <div className="mt-2 space-y-2">
+                          {rep.soak_trend.leak_suspected && <SoakTrendBanner trend={rep.soak_trend} />}
+                          <PerLabelSoakBanner trend={rep.soak_trend} />
+                        </div>
+                      )}
                   </li>
                 ))}
               </ul>

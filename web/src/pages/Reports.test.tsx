@@ -579,6 +579,59 @@ describe('ReportsList soak leak banner (phase 99)', () => {
   });
 });
 
+// Phase 103's dilution case: a run whose aggregate stayed quiet -- the
+// healthy label's flat latency drowned the leaking one -- still shows its
+// per-label finding, because the leaking label's own trend crossed the
+// threshold on its own.
+describe('ReportsList per-label soak banner (phase 103)', () => {
+  const dilutedReport: Report = {
+    ...reportFixture,
+    run_id: 24,
+    soak_trend: {
+      first_half_ms: 197.7,
+      second_half_ms: 211.4,
+      slope_ms_per_min: 11,
+      leak_suspected: false,
+      labels: [
+        { label: 'browse', first_half_ms: 200.2, second_half_ms: 199.8, slope_ms_per_min: 0, leak_suspected: false },
+        { label: 'checkout', first_half_ms: 174.6, second_half_ms: 325.4, slope_ms_per_min: 120.8, leak_suspected: true },
+      ],
+    },
+  };
+
+  it('renders the leaking label\'s row under its run, aggregate or not', async () => {
+    await renderReportsList(navPersonas.alice, [dilutedReport]);
+    await loadExecution();
+
+    // The aggregate banner stays quiet: the run-level finding did not fire.
+    expect(container!.querySelectorAll('[data-testid="soak-leak-banner"]').length).toBe(0);
+    const rows = container!.querySelectorAll('[data-testid="soak-label-leak-row"]');
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('checkout');
+    expect(rows[0].textContent).toContain('first 175ms → second 325ms');
+  });
+
+  it('renders no label rows for a flat-labelled run', async () => {
+    const flatLabels: Report = {
+      ...reportFixture,
+      run_id: 25,
+      soak_trend: {
+        first_half_ms: 200.2,
+        second_half_ms: 199.8,
+        slope_ms_per_min: 0,
+        leak_suspected: false,
+        labels: [
+          { label: 'browse', first_half_ms: 200.2, second_half_ms: 199.8, slope_ms_per_min: 0, leak_suspected: false },
+        ],
+      },
+    };
+    await renderReportsList(navPersonas.alice, [flatLabels]);
+    await loadExecution();
+
+    expect(container!.querySelectorAll('[data-testid="soak-label-leak-row"]').length).toBe(0);
+  });
+});
+
 describe('ReportsList empty + loading states (phase 76)', () => {
   it('shows the shared empty state with the one action when the caller has no executions', async () => {
     await renderReportsList(navPersonas.alice, [], []);
