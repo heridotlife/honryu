@@ -47,6 +47,18 @@ export function getCampaign(campaignId: number): Promise<Campaign> {
   return apiClient.get<Campaign>(`/campaigns/${campaignId}`);
 }
 
+/**
+ * GET /api/campaigns -- every campaign across the caller's visible tenants
+ * (RBAC-scoped server-side; heri-mp sees marketplace only, ops-admin sees
+ * all). The list panel loads this on mount so no one types a tenant id
+ * just to see what exists. Nil-normalized for the same reason as
+ * listProjects.
+ */
+export async function listAllCampaigns(): Promise<Campaign[]> {
+  const got = await apiClient.get<Campaign[] | null>('/campaigns');
+  return got ?? [];
+}
+
 export type Outcome = 'passed' | 'failed' | 'aborted' | 'error';
 
 export interface FailingCriterion {

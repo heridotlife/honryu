@@ -5,7 +5,9 @@ import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card'
 import EmptyState from '../components/EmptyState';
 import Input from '../components/ui/Input';
 import { ApiError } from '../api/client';
-import { createCampaign, getCampaignVerdict, listTenantCampaigns } from '../api/campaigns';
+import { createCampaign, getCampaignVerdict, listAllCampaigns } from '../api/campaigns';
+import { listExecutions, type ExecutionSummary } from '../api/executions';
+import { listProjects, type Project } from '../api/projects';
 import type { Campaign, CampaignVerdict, Outcome, ServiceVerdict } from '../api/campaigns';
 import { getCampaignComparison } from '../api/comparison';
 import type { CampaignComparison, ComparisonStatus } from '../api/comparison';
@@ -267,15 +269,23 @@ function ComparisonPanel({ campaignId }: { campaignId: number }) {
   );
 }
 
-/** Create a campaign, browse a tenant's campaigns, and view a campaign's rolled-up verdict. */
-export default function Campaigns() {
+/**
+ * Create a campaign, browse every campaign you can see, and view a
+ * campaign's rolled-up verdict. Phase 105 UX: the list loads itself on
+ * mount (GET /api/campaigns is RBAC-scoped, so it shows exactly what the
+ * signed-in persona may see); the tenant filter is a dropdown of tenants
+ * derived from visible projects; service rows pick a project, then one of
+ * that project's executions -- no raw IDs typed anywhere.
+ */
+function CampaignsPage() {
   const { can } = useSession();
-  const canCreate = can('campaign', 'create');
-  const [tenantId, setTenantId] = useState('');
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [listLoading, setListLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [executions, setExecutions] = useState<ExecutionSummary[] | null>(null);
 
+  const [tenantFilter, setTenantFilter] = useState('all');
   const [name, setName] = useState('');
   const [windowStart, setWindowStart] = useState('');
   const [windowEnd, setWindowEnd] = useState('');
@@ -288,11 +298,11 @@ export default function Campaigns() {
   const [verdictError, setVerdictError] = useState<string | null>(null);
   const [verdictLoading, setVerdictLoading] = useState(false);
 
-  const loadCampaigns = async (tenantIdNum: number) => {
+  const loadCampaigns = async () => {
     setListLoading(true);
     setListError(null);
     try {
-      setCampaigns(await listTenantCampaigns(tenantIdNum));
+      setCampaigns(await listAllCampaigns());
     } catch (err) {
       setCampaigns(null);
       setListError(err instanceof ApiError ? err.message : 'Failed to load campaigns.');
@@ -301,14 +311,30 @@ export default function Campaigns() {
     }
   };
 
-  const handleLoad = () => {
-    const tenantIdNum = Number(tenantId);
-    if (!tenantId || !Number.isInteger(tenantIdNum) || tenantIdNum <= 0) {
-      setListError('Enter a valid tenant id.');
-      return;
-    }
-    void loadCampaigns(tenantIdNum);
-  };
+  // Mount: the list and both picker catalogs load themselves. A failure to
+  // load pickers degrades the form to disabled selects, not a broken page.
+  useEffect(() => {
+    void loadCampaigns();
+    listProjects()
+      .then(setProjects)
+      .catch(() => setProjects([]));
+    listExecutions()
+      .then((e) => setExecutions(e.filter((x) => x.kind !== 'calibrate_engine')))
+      .catch(() => setExecutions([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Tenants with at least one visible project -- the filter and the create
+  // form's implicit tenant. A persona with projects but no campaigns yet
+  // still gets a populated dropdown instead of a number input.
+  const tenantOptions = (projects ?? [])
+    .map((p) => p.tenant_id)
+    .filter((id, i, arr) => arr.indexOf(id) === i)
+    .sort((a, b) => a - b);
+
+  const visible = (campaigns ?? []).filter(
+    (c) => tenantFilter === 'all' || String(c.tenant_id) === tenantFilter,
+  );
 
   const selectCampaign = async (id: number) => {
     setSelectedId(id);
@@ -324,10 +350,17 @@ export default function Campaigns() {
     }
   };
 
+  const executionsFor = (projectId: string): ExecutionSummary[] =>
+    projectId === '' ? [] : (executions ?? []).filter((e) => String(e.project_id) === projectId);
+
+  const projectsForCreate =
+    tenantFilter === 'all' ? (projects ?? []) : (projects ?? []).filter((p) => String(p.tenant_id) === tenantFilter);
+
+  const createTenantId = tenantFilter === 'all' ? (tenantOptions.length === 1 ? tenantOptions[0] : null) : Number(tenantFilter);
+
   const handleCreate = async () => {
-    const tenantIdNum = Number(tenantId);
-    if (!tenantId || !Number.isInteger(tenantIdNum) || tenantIdNum <= 0) {
-      setCreateError('Enter a valid tenant id above before creating a campaign.');
+    if (createTenantId === null || !Number.isInteger(createTenantId) || createTenantId <= 0) {
+      setCreateError('Pick a tenant with the filter above (or have exactly one visible tenant).');
       return;
     }
     if (!name.trim()) {
@@ -346,7 +379,7 @@ export default function Campaigns() {
       const projectId = Number(row.projectId);
       const executionId = Number(row.executionId);
       if (!Number.isInteger(projectId) || projectId <= 0 || !Number.isInteger(executionId) || executionId <= 0) {
-        setCreateError('Each service row needs a valid project id and execution id.');
+        setCreateError('Each service row needs a project and one of its executions.');
         return;
       }
       services.push({ project_id: projectId, execution_id: executionId });
@@ -355,16 +388,15 @@ export default function Campaigns() {
       setCreateError('Add at least one participating service.');
       return;
     }
-
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await createCampaign(tenantIdNum, { name, windowStart: start, windowEnd: end, services });
+      const created = await createCampaign(createTenantId, { name, windowStart: start, windowEnd: end, services });
       setName('');
       setWindowStart('');
       setWindowEnd('');
       setRows([emptyRow()]);
-      await loadCampaigns(tenantIdNum);
+      await loadCampaigns();
       await selectCampaign(created.id);
     } catch (err) {
       setCreateError(err instanceof ApiError ? err.message : 'Failed to create campaign.');
@@ -372,14 +404,23 @@ export default function Campaigns() {
       setCreating(false);
     }
   };
-
   const updateRow = (index: number, patch: Partial<ServiceRow>) => {
-    setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+    setRows((prev) =>
+      prev.map((r, i) => {
+        if (i !== index) return r;
+        const next = { ...r, ...patch };
+        // Switching project invalidates the chosen execution -- a stale
+        // execution id from another project fails server-side verify.
+        if (patch.projectId !== undefined && patch.projectId !== r.projectId) next.executionId = '';
+        return next;
+      }),
+    );
   };
-
   const now = new Date();
   const selectedCampaign = campaigns?.find((c) => c.id === selectedId) ?? null;
-
+  const selectCls =
+    'block w-full min-h-[44px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-white';
+  const canCreate = can('campaign', 'create');
   return (
     <div className="space-y-6" role="region" aria-label="Campaigns panel">
       <div>
@@ -388,21 +429,76 @@ export default function Campaigns() {
           PM-owned readiness events: a window, participating services, and a rolled-up go/no-go.
         </p>
       </div>
-
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Campaigns you can see</CardTitle>
+          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+            Tenant
+            <select
+              aria-label="Filter campaigns by tenant"
+              className={`${selectCls} !min-h-0 !w-auto !py-1.5`}
+              value={tenantFilter}
+              onChange={(e) => setTenantFilter(e.target.value)}
+            >
+              <option value="all">All tenants</option>
+              {tenantOptions.map((t) => (
+                <option key={t} value={String(t)}>
+                  #{t}
+                </option>
+              ))}
+            </select>
+          </label>
+        </CardHeader>
+        <CardContent>
+          {listLoading && <p className="text-body-sm text-slate-500 dark:text-slate-400">Loading…</p>}
+          {listError && (
+            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+              {listError}
+            </p>
+          )}
+          {!listLoading && !listError && campaigns !== null && visible.length === 0 && (
+            <EmptyState
+              testId="campaigns-empty"
+              icon={<Megaphone className="size-6" />}
+              title="No campaigns yet"
+              description="Create one with the form below: a window, participating services, and a rolled-up go/no-go."
+              action={{
+                label: 'Create a campaign',
+                onClick: () => document.getElementById('campaign-name')?.focus(),
+              }}
+            />
+          )}
+          {!listLoading && visible.length > 0 && (
+            <ul className="divide-y divide-slate-200 dark:divide-slate-700">
+              {visible.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => void selectCampaign(c.id)}
+                    className={`flex min-h-[44px] w-full flex-col gap-2 rounded p-4 text-left transition-colors duration-200 ${
+                      selectedId === c.id ? 'bg-sky-50 dark:bg-sky-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <CampaignStatusBadge status={campaignStatus(c, now)} />
+                      <span className="text-body-sm font-medium text-slate-900 dark:text-white">{c.name}</span>
+                      <span className="text-caption text-slate-400 dark:text-slate-500">tenant #{c.tenant_id}</span>
+                    </div>
+                    <span className="text-caption text-slate-500 dark:text-slate-400">
+                      {formatTime(c.window_start)} – {formatTime(c.window_end)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Create a campaign</CardTitle>
+          <CardTitle>Create a campaign{createTenantId !== null ? ` in tenant #${createTenantId}` : ''}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Input
-            label="Tenant ID"
-            type="number"
-            min={1}
-            value={tenantId}
-            onChange={(e) => setTenantId(e.target.value)}
-            placeholder="e.g. 1"
-            fullWidth
-          />
           <Input
             id="campaign-name"
             label="Name"
@@ -433,22 +529,41 @@ export default function Campaigns() {
             <div className="space-y-3">
               {rows.map((row, i) => (
                 <div key={i} className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                  <Input
-                    label="Project ID"
-                    type="number"
-                    min={1}
-                    value={row.projectId}
-                    onChange={(e) => updateRow(i, { projectId: e.target.value })}
-                    fullWidth
-                  />
-                  <Input
-                    label="Designated execution ID"
-                    type="number"
-                    min={1}
-                    value={row.executionId}
-                    onChange={(e) => updateRow(i, { executionId: e.target.value })}
-                    fullWidth
-                  />
+                  <label className="flex-1 text-sm text-slate-600 dark:text-slate-300">
+                    Project
+                    <select
+                      aria-label={`Service ${i + 1} project`}
+                      className={`${selectCls} mt-1`}
+                      value={row.projectId}
+                      onChange={(e) => updateRow(i, { projectId: e.target.value })}
+                    >
+                      <option value="">Select a project…</option>
+                      {projectsForCreate.map((p) => (
+                        <option key={p.id} value={String(p.id)}>
+                          {p.name} (#{p.id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex-1 text-sm text-slate-600 dark:text-slate-300">
+                    Designated execution
+                    <select
+                      aria-label={`Service ${i + 1} designated execution`}
+                      className={`${selectCls} mt-1`}
+                      value={row.executionId}
+                      onChange={(e) => updateRow(i, { executionId: e.target.value })}
+                      disabled={row.projectId === ''}
+                    >
+                      <option value="">
+                        {row.projectId === '' ? 'Pick a project first…' : 'Select an execution…'}
+                      </option>
+                      {executionsFor(row.projectId).map((e) => (
+                        <option key={e.id} value={String(e.id)}>
+                          {e.name} (#{e.id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <Button
                     type="button"
                     variant="outline"
@@ -487,77 +602,6 @@ export default function Campaigns() {
           )}
         </CardContent>
       </Card>
-
-      <Card>
-        <form
-          className="flex flex-col gap-4 sm:flex-row sm:items-end"
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleLoad();
-          }}
-        >
-          <Input
-            label="Tenant ID"
-            type="number"
-            min={1}
-            value={tenantId}
-            onChange={(e) => setTenantId(e.target.value)}
-            placeholder="e.g. 1"
-            fullWidth
-          />
-          <Button type="submit" disabled={listLoading}>
-            {listLoading ? 'Loading…' : 'Load campaigns'}
-          </Button>
-        </form>
-        {listError && (
-          <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
-            {listError}
-          </p>
-        )}
-      </Card>
-
-      {campaigns && (
-        <Card padding="none">
-          {/* Phase 76: the create flow EXISTS on this page (the card
-              above), so the one action focuses its first field -- a real
-              step, not a dead button. */}
-          {campaigns.length === 0 ? (
-            <EmptyState
-              testId="campaigns-empty"
-              icon={<Megaphone className="size-6" />}
-              title="No campaigns for this tenant"
-              description="Create one with the form above: a window, participating services, and a rolled-up go/no-go."
-              action={{
-                label: 'Create a campaign',
-                onClick: () => document.getElementById('campaign-name')?.focus(),
-              }}
-            />
-          ) : (
-            <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-              {campaigns.map((c) => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    onClick={() => void selectCampaign(c.id)}
-                    className={`flex min-h-[44px] w-full flex-col gap-2 rounded p-4 text-left transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 sm:flex-row sm:items-center sm:justify-between ${
-                      selectedId === c.id ? 'bg-sky-50 dark:bg-sky-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <CampaignStatusBadge status={campaignStatus(c, now)} />
-                      <span className="text-body-sm font-medium text-slate-900 dark:text-white">{c.name}</span>
-                    </div>
-                    <span className="text-caption text-slate-500 dark:text-slate-400">
-                      {formatTime(c.window_start)} – {formatTime(c.window_end)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-
       {selectedId !== null && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -611,7 +655,6 @@ export default function Campaigns() {
                     </li>
                   ))}
                 </ul>
-
                 <div>
                   <h3 className="text-caption mb-2 font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                     Other load active during this window
@@ -636,10 +679,11 @@ export default function Campaigns() {
           </CardContent>
         </Card>
       )}
-
       {selectedId !== null && <ComparisonPanel key={selectedId} campaignId={selectedId} />}
     </div>
   );
 }
 
 export { campaignStatus, serviceStatus };
+
+export default CampaignsPage;
