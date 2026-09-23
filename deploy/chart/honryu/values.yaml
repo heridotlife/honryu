@@ -127,7 +127,7 @@ demo:
   #     tenants: '"<tenant id>": [role, ...]' grants within tenants
   # Role names are validated against the RBAC catalog at startup, so a
   # typo here fails the pod, not the persona's first request.
-  profiles: [{"id":"heri-mp","name":"Heri (Marketplace Admin)","tenants":{"2":["tenant_admin"]}},{"id":"edi-mp","name":"Edi (Marketplace Editor)","tenants":{"2":["tenant_editor"]}},{"id":"heri-labs","name":"Heri (Labs Admin)","tenants":{"3":["tenant_admin"]}},{"id":"sam-supplier","name":"Sam (Supplier Admin)","tenants":{"4":["tenant_admin"]}},{"id":"dave-cm","name":"Dave (Campaign Manager)","tenants":{"2":["campaign_manager"]}}]
+  profiles: [{"id":"heri-mp","name":"Heri (Marketplace Admin)","tenants":{"2":["tenant_admin"]}},{"id":"edi-mp","name":"Edi (Marketplace Editor)","tenants":{"2":["tenant_editor"]}},{"id":"heri-labs","name":"Heri (Labs Admin)","tenants":{"3":["tenant_admin"]}},{"id":"sam-supplier","name":"Sam (Supplier Admin)","tenants":{"4":["tenant_admin"]}},{"id":"dave-cm","name":"Dave (Campaign Manager)","tenants":{"2":["campaign_manager"]}},{"id":"ops-admin","name":"Ops (Platform Admin)","global":["service_provider_admin"]}]
 
 # Customer-APM link-outs (phase 37). Honryu propagates trace context but
 # does not trace: "APM depth" is surfaces INTO the deployment's own APM.
