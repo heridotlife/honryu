@@ -83,6 +83,16 @@ func (r *Repository) ListCampaignsByTenant(ctx context.Context, tenantID int64) 
 	return r.withServices(ctx, out)
 }
 
+// ListAllCampaigns returns every campaign across every tenant, ordered
+// by window start -- the service-provider admin view.
+func (r *Repository) ListAllCampaigns(ctx context.Context) ([]campaign.Campaign, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT "+campaignColumns+" FROM campaign ORDER BY window_start")
+	if err != nil {
+		return nil, fmt.Errorf("mysql: list all campaigns: %w", err)
+	}
+	return scanCampaigns(rows)
+}
+
 // ListCampaignsByTenants returns every campaign belonging to any of
 // tenantIDs, ordered by window start, each with its services included. An
 // empty tenantIDs yields an empty list -- the shape GET /api/campaigns

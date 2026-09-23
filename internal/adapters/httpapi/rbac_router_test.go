@@ -1423,6 +1423,21 @@ func TestRBAC_CampaignManagerEditsAbortsAndListsAcrossTenants(t *testing.T) {
 	}
 	_ = initechCampaign
 
+	// A service-provider admin holds no tenant role anywhere, so
+	// TenantIDs() alone scopes them to nothing -- the phase-105b pin:
+	// global role short-circuits to every campaign, incl. tenants the
+	// admin has no explicit role in.
+	rec = f.req(t, http.MethodGet, "/api/campaigns", "admin-tok", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin GET /api/campaigns = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	adminBody := rec.Body.String()
+	for _, want := range []string{"Future-event-v2", "Live-event", "Globex-event", "Initech-event"} {
+		if !strings.Contains(adminBody, want) {
+			t.Fatalf("admin GET /api/campaigns missing %q (service_provider_admin sees all): %s", want, adminBody)
+		}
+	}
+
 	// An account with no tenant role sees an empty list, never a leak.
 	rec = f.req(t, http.MethodGet, "/api/campaigns", "nobody-tok", nil)
 	if rec.Code != http.StatusOK {

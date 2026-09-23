@@ -20,6 +20,11 @@ type CampaignRepository interface {
 	// ListCampaignsByTenant returns every campaign belonging to tenantID,
 	// ordered by window start.
 	ListCampaignsByTenant(ctx context.Context, tenantID int64) ([]campaign.Campaign, error)
+	// ListAllCampaigns returns every campaign across every tenant -- the
+	// service-provider admin's cross-tenant view, mirroring
+	// ListAllProjects. Ordered by window start.
+	ListAllCampaigns(ctx context.Context) ([]campaign.Campaign, error)
+
 	// ListCampaignsByTenants returns every campaign belonging to any of
 	// tenantIDs, ordered by window start -- the cross-tenant view behind
 	// GET /api/campaigns, where a campaign manager coordinates several

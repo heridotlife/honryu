@@ -50,6 +50,17 @@ func (s *Store) ListCampaignsByTenant(_ context.Context, tenantID int64) ([]camp
 	return out, nil
 }
 
+// ListAllCampaigns returns every campaign in the store, ordered by
+// window start -- the service-provider admin view.
+func (s *Store) ListAllCampaigns(_ context.Context) ([]campaign.Campaign, error) {
+	out := make([]campaign.Campaign, 0, len(s.campaigns))
+	for _, c := range s.campaigns {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Window.Start.Before(out[j].Window.Start) })
+	return out, nil
+}
+
 // ListCampaignsByTenants returns every campaign belonging to any of
 // tenantIDs, ordered by window start. An empty tenantIDs yields an empty
 // list.
