@@ -239,7 +239,13 @@ describe('Campaigns empty state (phase 76, mounted)', () => {
             { status: 200, headers: { 'Content-Type': 'application/json' } },
           );
         }
-        if (url.endsWith('/api/tenants/7/campaigns')) {
+        if (url.endsWith('/api/campaigns')) {
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.endsWith('/api/projects')) {
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.endsWith('/api/executions')) {
           return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         return new Response(JSON.stringify({ message: `no stub for ${url}` }), {
@@ -252,23 +258,13 @@ describe('Campaigns empty state (phase 76, mounted)', () => {
     await act(async () => {
       root!.render(createElement(SessionProvider, null, createElement(Campaigns)));
     });
-    await act(async () => {}); // flush /api/me
-
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    const tenant = container!.querySelector('input[type="number"]') as HTMLInputElement;
-    await act(async () => {
-      setter.call(tenant, '7');
-      tenant.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      container!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
+    await act(async () => {}); // flush /api/me + mount-time list/projects/executions
     await act(async () => {});
 
     const empty = container!.querySelector('[data-testid="campaigns-empty"]')!;
     expect(empty).not.toBeNull();
     expect(empty.querySelector('[data-testid="campaigns-empty-title"]')?.textContent).toBe(
-      'No campaigns for this tenant',
+      'No campaigns yet',
     );
     const action = empty.querySelector<HTMLButtonElement>('[data-testid="campaigns-empty-action"]')!;
     expect(action?.textContent).toBe('Create a campaign');
