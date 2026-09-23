@@ -155,6 +155,13 @@ func (s *Service) List(ctx context.Context, tenantID int64) ([]campaign.Campaign
 	return s.repo.ListCampaignsByTenant(ctx, tenantID)
 }
 
+// ListAll returns every campaign across every tenant -- the
+// service-provider admin branch of GET /api/campaigns (the same
+// short-circuit visibleProjects applies to projects).
+func (s *Service) ListAll(ctx context.Context) ([]campaign.Campaign, error) {
+	return s.repo.ListAllCampaigns(ctx)
+}
+
 // ListByTenants returns every campaign belonging to any of tenantIDs --
 // the cross-tenant view behind GET /api/campaigns, where a campaign
 // manager coordinating several tenants needs one list, not one request

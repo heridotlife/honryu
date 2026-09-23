@@ -329,14 +329,25 @@ func (h *handlers) abortCampaign(w http.ResponseWriter, r *http.Request) {
 
 // listAllCampaigns is the PM's cross-tenant view: every campaign of every
 // tenant the caller holds any role in, scoped down by acct.TenantIDs()
-// (audit rule C1, mirroring listProjects). A caller with no tenant role
-// sees an empty list, never another tenant's campaigns.
+// (audit rule C1, mirroring listProjects). A service-provider admin (who
+// holds no tenant role anywhere) short-circuits to every campaign, the
+// same branch visibleProjects gives projects. A caller with neither sees
+// an empty list, never another tenant's campaigns.
 func (h *handlers) listAllCampaigns(w http.ResponseWriter, r *http.Request) {
 	if !h.campaignsConfigured(w) {
 		return
 	}
 	acct := accountFrom(r.Context())
-	campaigns, err := h.deps.Campaigns.ListByTenants(r.Context(), acct.TenantIDs())
+	var campaigns []campaign.Campaign
+	var err error
+	if acct.HasGlobalRole(rbac.RoleServiceProviderAdmin) {
+		// Same short-circuit as visibleProjects: a service-provider
+		// admin holds no tenant role anywhere, so TenantIDs() is empty
+		// -- scope by role, not by the (empty) tenant list.
+		campaigns, err = h.deps.Campaigns.ListAll(r.Context())
+	} else {
+		campaigns, err = h.deps.Campaigns.ListByTenants(r.Context(), acct.TenantIDs())
+	}
 	if err != nil {
 		respondError(w, err)
 		return
