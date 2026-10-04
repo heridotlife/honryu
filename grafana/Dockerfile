@@ -1,5 +1,5 @@
 # Use latest stable Grafana with security updates (pinned by digest)
-FROM grafana/grafana:13.2.2@sha256:9924c7fe0effe4a5fea08b3451905de54f09fde9d1589463a5f2d02d9ec158bc
+FROM grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
 
 # Admin credentials are deliberately NOT set here.
 #
