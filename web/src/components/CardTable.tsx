@@ -103,6 +103,22 @@ export function cardListTestId(tableTestId: string): string {
   return `${tableTestId}-cards`;
 }
 
+/**
+ * Phase 106: cell vertical rhythm comes from the density custom property,
+ * appended AFTER the caller's classes so the token wins the cascade over
+ * whatever py-* scale the page passed (Tailwind v4 emits the arbitrary-value
+ * utility after the scale utilities in the compiled sheet -- verified in
+ * dist/). Horizontal padding stays the caller's own. Comfortable resolves
+ * to 0.75rem, compact to 0.375rem; the page's old py-2/py-3 tokens remain
+ * only as the pre-density fallback for sheets that never define the var.
+ */
+const densityPadY = 'py-[var(--row-pad-y)]';
+
+/** Caller classes + the density token, tolerating absent classes. */
+function withDensityPad(classes: string | undefined): string {
+  return classes ? `${classes} ${densityPadY}` : densityPadY;
+}
+
 export default function CardTable<Row>({
   columns,
   rows,
@@ -130,13 +146,13 @@ export default function CardTable<Row>({
         <thead>
           <tr className={headerRowClassName}>
             {columns.map((col) => (
-              <th key={col.key} scope="col" className={col.thClassName} {...(col.thAttributes ?? {})}>
+              <th key={col.key} scope="col" className={withDensityPad(col.thClassName)} {...(col.thAttributes ?? {})}>
                 {col.header}
                 {col.headerExtra}
               </th>
             ))}
             {actions !== undefined && (
-              <th scope="col" className={actions.thClassName}>
+              <th scope="col" className={withDensityPad(actions.thClassName)}>
                 {actions.header ?? ''}
               </th>
             )}
@@ -145,7 +161,7 @@ export default function CardTable<Row>({
         <tbody className={tbodyClassName}>
           {rows.length === 0 && emptyMessage !== undefined ? (
             <tr>
-              <td colSpan={columnCount} className={emptyTdClassName}>
+              <td colSpan={columnCount} className={withDensityPad(emptyTdClassName)}>
                 {emptyMessage}
               </td>
             </tr>
@@ -162,14 +178,14 @@ export default function CardTable<Row>({
                 {columns.map((col) => (
                   <td
                     key={col.key}
-                    className={typeof col.tdClassName === 'function' ? col.tdClassName(row) : col.tdClassName}
+                    className={withDensityPad(typeof col.tdClassName === 'function' ? col.tdClassName(row) : col.tdClassName)}
                     data-testid={col.cellTestId?.(row)}
                     {...(col.cellAttributes?.(row) ?? {})}
                   >
                     {col.render(row)}
                   </td>
                 ))}
-                {actions !== undefined && <td className={actions.tdClassName}>{actions.render(row)}</td>}
+                {actions !== undefined && <td className={withDensityPad(actions.tdClassName)}>{actions.render(row)}</td>}
               </tr>
             ))
           )}
@@ -181,7 +197,11 @@ export default function CardTable<Row>({
   const primary = columns.find((col) => col.primary);
   const pairs = columns.filter((col) => col !== primary);
   return (
-    <ul className="space-y-3" data-testid={cardListTestId(tableTestId)}>
+    // Row spacing reads --row-gap (phase 106): flex gap, not space-y, so
+    // the density property can retighten the card rhythm the same way it
+    // retightens table cells. Comfortable is 1rem, compact 0.5rem (the
+    // old fixed space-y-3 was 0.75rem).
+    <ul className="flex flex-col gap-[var(--row-gap)]" data-testid={cardListTestId(tableTestId)}>
       {rows.length === 0 && emptyMessage !== undefined ? (
         <li className={`text-body-sm text-slate-500 dark:text-slate-400 ${emptyTdClassName ?? ''}`} data-testid={cardListTestId(tableTestId) + '-empty'}>
           {emptyMessage}
