@@ -264,6 +264,36 @@ describe('DashboardLayout (mounted)', () => {
     expect(container?.querySelector('[data-testid="nav-new-test"]')).toBeNull();
   });
 
+  // Phase 106: density wiring. Resolution lives in the SAME mount effect
+  // that flips `mounted` (which gates all rendered content), so the html
+  // class is guaranteed present before any nav or page paints -- the
+  // no-FOUC contract, pinned. Cleanup is in-test: the shared afterEach
+  // never touches documentElement or this key.
+  it('applies the saved density mode at mount, before content renders', async () => {
+    localStorage.setItem('honryu-density', 'compact');
+    await renderLayout(stubApi({ '/api/me': () => json(carol) }));
+
+    expect(document.documentElement.classList.contains('density-compact')).toBe(true);
+
+    document.documentElement.classList.remove('density-compact');
+    localStorage.removeItem('honryu-density');
+  });
+
+  it('renders the density toggle in the bar (lg) and in the mobile drawer', async () => {
+    await renderLayout(stubApi({ '/api/me': () => json(carol) }));
+
+    const toggles = container?.querySelectorAll('[data-testid="density-toggle"]');
+    expect(toggles?.length).toBe(2);
+
+    // The bar instance rides beside the theme button, gated to lg (the
+    // md bar is already at capacity; the drawer covers below lg).
+    const barWrapper = toggles?.[0].closest('div.hidden');
+    expect(barWrapper?.className).toContain('lg:flex');
+
+    // The drawer instance sits inside the mobile menu container.
+    expect(toggles?.[1].closest('.mobile-menu')).not.toBeNull();
+  });
+
   it('logout DELETEs the session, re-resolves to unauthenticated, and lands on /', async () => {
     const calls: string[] = [];
     let authed = true;
