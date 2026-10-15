@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CardTable, { cardListTestId, type CardTableColumn } from './CardTable';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -359,5 +359,78 @@ describe('CardTable (phase 86 extensions)', () => {
     expect(container!.querySelector('[data-testid="col-chip"]')).toBeNull();
     const card = container!.querySelector('[data-testid="row-1"]')!;
     expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual(['Status']);
+  });
+});
+
+// Phase 106: density consumption. jsdom loads no Tailwind sheet, so the
+// utility classes are inert strings -- what these pin is what the DOM
+// actually carries (the var tokens on cells and card list) plus the one
+// link jsdom CAN compute end-to-end: the custom property's own value on
+// <html>, flipped by the same .density-compact class DensityToggle applies,
+// feeding the very property the cell utility references.
+describe('CardTable (phase 106 density)', () => {
+  // The declarations globals.css ships (values + compact overrides) AND the
+  // compiled utility the cells carry, so getComputedStyle resolves the chain
+  // the way a real browser would minus var() substitution, which jsdom
+  // deliberately does not do.
+  let style: HTMLStyleElement | null = null;
+
+  beforeEach(() => {
+    style = document.createElement('style');
+    style.textContent =
+      ':root{--row-pad-y:0.75rem;--row-gap:1rem}' +
+      'html.density-compact{--row-pad-y:0.375rem;--row-gap:0.5rem}' +
+      '.py-\\[var\\(--row-pad-y\\)\\]{padding-block:var(--row-pad-y)}';
+    document.head.appendChild(style);
+  });
+
+  afterEach(() => {
+    document.documentElement.classList.remove('density-compact');
+    style?.remove();
+    style = null;
+  });
+
+  it('table cells carry the density var vertically, keeping horizontal classes', async () => {
+    matchMediaStubs(true);
+    await renderCardTable();
+
+    // Every th and td -- caller classes first, the var token appended so it
+    // wins the compiled cascade (verified in dist/: Tailwind v4 emits the
+    // arbitrary-value py after the py-2/py-3 scale utilities).
+    const th = container!.querySelector('th');
+    const td = container!.querySelector('[data-testid="status-1"]');
+    for (const cell of [th, td]) {
+      expect(cell?.className).toContain('py-[var(--row-pad-y)]');
+      expect(cell?.className).toContain('px-4'); // horizontal stays the caller's
+    }
+  });
+
+  it('the card list spaces rows with the gap var, not a fixed space-y', async () => {
+    matchMediaStubs(false);
+    await renderCardTable();
+
+    const list = container!.querySelector(`ul[data-testid="${cardListTestId('list-table')}"]`);
+    expect(list?.className).toContain('gap-[var(--row-gap)]');
+    expect(list?.className).not.toContain('space-y-3');
+  });
+
+  it('flipping .density-compact changes the computed property the cell padding reads', async () => {
+    matchMediaStubs(true);
+    await renderCardTable();
+
+    const html = document.documentElement;
+    const read = () => getComputedStyle(html).getPropertyValue('--row-pad-y').trim();
+    // The comfortable default exists...
+    expect(read()).toBe('0.75rem');
+    // ...and the compact class halves it -- the same flip DensityToggle
+    // performs on <html>.
+    html.classList.add('density-compact');
+    expect(read()).toBe('0.375rem');
+
+    // The rendered cell's vertical padding IS that property: jsdom reports
+    // the unsubstituted reference, which is the chain's last jsdom-visible
+    // link (a real browser substitutes 0.75rem/0.375rem from the above).
+    const td = container!.querySelector('td');
+    expect(getComputedStyle(td!).paddingBlock).toBe('var(--row-pad-y)');
   });
 });
