@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, Menu, Moon, Plus, Sun, X } from 'lucide-react';
 import Button from './ui/Button';
 import ProjectSwitcher from './ProjectSwitcher';
+import DensityToggle, { applyDensity, resolveDensity } from './DensityToggle';
 import { useSession } from '../hooks/useSession';
 
 export interface NavItem {
@@ -106,6 +107,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     const shouldBeDark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
     setIsDark(shouldBeDark);
     applyTheme(shouldBeDark);
+    // Density resolves in the SAME effect (phase 106): this layout renders
+    // null until this effect has run, so resolving here guarantees the
+    // .density-compact class exists on <html> before ANY content paints --
+    // no comfortable-to-compact flash on reload. DensityToggle re-applies
+    // the same value from the same key on its own mount, which is
+    // idempotent, not double-application. No OS fallback: density is a
+    // table preference, not an accessibility medium.
+    applyDensity(resolveDensity());
     setMounted(true);
   }, []);
 
@@ -243,6 +252,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               >
                 {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
               </Button>
+              {/* Density switch (phase 106), right of the theme toggle. Gated
+                  to lg: at md the bar already carries the full nav-link set +
+                  CTA + switcher, and the switcher's truncate is the only
+                  shock absorber left -- a ~170px segmented control there
+                  risks the horizontal overflow phase 52 fixed. Below lg the
+                  drawer instance covers it. */}
+              <div className="hidden items-center lg:flex">
+                <DensityToggle />
+              </div>
               <Button
                 onClick={() => setIsMobileMenuOpen((open) => !open)}
                 variant="ghost"
@@ -272,6 +290,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 {item.label}
               </Link>
             ))}
+            {/* Density lives here below lg (phase 106): the top-bar slot is
+                lg-gated, and this drawer is the small-screen control surface,
+                so the switch rides with the nav the same way the theme
+                button's bar slot does -- no new nav row. */}
+            <div className="mt-3 border-t border-slate-200 pt-3 dark:border-slate-800">
+              <DensityToggle />
+            </div>
           </div>
         </div>
       </nav>
