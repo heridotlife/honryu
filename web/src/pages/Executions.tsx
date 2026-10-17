@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Clock } from 'lucide-react';
 import Card, { CardContent } from '../components/ui/Card';
 import Input from '../components/ui/Input';
+import ScheduleModal from '../components/ScheduleModal';
 import { ApiError } from '../api/client';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
 import { useProjectSelection } from '../components/ProjectSwitcher';
@@ -41,6 +43,10 @@ export default function Executions() {
   const [error, setError] = useState<string | null>(null);
   const [engineFilter, setEngineFilter] = useState('all');
   const [search, setSearch] = useState('');
+  // Phase 108: the execution whose schedule drawer is open, if any. The
+  // row object (not just its id) so the drawer can name and tenant-resolve
+  // without a second fetch -- the list already holds both.
+  const [scheduleFor, setScheduleFor] = useState<ExecutionSummary | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -182,10 +188,14 @@ export default function Executions() {
       ) : (
         <ul className="divide-y divide-slate-200 dark:divide-slate-700">
           {filtered.map((e) => (
-            <li key={e.id}>
+            // Phase 108: the row is a link plus one sibling action, laid out
+            // side by side -- the Schedule button must not nest inside the
+            // link (nested interactive elements are unreachable for keyboard
+            // and screen readers), so the li is the flex row now.
+            <li key={e.id} className="flex items-center gap-1">
               <Link
                 to={`/executions/${e.id}`}
-                className="flex items-center justify-between rounded py-3 text-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 px-2"
+                className="flex flex-1 items-center justify-between rounded py-3 text-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-800/50 px-2"
               >
                 <span className="font-medium text-slate-900 dark:text-slate-100">{executionDisplayName(e.name)}</span>
                 <span className="text-slate-500">
@@ -198,9 +208,36 @@ export default function Executions() {
                   {formatRowTime(e.created_time)}
                 </span>
               </Link>
+              <button
+                type="button"
+                data-testid={`schedule-button-${e.id}`}
+                aria-label={`schedule execution ${e.id}`}
+                title="Schedule"
+                onClick={() => setScheduleFor(e)}
+                className="rounded p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-sky-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-sky-400"
+              >
+                <Clock aria-hidden className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>
+      )}
+      {/* Phase 108: the schedule drawer for the row that opened it. */}
+      {scheduleFor !== null && (
+        <ScheduleModal
+          executionId={scheduleFor.id}
+          executionName={executionDisplayName(scheduleFor.name)}
+          projectId={scheduleFor.project_id}
+          onClose={() => setScheduleFor(null)}
+          onMutated={() => {
+            // Deliberately nothing: a schedule changes no execution row (no
+            // field of ExecutionSummary derives from schedules), so
+            // refetching the list would burn a round-trip to redraw the
+            // same rows. The drawer reloads its own list; the hook stays
+            // because the day a mutation does touch this page, it lands
+            // here.
+          }}
+        />
       )}
     </div>
   );
