@@ -84,6 +84,14 @@ async function renderExecutionsList(storedProject: string | null = null) {
       if (url.endsWith('/webhooks')) {
         return json([]);
       }
+      // Phase 108: the schedule drawer's reads, for whichever row the test
+      // opens (execution 7 belongs to project 1).
+      if (url.endsWith('/api/executions/7/schedules')) {
+        return json([]);
+      }
+      if (url === '/api/projects/1') {
+        return json(projectsFixture[0]);
+      }
       return json({ message: `no stub for ${url}` }, 500);
     })
   );
@@ -188,6 +196,49 @@ describe('Executions engine filter pressed state (phase 49)', () => {
     // And the toggle really filters: only the k6 execution survives.
     expect(container!.querySelector('a[href="/executions/16"]')).not.toBeNull();
     expect(container!.querySelector('a[href="/executions/7"]')).toBeNull();
+  });
+});
+
+// Phase 108: every row carries its own Schedule action, which opens the
+// drawer scoped to that execution -- and closes cleanly without touching
+// the list (schedules change no execution row, so there is nothing to
+// refetch; that decision lives in the onMutated no-op).
+describe('Executions schedule drawer (phase 108)', () => {
+  it('renders a clock Schedule button per row, labelled per execution', async () => {
+    await renderExecutionsList();
+
+    for (const id of [7, 3, 16]) {
+      const btn = container!.querySelector(`[data-testid="schedule-button-${id}"]`);
+      expect(btn).not.toBeNull();
+      expect(btn!.getAttribute('aria-label')).toBe(`schedule execution ${id}`);
+    }
+  });
+
+  it('opens the drawer for the clicked row and closes cleanly', async () => {
+    await renderExecutionsList();
+
+    await act(async () => {
+      container!
+        .querySelector('[data-testid="schedule-button-7"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {});
+
+    const drawer = container!.querySelector('[data-testid="schedule-drawer"]');
+    expect(drawer).not.toBeNull();
+    // Scoped to the right execution: its display name heads the drawer.
+    expect(drawer!.textContent).toContain('Schedules — alpha-exec');
+    // The drawer loaded that execution\u2019s (empty) schedule list.
+    expect(container!.querySelector('[data-testid="schedule-empty"]')).not.toBeNull();
+
+    await act(async () => {
+      container!
+        .querySelector('button[aria-label="Close schedule drawer"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container!.querySelector('[data-testid="schedule-drawer"]')).toBeNull();
+    // Closing changed nothing on the page behind it: the rows stand.
+    expect(container!.querySelector('a[href="/executions/7"]')).not.toBeNull();
   });
 });
 
