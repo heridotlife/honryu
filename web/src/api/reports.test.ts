@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { compareRuns, fetchShared, getRunRecommendations, getShardConfig, listExecutionReports, listShares, revokeShare, shareLinkUrl, shareRun, shardObjectUrl } from './reports';
+import { compareRuns, fetchShared, getRunRecommendations, getShardConfig, listExecutionReports, listShares, revokeShare, setRunNote, shareLinkUrl, shareRun, shardObjectUrl, starRun } from './reports';
 
 // Phase 78: the recommendations tab's fetch — the generated wrapper's path,
 // plus the null→[] normalization every list-shaped read here applies.
@@ -152,6 +152,56 @@ describe('shard objects', () => {
 
     expect(seenUrl).toBe('/api/runs/9/scenarios/2/shards/0/config');
     expect(got).toBe('execution:\n  concurrency: 10');
+  });
+});
+
+// Phase 107: the annotation writes — generated-client paths, PUT + JSON body.
+describe('run annotations', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('starRun PUTs {"starred":bool} on the run-scoped star path', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init: init ?? {} });
+        return new Response(JSON.stringify({ run_id: 42, starred: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+
+    const got = await starRun(42, true);
+
+    expect(calls[0].url).toBe('/api/runs/42/star');
+    expect(calls[0].init.method).toBe('PUT');
+    expect(calls[0].init.body).toBe(JSON.stringify({ starred: true }));
+    expect(new Headers(calls[0].init.headers).get('Content-Type')).toBe('application/json');
+    expect(got).toEqual({ run_id: 42, starred: true });
+  });
+
+  it('setRunNote PUTs the note verbatim and returns the echo', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init: init ?? {} });
+        return new Response(JSON.stringify({ run_id: 42, note: 'why this run matters' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+
+    const got = await setRunNote(42, 'why this run matters');
+
+    expect(calls[0].url).toBe('/api/runs/42/note');
+    expect(calls[0].init.method).toBe('PUT');
+    expect(calls[0].init.body).toBe(JSON.stringify({ note: 'why this run matters' }));
+    expect(got).toEqual({ run_id: 42, note: 'why this run matters' });
   });
 });
 

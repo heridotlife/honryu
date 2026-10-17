@@ -753,3 +753,73 @@ describe('RunCompare card mode (phase 86)', () => {
     expect((list!.querySelector('[data-testid="compare-check-8"]') as HTMLInputElement).disabled).toBe(true);
   });
 });
+
+// --- Starred runs in the pickers (phase 107) ---------------------------------
+//
+// A star IS a baseline candidacy: the vs-baseline list sorts starred runs
+// first (★ prefix, recency preserved within each group), a lone star is
+// preselected as the baseline at load (before any user choice), and the
+// slot selects mark starred options the same way. Two or more stars are
+// competing candidates -- no preselect, the oldest-run default stands.
+
+/** Older still than runOlder: the chronological tail a star must jump. */
+const runOldest: Report = {
+  ...runOlder,
+  run_id: 7,
+  started_at: '2026-09-02T10:00:00Z',
+  ended_at: '2026-09-02T10:01:00Z',
+};
+
+describe('RunCompare starred runs (phase 107)', () => {
+  it('sorts the vs-baseline run list starred-first, ★ prefix, recency kept within groups', async () => {
+    await renderCompare({
+      url: '/executions/5/compare?mode=vs-baseline',
+      reports: [runNewer, runOlder, { ...runOldest, starred: true }], // list is most-recent-first: 9, 8, 7
+    });
+    const radios = Array.from(
+      container!.querySelectorAll('[data-testid^="baseline-radio-"]'),
+    ) as HTMLInputElement[];
+    expect(radios.map((r) => r.dataset.testid)).toEqual([
+      'baseline-radio-7', // the star leads
+      'baseline-radio-9', // then recency: 9 before 8
+      'baseline-radio-8',
+    ]);
+    // The ★ prefix rides the row's own label.
+    const row = radios[0]!.closest('tr');
+    expect(row?.textContent).toContain('★ Run #7');
+    expect(radios[1]!.closest('tr')?.textContent).not.toContain('★');
+  });
+
+  it('marks starred options in the slot selects too', async () => {
+    await renderCompare({ reports: [runNewer, { ...runOlder, starred: true }] }); // A=8 (starred), B=9
+    const optA8 = container!.querySelector('[data-testid="select-run-a"] option[value="8"]') as HTMLOptionElement;
+    const optA9 = container!.querySelector('[data-testid="select-run-a"] option[value="9"]') as HTMLOptionElement;
+    expect(optA8.textContent).toContain('★');
+    expect(optA9.textContent).not.toContain('★');
+  });
+
+  it('preselects a lone starred run as the baseline at load', async () => {
+    // Default (unstarred) would radio the OLDEST run 8; the star on run 9
+    // is the operator's declared baseline and wins the preselect.
+    await renderCompare({
+      url: '/executions/5/compare?mode=vs-baseline',
+      reports: [{ ...runNewer, starred: true }, runOlder],
+    });
+    expect((container!.querySelector('[data-testid="baseline-radio-9"]') as HTMLInputElement).checked).toBe(true);
+    expect((container!.querySelector('[data-testid="baseline-radio-8"]') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('keeps the oldest-run default when several runs are starred', async () => {
+    await renderCompare({
+      url: '/executions/5/compare?mode=vs-baseline',
+      reports: [
+        { ...runNewer, starred: true },
+        { ...runOlder, starred: true },
+      ],
+    });
+    // Two stars are competing candidates: no preselect, the long-standing
+    // oldest-run default stands.
+    expect((container!.querySelector('[data-testid="baseline-radio-8"]') as HTMLInputElement).checked).toBe(true);
+    expect((container!.querySelector('[data-testid="baseline-radio-9"]') as HTMLInputElement).checked).toBe(false);
+  });
+});

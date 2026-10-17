@@ -21,7 +21,7 @@ const reportColumns = `run_id, execution_id, scenario_id, engine, cluster, corre
 	requested_concurrency, requested_throughput, requested_duration_seconds, requested_steps,
 	achieved_concurrency, achieved_throughput, achieved_duration_seconds,
 	achieved_samples, achieved_failed, error_rate,
-	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results, soak_trend`
+	attribution_target, attribution_engine, attribution_unknown, latency, labels, cluster_results, soak_trend, starred, note`
 
 // SaveReport stores a run's report. The first report saved for a run is the
 // one that survives -- saving again for the same run is a no-op, not a
@@ -81,8 +81,15 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	// The annotations (phase 107) are deliberately NOT written from the
+	// struct: starring and notes are post-hoc -- a report lands unstarred
+	// with no note, and SetStarred/SetNote are their only writers. Writing
+	// the struct's values here would let a racing re-save (which first-write
+	// semantics make a no-op) clobber an operator's star with whatever the
+	// report happened to carry. NULL note is the additive-column convention
+	// 0072 documents; the read maps it to "".
 	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_report (`+reportColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rep.RunID, rep.ExecutionID, rep.ScenarioID, string(rep.Engine), rep.Cluster, rep.CorrelationID, string(rep.Outcome),
 		rep.StartedAt.UTC(), rep.EndedAt.UTC(),
 		rep.Requested.Concurrency, rep.Requested.Throughput, rep.Requested.DurationSeconds, requestedSteps,
@@ -90,6 +97,7 @@ func (r *Repository) SaveReport(ctx context.Context, rep report.Report) error {
 		rep.Achieved.Samples, rep.Achieved.Failed, rep.ErrorRate,
 		rep.Attribution.Target, rep.Attribution.Engine, rep.Attribution.Unknown,
 		latency, labels, clusterResults, soakTrend,
+		false, nil,
 	); err != nil {
 		if isDuplicateKey(err) {
 			// Someone else's finalisation already won for this run; nothing to
@@ -146,6 +154,44 @@ func (r *Repository) ReportsSince(ctx context.Context, since time.Time, limit in
 	return r.listReports(ctx,
 		"SELECT "+reportColumns+` FROM execution_report WHERE started_at>=?
 		 ORDER BY started_at DESC, run_id DESC`+limitClause(limit), since.UTC())
+}
+
+// SetStarred stars or unstars a stored run (phase 107): a starred run is a
+// RunCompare baseline candidate. Unknown run -> ports.ErrNotFound, the
+// GetReport contract.
+func (r *Repository) SetStarred(ctx context.Context, runID int64, starred bool) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE execution_report SET starred=? WHERE run_id=?`, starred, runID)
+	if err != nil {
+		return fmt.Errorf("mysql: set starred: %w", err)
+	}
+	return rowsAffectedOrNotFound(res, "set starred")
+}
+
+// SetNote writes a run's free-text note in place -- last write wins, no
+// history. The length bound (2000 runes) is the HTTP handler's; the store
+// persists what it is given. Unknown run -> ports.ErrNotFound.
+func (r *Repository) SetNote(ctx context.Context, runID int64, note string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE execution_report SET note=? WHERE run_id=?`, note, runID)
+	if err != nil {
+		return fmt.Errorf("mysql: set note: %w", err)
+	}
+	return rowsAffectedOrNotFound(res, "set note")
+}
+
+// rowsAffectedOrNotFound turns an UPDATE's zero-affected-rows outcome into
+// ports.ErrNotFound: the annotation writes address a stored report, and a
+// run with no row is unknown exactly as GetReport reads it.
+func rowsAffectedOrNotFound(res sql.Result, what string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mysql: %s: rows affected: %w", what, err)
+	}
+	if n == 0 {
+		return ports.ErrNotFound
+	}
+	return nil
 }
 
 // ErrorSignatureHistory aggregates every error signature across
@@ -247,9 +293,10 @@ func scanReport(s rowScanner) (report.Report, error) {
 		rep             report.Report
 		engine, outcome string
 		latency, labels []byte
-		clusterResults  []byte // JSON array or NULL
-		requestedSteps  []byte // JSON step table or NULL (0076)
-		soakTrend       []byte // JSON trend or NULL (0077)
+		clusterResults  []byte         // JSON array or NULL
+		requestedSteps  []byte         // JSON step table or NULL (0076)
+		soakTrend       []byte         // JSON trend or NULL (0077)
+		note            sql.NullString // free-text annotation or NULL (0087)
 	)
 	if err := s.Scan(
 		&rep.RunID, &rep.ExecutionID, &rep.ScenarioID, &engine, &rep.Cluster, &rep.CorrelationID, &outcome,
@@ -258,12 +305,13 @@ func scanReport(s rowScanner) (report.Report, error) {
 		&rep.Achieved.Concurrency, &rep.Achieved.Throughput, &rep.Achieved.DurationSeconds,
 		&rep.Achieved.Samples, &rep.Achieved.Failed, &rep.ErrorRate,
 		&rep.Attribution.Target, &rep.Attribution.Engine, &rep.Attribution.Unknown,
-		&latency, &labels, &clusterResults, &soakTrend,
+		&latency, &labels, &clusterResults, &soakTrend, &rep.Starred, &note,
 	); err != nil {
 		return report.Report{}, err
 	}
 	rep.Engine = taurus.Executor(engine)
 	rep.Outcome = taurus.Outcome(outcome)
+	rep.Note = note.String
 	if err := decodeJSON(latency, &rep.Latency); err != nil {
 		return report.Report{}, fmt.Errorf("mysql: decode latency: %w", err)
 	}

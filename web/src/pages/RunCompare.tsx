@@ -236,7 +236,7 @@ function RunSelect({
         <option value="">Select a run…</option>
         {reports.map((r) => (
           <option key={r.run_id} value={r.run_id}>
-            Run #{r.run_id} · {formatTime(r.started_at)}
+            {r.starred ? '★ ' : ''}Run #{r.run_id} · {formatTime(r.started_at)}
           </option>
         ))}
       </select>
@@ -525,8 +525,15 @@ export default function RunCompare() {
         const fromQuery = wanted.length >= 2 && wanted.every((n) => ids.includes(n));
         const sel = fromQuery ? wanted : ids.length > 0 ? [ids[ids.length - 1], ids[0]] : [];
         setSelected(sel);
-        setBaselineId(sel.length > 0 ? sel[0] : null);
-        setPicked(sel.slice(1));
+        // Phase 107: a lone star is the operator's declared baseline —
+        // preselect it at load, before any user choice has been made; two
+        // or more stars are competing candidates, so the oldest-run default
+        // stands and the starred-first picker below is where the choice
+        // happens. Either way the baseline leaves the comparison set.
+        const starredIds = rows.filter((r) => r.starred).map((r) => r.run_id);
+        const baseline = starredIds.length === 1 ? starredIds[0] : sel.length > 0 ? sel[0] : null;
+        setBaselineId(baseline);
+        setPicked(sel.slice(1).filter((id) => id !== baseline));
       })
       .catch((err: unknown) => {
         if (cancelled) {
@@ -611,7 +618,15 @@ export default function RunCompare() {
   // identity is the primary/title column, and the radio + checkbox ride
   // both branches as cell content, so their testids and the radio's name
   // group never move. At sm+ the list finally carries column headers for
-  // its two controls; below sm each run is a card.
+  // its two controls; below sm each run is a card. Phase 107: starred runs
+  // lead the list (★ prefix) -- a star IS a baseline candidacy, so the
+  // candidates the operator declared sit above the chronological mass.
+  const baselineRows =
+    reports === null
+      ? []
+      : [...reports].sort(
+          (a, b) => Number(b.starred ?? false) - Number(a.starred ?? false), // stable: recency order survives within each group
+        );
   const baselineRunColumns: CardTableColumn<Report>[] = [
     {
       key: 'run',
@@ -619,7 +634,7 @@ export default function RunCompare() {
       primary: true,
       thClassName: 'px-3 py-2 font-medium',
       tdClassName: 'px-3 py-2 font-medium text-slate-900 dark:text-white',
-      render: (r) => `Run #${r.run_id} · ${formatTime(r.started_at)}`,
+      render: (r) => `${r.starred ? '★ ' : ''}Run #${r.run_id} · ${formatTime(r.started_at)}`,
     },
     {
       key: 'baseline',
@@ -801,7 +816,7 @@ export default function RunCompare() {
                   <CardTable
                     tableTestId="baseline-runs"
                     columns={baselineRunColumns}
-                    rows={reports}
+                    rows={baselineRows}
                     rowKey={(r) => String(r.run_id)}
                     headerRowClassName="text-caption border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400"
                     tbodyClassName="divide-y divide-slate-100 dark:divide-slate-800"

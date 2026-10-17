@@ -203,6 +203,9 @@ export interface LoadProfileEntry {
   engines?: number;
   duration?: number;
   csv_split?: boolean;
+  throughput?: number;
+  mode?: "burst" | "ramp" | "soak" | "staircase";
+  steps?: number;
 }
 
 export interface ExecutionSummary {
@@ -487,6 +490,8 @@ export interface Report {
   criteria?: string[] | null;
   failing_criteria?: FailingCriterion[] | null;
   threshold_results?: ThresholdResult[];
+  starred?: boolean;
+  note?: string;
 }
 
 export interface Series {
@@ -545,8 +550,16 @@ export interface Load {
   concurrency: number;
   throughput: number;
   duration_seconds?: number;
+  steps?: StepLoad[];
   samples?: number;
   failed?: number;
+}
+
+export interface StepLoad {
+  index: number;
+  throughput: number;
+  concurrency: number;
+  duration_seconds: number;
 }
 
 export interface Attribution {
@@ -631,6 +644,7 @@ export const paths = {
   deleteExecutionsByExecutionIdFiles: (executionId: number | string) => `/executions/${executionId}/files`,
   getExecutionsByExecutionIdConfig: (executionId: number | string) => `/executions/${executionId}/config`,
   putExecutionsByExecutionIdConfig: (executionId: number | string) => `/executions/${executionId}/config`,
+  postExecutionsByExecutionIdConfigReResolve: (executionId: number | string) => `/executions/${executionId}/config/re-resolve`,
   postExecutionsByExecutionIdDeploy: (executionId: number | string) => `/executions/${executionId}/deploy`,
   postExecutionsByExecutionIdTrigger: (executionId: number | string) => `/executions/${executionId}/trigger`,
   postExecutionsByExecutionIdStop: (executionId: number | string) => `/executions/${executionId}/stop`,
@@ -667,6 +681,8 @@ export const paths = {
   getRunsByRunIdExport: (runId: number | string) => `/runs/${runId}/export`,
   getRunsByRunIdScenariosByScenarioIdShardsByShardLog: (runId: number | string, scenarioId: number | string, shard: number | string) => `/runs/${runId}/scenarios/${scenarioId}/shards/${shard}/log`,
   getRunsByRunIdScenariosByScenarioIdShardsByShardConfig: (runId: number | string, scenarioId: number | string, shard: number | string) => `/runs/${runId}/scenarios/${scenarioId}/shards/${shard}/config`,
+  putRunsByRunIdStar: (runId: number | string) => `/runs/${runId}/star`,
+  putRunsByRunIdNote: (runId: number | string) => `/runs/${runId}/note`,
   getRunsByRunIdShare: (runId: number | string) => `/runs/${runId}/share`,
   postRunsByRunIdShare: (runId: number | string) => `/runs/${runId}/share`,
   deleteRunsByRunIdShareByToken: (runId: number | string, token: number | string) => `/runs/${runId}/share/${token}`,
@@ -974,12 +990,17 @@ export function getExecutionsByExecutionIdConfig(executionId: number | string): 
 }
 
 /** Replace the execution's load profile */
-export function putExecutionsByExecutionIdConfig(executionId: number | string, body: { name?: string; project_id?: number; execution_id?: number; csv_split?: boolean; criteria?: string[]; tests?: { scenario_id?: number; name?: string; concurrency?: number; rampup?: number; duration?: number; engines?: number; throughput?: number; csv_split?: boolean }[] }): Promise<void> {
+export function putExecutionsByExecutionIdConfig(executionId: number | string, body: { name?: string; project_id?: number; execution_id?: number; csv_split?: boolean; criteria?: string[]; tests?: { scenario_id?: number; name?: string; concurrency?: number; rampup?: number; duration?: number; engines?: number; throughput?: number; csv_split?: boolean; mode?: "burst" | "ramp" | "soak" | "staircase"; steps?: number }[] }): Promise<void> {
   return apiClient.request<void>(paths.putExecutionsByExecutionIdConfig(executionId), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/** Re-resolve the stored config's mode entries */
+export function postExecutionsByExecutionIdConfigReResolve(executionId: number | string): Promise<{ message?: string; entries?: { scenario_id?: number; name?: string; mode?: "burst" | "ramp" | "soak"; changed?: boolean; before?: { engines?: number; concurrency?: number; rampup?: number; throughput?: number }; after?: { engines?: number; concurrency?: number; rampup?: number; throughput?: number } }[] }> {
+  return apiClient.request<{ message?: string; entries?: { scenario_id?: number; name?: string; mode?: "burst" | "ramp" | "soak"; changed?: boolean; before?: { engines?: number; concurrency?: number; rampup?: number; throughput?: number }; after?: { engines?: number; concurrency?: number; rampup?: number; throughput?: number } }[] }>(paths.postExecutionsByExecutionIdConfigReResolve(executionId), { method: 'POST' });
 }
 
 /** Deploy the execution's engines */
@@ -1160,6 +1181,24 @@ export function getRunsByRunIdScenariosByScenarioIdShardsByShardLog(runId: numbe
 /** Fetch a shard's compiled Taurus config, exactly as the run used it */
 export function getRunsByRunIdScenariosByScenarioIdShardsByShardConfig(runId: number | string, scenarioId: number | string, shard: number | string): Promise<string> {
   return apiClient.text(paths.getRunsByRunIdScenariosByScenarioIdShardsByShardConfig(runId, scenarioId, shard));
+}
+
+/** Star or unstar a run */
+export function putRunsByRunIdStar(runId: number | string, body: { starred: boolean }): Promise<{ run_id: number; starred: boolean }> {
+  return apiClient.request<{ run_id: number; starred: boolean }>(paths.putRunsByRunIdStar(runId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Write a run's free-text note */
+export function putRunsByRunIdNote(runId: number | string, body: { note: string }): Promise<{ run_id: number; note: string }> {
+  return apiClient.request<{ run_id: number; note: string }>(paths.putRunsByRunIdNote(runId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 /** List a run's share links */

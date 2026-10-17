@@ -303,6 +303,75 @@ func TestMySQLReportStore_ResaveKeepsTheFirstAttemptsSignatures(t *testing.T) {
 	}
 }
 
+// A report row written before 0087 added the columns reads back
+// unstarred with no note -- the migration's DEFAULT 0 / NULL is what those
+// rows carry, and the NULL must read as "" (the correlation-id
+// convention), never as an error or a zero-looking placeholder. The
+// annotation writes themselves round-trip through the shared contract
+// suite above; what only the real adapter can prove is the NULL mapping.
+func TestMySQLReportStore_PreStarNoteRowReadsDefaults(t *testing.T) {
+	db := dbtest.StartMySQL(t)
+	truncateAll(t, db)
+	store := mysqladapter.NewRepository(db)
+	ctx := context.Background()
+
+	// Insert the way a pre-0087 writer would have: no starred/note
+	// columns, so the row takes the migration's defaults.
+	if _, err := db.Exec(`INSERT INTO execution_report
+		(run_id, execution_id, scenario_id, engine, outcome, started_at, ended_at)
+		VALUES (93, 1, 10, 'jmeter', 'passed', '2026-01-01 00:00:00', '2026-01-01 00:01:00')`); err != nil {
+		t.Fatalf("insert pre-star-note row: %v", err)
+	}
+
+	got, err := store.GetReport(ctx, 93)
+	if err != nil {
+		t.Fatalf("GetReport(pre-star-note row): %v", err)
+	}
+	if got.Starred {
+		t.Error("pre-0087 row reads starred")
+	}
+	if got.Note != "" {
+		t.Errorf("note = %q, want empty on a NULL column", got.Note)
+	}
+	list, err := store.ListReports(ctx, 1, 0)
+	if err != nil {
+		t.Fatalf("ListReports: %v", err)
+	}
+	if len(list) != 1 || list[0].Starred || list[0].Note != "" {
+		t.Errorf("ListReports = %+v, want the old row unstarred with no note", list)
+	}
+}
+
+// SetNote's empty string is written as ” (not NULL) and reads back -- and
+// a note set then cleared never resurrects on re-read.
+func TestMySQLReportStore_NoteEmptyStringRoundTrip(t *testing.T) {
+	db := dbtest.StartMySQL(t)
+	truncateAll(t, db)
+	store := mysqladapter.NewRepository(db)
+	ctx := context.Background()
+
+	if err := store.SaveReport(ctx, report.Build(report.Input{
+		ExecutionID: 1, ScenarioID: 2, RunID: 94,
+		Engine: taurus.ExecutorJMeter, Outcome: taurus.OutcomePassed,
+		StartedAt: time.Unix(9000, 0).UTC(), EndedAt: time.Unix(9030, 0).UTC(),
+	})); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if err := store.SetNote(ctx, 94, "cleared later"); err != nil {
+		t.Fatalf("SetNote: %v", err)
+	}
+	if err := store.SetNote(ctx, 94, ""); err != nil {
+		t.Fatalf("SetNote(clear): %v", err)
+	}
+	got, err := store.GetReport(ctx, 94)
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if got.Note != "" {
+		t.Errorf("note after clear = %q, want empty", got.Note)
+	}
+}
+
 // The actual race this fixes: a run's natural completion and a concurrent
 // Honryu-initiated Stop/Purge both compute a report for the same run and both
 // call SaveReport. Only one persists; the other's insert must lose to the
@@ -499,6 +568,8 @@ func TestMySQLReportStore_ErrorsWhenDBClosed(t *testing.T) {
 		"GetReport":    func() error { _, e := store.GetReport(ctx, 1); return e },
 		"ListReports":  func() error { _, e := store.ListReports(ctx, 1, 0); return e },
 		"ReportsSince": func() error { _, e := store.ReportsSince(ctx, time.Unix(0, 0), 0); return e },
+		"SetStarred":   func() error { return store.SetStarred(ctx, 1, true) },
+		"SetNote":      func() error { return store.SetNote(ctx, 1, "x") },
 	}
 	for name, op := range ops {
 		if err := op(); err == nil {

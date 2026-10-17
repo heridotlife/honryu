@@ -263,6 +263,115 @@ func Run(t *testing.T, newStore NewStore) {
 	// rides the same round trip -- compared deeply: a slice cannot be
 	// compared with ==, and shallow equality would pass a store that kept
 	// the aggregate but silently dropped every label's own trend.
+	// Phase 107: star and note are post-hoc annotations -- they ride the
+	// read paths like every other field, they are written only by their
+	// setters, and a freshly saved report lands unstarred with no note even
+	// if the struct carried values (first-write-wins untouched: a re-save
+	// can never clobber an operator's star).
+	t.Run("StarAndNote", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.SaveReport(ctx, sample(1, 80, time.Unix(2000, 0))); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+		if err := s.SaveReport(ctx, sample(1, 81, time.Unix(2000, 0))); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+
+		// A fresh report reads unstarred with no note.
+		fresh, err := s.GetReport(ctx, 80)
+		if err != nil {
+			t.Fatalf("GetReport: %v", err)
+		}
+		if fresh.Starred || fresh.Note != "" {
+			t.Errorf("fresh report = starred:%v note:%q, want unstarred and no note", fresh.Starred, fresh.Note)
+		}
+
+		// Star persists through the single-row read and the list read alike.
+		if err := s.SetStarred(ctx, 80, true); err != nil {
+			t.Fatalf("SetStarred: %v", err)
+		}
+		got, err := s.GetReport(ctx, 80)
+		if err != nil {
+			t.Fatalf("GetReport: %v", err)
+		}
+		if !got.Starred {
+			t.Error("star did not survive GetReport")
+		}
+		list, err := s.ListReports(ctx, 1, 0)
+		if err != nil {
+			t.Fatalf("ListReports: %v", err)
+		}
+		for _, r := range list {
+			if want := r.RunID == 80; r.Starred != want {
+				t.Errorf("run %d starred = %v, want %v", r.RunID, r.Starred, want)
+			}
+		}
+
+		// Unstarring is the same write in the other direction.
+		if err := s.SetStarred(ctx, 80, false); err != nil {
+			t.Fatalf("SetStarred(false): %v", err)
+		}
+		if got, err = s.GetReport(ctx, 80); err != nil || got.Starred {
+			t.Errorf("after unstar = (%v, starred:%v), want no error and unstarred", err, got.Starred)
+		}
+
+		// Note roundtrip: write, read back verbatim, overwrite (last write
+		// wins), and clear back to empty.
+		const first = "regression hunt: checkout latency doubled after deploy 4211"
+		if err := s.SetNote(ctx, 81, first); err != nil {
+			t.Fatalf("SetNote: %v", err)
+		}
+		got, err = s.GetReport(ctx, 81)
+		if err != nil {
+			t.Fatalf("GetReport: %v", err)
+		}
+		if got.Note != first {
+			t.Errorf("note = %q, want %q", got.Note, first)
+		}
+		const second = "scratch that -- it was the sidecar's retry storm"
+		if err := s.SetNote(ctx, 81, second); err != nil {
+			t.Fatalf("SetNote(overwrite): %v", err)
+		}
+		if got, err = s.GetReport(ctx, 81); err != nil || got.Note != second {
+			t.Errorf("note after overwrite = (%v, %q), want %q", err, got.Note, second)
+		}
+		if err := s.SetNote(ctx, 81, ""); err != nil {
+			t.Fatalf("SetNote(clear): %v", err)
+		}
+		if got, err = s.GetReport(ctx, 81); err != nil || got.Note != "" {
+			t.Errorf("note after clear = (%v, %q), want empty", err, got.Note)
+		}
+
+		// A run with no stored report is unknown to both setters.
+		if err := s.SetStarred(ctx, 999, true); !errors.Is(err, ports.ErrNotFound) {
+			t.Errorf("SetStarred(missing) = %v, want ErrNotFound", err)
+		}
+		if err := s.SetNote(ctx, 999, "x"); !errors.Is(err, ports.ErrNotFound) {
+			t.Errorf("SetNote(missing) = %v, want ErrNotFound", err)
+		}
+	})
+
+	// The same first-write-wins law, applied to the annotations: a report
+	// saved with Starred/Note set on the struct still lands unstarred with
+	// no note -- the values are post-hoc, so no save path may carry them in.
+	t.Run("SaveReportNeverCarriesAnnotations", func(t *testing.T) {
+		s := newStore(t)
+		annotated := sample(1, 82, time.Unix(2000, 0))
+		annotated.Starred = true
+		annotated.Note = "must not land"
+		if err := s.SaveReport(ctx, annotated); err != nil {
+			t.Fatalf("SaveReport: %v", err)
+		}
+		got, err := s.GetReport(ctx, 82)
+		if err != nil {
+			t.Fatalf("GetReport: %v", err)
+		}
+		if got.Starred || got.Note != "" {
+			t.Errorf("saved report carried its annotations: starred:%v note:%q", got.Starred, got.Note)
+		}
+	})
+
+	// SoakTrendRoundTrips
 	t.Run("SoakTrendRoundTrips", func(t *testing.T) {
 		s := newStore(t)
 		want := sample(1, 70, time.Unix(2000, 0))
