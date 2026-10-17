@@ -233,6 +233,14 @@ var authzAuditTable = []authzEntry{
 		query: url.Values{"format": {"json"}}},
 	{method: "GET", pattern: "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/log", decision: "report:read"},
 	{method: "GET", pattern: "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/config", decision: "report:read"},
+	// Phase 107: the annotation writes mirror the share routes' report:read
+	// gate -- an annotation is evidence-layer, so any role that can read
+	// the report may annotate it. Bodies precede authorization, so the
+	// probes carry well-formed JSON.
+	{method: "PUT", pattern: "/api/runs/{run_id}/star", decision: "report:read",
+		json: []byte(`{"starred":true}`)},
+	{method: "PUT", pattern: "/api/runs/{run_id}/note", decision: "report:read",
+		json: []byte(`{"note":"audit probe"}`)},
 
 	// Phase 34: issuing, listing and revoking share links is report-read
 	// material (the same grant that shows the report); the public fetch
