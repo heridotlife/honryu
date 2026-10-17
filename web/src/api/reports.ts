@@ -6,7 +6,12 @@ import { apiClient } from './client';
 // client (web/src/api/generated.ts, typed from api/openapi.yaml) — this
 // wrapper stays as the page-facing seam so the null→[] normalization and the
 // hand-written Report type (the richer page contract) are unchanged.
-import { getExecutionsByExecutionIdReports, getRunsByRunIdRecommendations } from './generated';
+import {
+  getExecutionsByExecutionIdReports,
+  getRunsByRunIdRecommendations,
+  putRunsByRunIdNote,
+  putRunsByRunIdStar,
+} from './generated';
 import type { Recommendation } from './generated';
 
 /** Phase 78: one fired recommendation -- what to do, why, where; the SPA
@@ -125,6 +130,15 @@ export interface Report {
    * together look like a resource leak at steady load. Absent on runs
    * whose window held under two minutes of latency-carrying seconds. */
   soak_trend?: SoakTrend;
+  /** Phase 107: a starred run is a RunCompare baseline candidate (the
+   * picker sorts starred first; a lone star preselects). Post-hoc
+   * annotation -- absent (false) on every freshly saved report, written
+   * only by starRun. */
+  starred?: boolean;
+  /** Phase 107: free-text evidence annotation (why this run matters).
+   * Post-hoc like starred, written only by setRunNote; absent on rows that
+   * predate the column. */
+  note?: string;
 }
 
 /** Phase 99's soak finding: response time behaviour across the run's own
@@ -252,6 +266,34 @@ export function getShardConfig(runId: number, scenarioId: number, shard: number)
 /** A shard's captured engine output, durable after the pod that produced it is deleted (text/plain). */
 export function getShardLog(runId: number, scenarioId: number, shard: number): Promise<string> {
   return apiClient.text(shardObjectUrl(runId, scenarioId, shard, 'log'));
+}
+
+// --- Run annotations (phase 107) --------------------------------------------
+
+/** The PUT /star response: what was set, echoed back. */
+export interface StarRunResult {
+  run_id: number;
+  starred: boolean;
+}
+
+/** The PUT /note response: the note as stored, echoed verbatim. */
+export interface SetNoteResult {
+  run_id: number;
+  note: string;
+}
+
+/** PUT /api/runs/{run_id}/star — star (baseline candidate) or unstar a run.
+ * The generated wrapper carries the wire types; this is the page-facing
+ * seam the module's other run calls keep. */
+export function starRun(runId: number, starred: boolean): Promise<StarRunResult> {
+  return putRunsByRunIdStar(runId, { starred });
+}
+
+/** PUT /api/runs/{run_id}/note — write a run's note in place (last write
+ * wins; "" clears). The server bounds the note at 2000 runes and answers
+ * 400 "note too long" past it, surfaced as ApiError like every mutation. */
+export function setRunNote(runId: number, note: string): Promise<SetNoteResult> {
+  return putRunsByRunIdNote(runId, { note });
 }
 
 // --- Share links (phase 34) -------------------------------------------------

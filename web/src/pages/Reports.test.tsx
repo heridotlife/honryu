@@ -1551,3 +1551,199 @@ describe('run tab order pins (phase 78)', () => {
     expect(ids.indexOf('recommendations')).toBeLessThan(ids.indexOf('raw'));
   });
 });
+
+// --- Run annotations on the list (phase 107) ---------------------------------
+//
+// Self-contained render like renderReportsList's, with the annotation PUTs
+// under the test's control: putResults maps a star/note URL to its Response
+// (default 200), and calls records every fetch the page fires.
+
+/** The note preview's truncation, pinned at the unit (60 runes + ellipsis). */
+describe('truncateNote', () => {
+  it('keeps short notes verbatim and truncates long ones at 60 runes', async () => {
+    const { truncateNote } = await import('./Reports');
+    expect(truncateNote('short note')).toBe('short note');
+    const exactly60 = 'x'.repeat(60);
+    expect(truncateNote(exactly60)).toBe(exactly60);
+    expect(truncateNote(`${exactly60}y`)).toBe(`${exactly60}…`);
+    // Runes, not UTF-16 units: a 61-emoji note truncates at 60 characters.
+    const emoji = '🙂'.repeat(61);
+    expect(Array.from(truncateNote(emoji))).toHaveLength(61); // 60 + ellipsis
+  });
+});
+
+async function renderAnnotatedList(
+  reports: Report[],
+  putResult: (url: string) => Response | Promise<Response> = () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+) {
+  const calls: string[] = [];
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/api/me')) {
+        return json({ subject: 'demo:x', name: 'x', email: '', global_roles: [], tenants: {}, permissions: { '*': ['*'] }, demo: true });
+      }
+      if (url === '/api/executions' || url.endsWith('/api/executions')) {
+        return json([{ id: 1, name: 'alpha-exec', project_id: 1, engine: 'jmeter', created_time: '2026-09-01T00:00:00Z' }]);
+      }
+      if (url.endsWith('/api/projects')) {
+        return json(projectsFixture);
+      }
+      if (url.endsWith('/api/executions/1/reports')) {
+        return json(reports);
+      }
+      if (url.includes('/api/runs/') && (url.endsWith('/star') || url.endsWith('/note'))) {
+        return putResult(url);
+      }
+      return json({ message: `no stub for ${url}` }, 500);
+    })
+  );
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(
+      <MemoryRouter initialEntries={['/reports']}>
+        <SessionProvider>
+          <Routes>
+            <Route path="/reports" element={<Reports />} />
+          </Routes>
+        </SessionProvider>
+      </MemoryRouter>
+    );
+  });
+  await act(async () => {});
+  await loadExecution();
+  return calls;
+}
+
+/** Two runs with annotation fixtures baked in: run 9 starred + noted, run 7 plain. */
+const annotatedFixture: Report[] = [
+  { ...reportFixture, run_id: 9, starred: true, note: 'baseline candidate after deploy 4211' },
+  { ...reportFixture, run_id: 7, started_at: '2026-09-03T10:00:00Z' },
+];
+
+describe('ReportsList annotations (phase 107)', () => {
+  it('star toggle is optimistic: ★ and aria-pressed flip before the PUT resolves, and stick on 200', async () => {
+    const calls = await renderAnnotatedList([
+      { ...reportFixture, run_id: 9 },
+      { ...reportFixture, run_id: 7, started_at: '2026-09-03T10:00:00Z' },
+    ]);
+    const star = container!.querySelector('[data-testid="star-run-9"]') as HTMLButtonElement;
+    expect(star.getAttribute('aria-pressed')).toBe('false');
+    expect(star.textContent).toContain('☆');
+
+    await act(async () => {
+      star.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    // Optimistic: flipped in the same act, before any await.
+    expect(star.getAttribute('aria-pressed')).toBe('true');
+    expect(star.textContent).toContain('★');
+    await act(async () => {});
+    expect(calls.some((u) => u === '/api/runs/9/star')).toBe(true);
+    expect(star.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('rolls the star back and says so when the PUT fails', async () => {
+    // A deferred PUT: the optimistic flip and the rollback are two separate
+    // states the test must catch in order, so the fetch resolves only when
+    // the test says so — an instantly-rejected promise would collapse both
+    // into the final state inside one act flush.
+    let rejectStar!: (reason?: unknown) => void;
+    const gate = new Promise<Response>((_, rej) => {
+      rejectStar = rej;
+    });
+    await renderAnnotatedList(
+      [{ ...reportFixture, run_id: 9 }],
+      (url) =>
+        url.endsWith('/star')
+          ? gate.then(() => json({ run_id: 9, starred: true }))
+          : new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const star = container!.querySelector('[data-testid="star-run-9"]') as HTMLButtonElement;
+    await act(async () => {
+      star.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(star.getAttribute('aria-pressed')).toBe('true'); // optimistic instant
+    await act(async () => {
+      rejectStar(new Error('boom'));
+    });
+    await act(async () => {});
+    expect(star.getAttribute('aria-pressed')).toBe('false'); // rolled back
+    expect(container!.querySelector('[data-testid="annotation-error"]')?.textContent).toContain('Starring run #9 failed');
+  });
+
+  it('note edit saves on Enter: PUT fires, the row carries the note, the preview shows it truncated', async () => {
+    const calls = await renderAnnotatedList([{ ...reportFixture, run_id: 9 }]);
+    await act(async () => {
+      container!.querySelector('[data-testid="note-edit-9"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = container!.querySelector('[data-testid="note-input-9"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(input.value).toBe('');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'why this run matters');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await act(async () => {});
+    expect(calls.some((u) => u === '/api/runs/9/note')).toBe(true);
+    expect(container!.querySelector('[data-testid="note-input-9"]')).toBeNull(); // edit closed
+    expect(container!.querySelector('[data-testid="note-preview-9"]')?.textContent).toContain('why this run matters');
+  });
+
+  it('note edit cancels on Escape: no PUT, no preview, the pencil pre-fills the existing note', async () => {
+    const calls = await renderAnnotatedList(annotatedFixture);
+    await act(async () => {
+      container!.querySelector('[data-testid="note-edit-9"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const input = container!.querySelector('[data-testid="note-input-9"]') as HTMLInputElement;
+    expect(input.value).toBe('baseline candidate after deploy 4211'); // prefilled
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'draft i will abandon');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await act(async () => {});
+    expect(calls.some((u) => u === '/api/runs/9/note')).toBe(false);
+    expect(container!.querySelector('[data-testid="note-input-9"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="note-preview-9"]')?.textContent).toContain('baseline candidate after deploy 4211');
+  });
+
+  it('the starred-only chip filters to starred runs and disables when none are starred', async () => {
+    await renderAnnotatedList(annotatedFixture);
+    const chip = container!.querySelector('[data-testid="filter-starred"]') as HTMLButtonElement;
+    expect(chip.disabled).toBe(false);
+    // Both runs start on screen.
+    expect(container!.querySelector('[data-testid="star-run-9"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="star-run-7"]')).not.toBeNull();
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container!.querySelector('[data-testid="star-run-9"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="star-run-7"]')).toBeNull();
+    // Unfiltering brings the plain run back.
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container!.querySelector('[data-testid="star-run-7"]')).not.toBeNull();
+  });
+
+  it('shows the chip disabled when no run is starred', async () => {
+    await renderAnnotatedList([
+      { ...reportFixture, run_id: 9 },
+      { ...reportFixture, run_id: 7, started_at: '2026-09-03T10:00:00Z' },
+    ]);
+    const chip = container!.querySelector('[data-testid="filter-starred"]') as HTMLButtonElement;
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+  });
+});
