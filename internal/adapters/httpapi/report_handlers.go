@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/recsapp"
@@ -923,6 +924,125 @@ func (h *handlers) deleteRunShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Run annotations (phase 107) --------------------------------------------
+
+// annotationMaxBodyBytes bounds the star/note bodies: one boolean or a note
+// capped at 2000 runes (at worst 6 escaped bytes per rune on the wire, so
+// 16 KiB admits every legal note and stops a hostile one early).
+const annotationMaxBodyBytes = 1 << 14
+
+// noteMaxRunes is a note's bound, counted in runes -- a note is read by
+// humans, and "2000 characters" is the honest unit. The handler enforces
+// it; the store persists whatever it is given.
+const noteMaxRunes = 2000
+
+// starResponse is the wire shape of PUT /api/runs/{run_id}/star: what was
+// set, echoed back so an optimistic caller can confirm the server's truth.
+type starResponse struct {
+	RunID   int64 `json:"run_id"`
+	Starred bool  `json:"starred"`
+}
+
+// noteResponse is the wire shape of PUT /api/runs/{run_id}/note: the note
+// as stored, echoed back verbatim.
+type noteResponse struct {
+	RunID int64  `json:"run_id"`
+	Note  string `json:"note"`
+}
+
+// runStar serves PUT /api/runs/{run_id}/star (phase 107): a starred run is
+// a RunCompare baseline candidate. The body is strict -- exactly
+// {"starred": bool}, unknown fields rejected -- and the unknown-run 404 is
+// runReport's own. Authorization mirrors the reports group's weakest write
+// path, the share issue/revoke routes (createRunShare/deleteRunShare):
+// resolve the run's report, then report:read against the owning execution's
+// tenant -- an annotation is evidence-layer, so any role that can read the
+// report may annotate it (the phase 107 spec's explicit out-of-scope: no
+// separate star permission).
+func (h *handlers) runStar(w http.ResponseWriter, r *http.Request) {
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	var body struct {
+		Starred *bool `json:"starred"`
+	}
+	if err := decodeStrict(w, r, &body, annotationMaxBodyBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "body must be JSON: {\"starred\": bool}")
+		return
+	}
+	if body.Starred == nil {
+		writeError(w, http.StatusBadRequest, "starred is required")
+		return
+	}
+	rep, err := h.deps.Reports.GetReport(r.Context(), runID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.authorizeReport(r, rep.ExecutionID); err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.deps.Reports.SetStarred(r.Context(), runID, *body.Starred); err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, starResponse{RunID: runID, Starred: *body.Starred})
+}
+
+// runNote serves PUT /api/runs/{run_id}/note (phase 107): free-text evidence
+// annotation, last write wins. Body, 404, and authorization are runStar's
+// own; the one addition is the length bound -- a note over 2000 runes is the
+// caller's mistake, said plainly.
+func (h *handlers) runNote(w http.ResponseWriter, r *http.Request) {
+	runID, ok := pathInt(r, "run_id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	var body struct {
+		Note *string `json:"note"`
+	}
+	if err := decodeStrict(w, r, &body, annotationMaxBodyBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "body must be JSON: {\"note\": string}")
+		return
+	}
+	if body.Note == nil {
+		writeError(w, http.StatusBadRequest, "note is required")
+		return
+	}
+	if utf8.RuneCountInString(*body.Note) > noteMaxRunes {
+		writeError(w, http.StatusBadRequest, "note too long")
+		return
+	}
+	rep, err := h.deps.Reports.GetReport(r.Context(), runID)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.authorizeReport(r, rep.ExecutionID); err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := h.deps.Reports.SetNote(r.Context(), runID, *body.Note); err != nil {
+		respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, noteResponse{RunID: runID, Note: *body.Note})
+}
+
+// decodeStrict decodes a bounded JSON body with unknown fields rejected.
+// The star/note bodies are single-purpose contracts; quietly ignoring a
+// misspelled key would let a caller believe an annotation was written when
+// the request never said what they meant.
+func decodeStrict(w http.ResponseWriter, r *http.Request, into any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	dec.DisallowUnknownFields()
+	return dec.Decode(into)
 }
 
 // sharedReport is the public face of a share link: the run report payload

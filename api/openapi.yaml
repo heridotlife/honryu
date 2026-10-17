@@ -1203,6 +1203,19 @@ components:
             Strictly additive evidence: the engine's own outcome above is
             untouched.
           items: { $ref: '#/components/schemas/ThresholdResult' }
+        starred:
+          type: boolean
+          description: >-
+            Phase 107: a RunCompare baseline candidate. Post-hoc annotation
+            -- absent (false) on every freshly saved report, written only by
+            PUT /api/runs/{run_id}/star.
+        note:
+          type: string
+          description: >-
+            Phase 107: free-text evidence annotation (why this run matters).
+            Post-hoc like starred, written only by PUT
+            /api/runs/{run_id}/note (bounded to 2000 runes there); absent on
+            every freshly saved report and on rows that predate the column.
     Series:
       type: object
       description: >-
@@ -3563,6 +3576,77 @@ paths:
           description: Compiled Taurus YAML
           content:
             text/plain: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/runs/{run_id}/star:
+    put:
+      tags: [reports]
+      summary: Star or unstar a run
+      description: >-
+        Phase 107: a starred run is a RunCompare baseline candidate (the
+        picker sorts starred first; a lone star preselects). Post-hoc
+        annotation -- the flag rides every report read, and this is its only
+        writer. Authorization mirrors the reports group's weakest write
+        path, the share issue/revoke routes: report:read against the owning
+        execution's tenant, so any role that can read the report may star
+        it. Unknown run 404s exactly like the report route.
+      parameters: [{ $ref: '#/components/parameters/RunID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [starred]
+              additionalProperties: false
+              properties:
+                starred: { type: boolean }
+      responses:
+        '200':
+          description: What was set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, starred]
+                properties:
+                  run_id: { type: integer, format: int64 }
+                  starred: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/runs/{run_id}/note:
+    put:
+      tags: [reports]
+      summary: Write a run's free-text note
+      description: >-
+        Phase 107: why a run matters, in place -- last write wins, no
+        history, empty string clears. Notes over 2000 runes are rejected
+        with 400 "note too long". Authorization and the unknown-run 404 are
+        the star route's own.
+      parameters: [{ $ref: '#/components/parameters/RunID' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 8000 }
+      responses:
+        '200':
+          description: The note as stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, note]
+                properties:
+                  run_id: { type: integer, format: int64 }
+                  note: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/runs/{run_id}/share:

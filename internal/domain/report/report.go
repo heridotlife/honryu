@@ -244,6 +244,18 @@ type Report struct {
 	// more; a finding for a reader, never a verdict input (the criteria
 	// grammar has no slope subject).
 	SoakTrend *SoakTrend `json:"soak_trend,omitempty"`
+
+	// Starred marks the run as a baseline candidate (phase 107, k6-parity):
+	// RunCompare sorts starred runs first in its picker and preselects a
+	// lone star as the baseline. A post-hoc annotation -- SaveReport always
+	// stores a run unstarred, and only SetStarred ever turns it on.
+	Starred bool `json:"starred,omitempty"`
+	// Note is free-text evidence annotation on the run (phase 107): why it
+	// matters, what was different about it. Post-hoc like Starred -- empty
+	// on every freshly saved report, written only by SetNote, and capped
+	// at 2000 runes where it enters (the HTTP handler), not here: the
+	// domain carries the value, the edge bounds it.
+	Note string `json:"note,omitempty"`
 }
 
 // ClusterResult is one cluster's share of a fan-out run.

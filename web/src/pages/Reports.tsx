@@ -23,7 +23,7 @@ import ShareRunModal from '../components/ShareRunModal';
 import { useProjectSelection } from '../components/ProjectSwitcher';
 import { ApiError } from '../api/client';
 import { apiClient } from '../api/client';
-import { getRunReport, getShardConfig, getShardLog, listExecutionReports } from '../api/reports';
+import { getRunReport, getShardConfig, getShardLog, listExecutionReports, setRunNote, starRun } from '../api/reports';
 import type { Load, Report } from '../api/reports';
 import { pctDelta, formatDelta } from './RunCompare';
 import { listExecutions, type ExecutionSummary } from '../api/executions';
@@ -48,6 +48,13 @@ export function parseShard(raw: string): number | null {
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** The list row's note preview, truncated at 60 runes -- a teaser that says
+ * a note exists, never the whole essay. The detail edit is where it reads. */
+export function truncateNote(note: string, max = 60): string {
+  const runes = Array.from(note);
+  return runes.length > max ? `${runes.slice(0, max).join('')}…` : note;
 }
 
 /** The run export download URL: the API base (same origin as the SPA) plus
@@ -106,6 +113,14 @@ function ReportsList() {
   const [loadedExecutionId, setLoadedExecutionId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Phase 107: the annotation surface. Starred-only filters the loaded
+  // runs; the note edit is one row at a time (draft + which run is editing);
+  // annotation failures roll the optimistic star back or keep the note
+  // unsaved, and say so in one shared line under the runs.
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [editingNote, setEditingNote] = useState<number | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [annotationError, setAnnotationError] = useState<string | null>(null);
   // List-first (phase 27): the executions a caller can see, so picking one
   // needs no guessed id. Falls back silently -- the manual input below still
   // works when the list endpoint errs or is empty.
@@ -131,6 +146,8 @@ function ReportsList() {
     }
     setLoading(true);
     setError(null);
+    setEditingNote(null);
+    setAnnotationError(null);
     try {
       const got = await listExecutionReports(executionIdNum);
       setReports(got);
@@ -142,6 +159,48 @@ function ReportsList() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Patch one run in the loaded list — the optimistic-update seam both
+  // annotation writes share.
+  const patchRun = (runId: number, patch: Partial<Report>) => {
+    setReports((prev) => (prev === null ? prev : prev.map((r) => (r.run_id === runId ? { ...r, ...patch } : r))));
+  };
+
+  // Star toggles are optimistic (k6-parity: instant ★) and roll back on
+  // error — a failed star must not read as saved evidence.
+  const toggleStar = (r: Report) => {
+    const was = r.starred ?? false;
+    const next = !was;
+    setAnnotationError(null);
+    patchRun(r.run_id, { starred: next });
+    starRun(r.run_id, next).catch(() => {
+      patchRun(r.run_id, { starred: was });
+      setAnnotationError(`Starring run #${r.run_id} failed — nothing was saved.`);
+    });
+  };
+
+  // The note edit saves on Enter/blur, cancels on Escape; the write itself
+  // is confirmed before the row updates (no optimistic note — text a reader
+  // trusts should be text the server holds).
+  const startNoteEdit = (r: Report) => {
+    setEditingNote(r.run_id);
+    setNoteDraft(r.note ?? '');
+    setAnnotationError(null);
+  };
+  const saveNote = (runId: number) => {
+    if (editingNote !== runId) {
+      return;
+    }
+    const draft = noteDraft;
+    const before = reports?.find((r) => r.run_id === runId)?.note ?? '';
+    setEditingNote(null);
+    if (draft === before) {
+      return; // unchanged — no write, no error
+    }
+    setRunNote(runId, draft)
+      .then(() => patchRun(runId, { note: draft }))
+      .catch(() => setAnnotationError(`Saving the note for run #${runId} failed — the note was not changed.`));
   };
 
   // The filter row: engine chips + name/id search (phase 28) under the
@@ -353,41 +412,130 @@ function ReportsList() {
             {reports.length === 0 ? (
               <p className="text-body-sm p-6 text-slate-500 dark:text-slate-400">No reports for this execution yet.</p>
             ) : (
-              <ul className="divide-y divide-slate-200 dark:divide-slate-700">
-                {reports.map((r) => (
-                  <li key={r.run_id}>
-                    <Link
-                      to={`/reports/${r.run_id}`}
-                      className="flex min-h-[44px] flex-col gap-2 rounded p-4 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <div className="flex flex-wrap items-center gap-3">
-                        <OutcomeBadge outcome={r.outcome} />
-                        <span className="text-body-sm font-medium text-slate-900 dark:text-white">Run #{r.run_id}</span>
-                        <span className="text-caption text-slate-500 dark:text-slate-400">scenario {r.scenario_id}</span>
-                        {r.engine && <EngineBadge engine={r.engine} />}
-                        {r.cluster && <ClusterBadge cluster={r.cluster} />}
+              <>
+                {/* Phase 107: the starred-only chip — beside the filter row's
+                    chip language, scoped to the loaded runs (the engine
+                    chips above filter executions). Disabled when nothing is
+                    starred: there is nothing it could narrow to. */}
+                <div className="flex items-center gap-2 px-4 pt-3">
+                  <button
+                    type="button"
+                    data-testid="filter-starred"
+                    aria-pressed={starredOnly}
+                    disabled={!reports.some((r) => r.starred)}
+                    onClick={() => setStarredOnly((v) => !v)}
+                    className={`rounded-full px-3 py-1 text-caption font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${chipClass(starredOnly)}`}
+                  >
+                    ★ Starred only
+                  </button>
+                </div>
+                <ul className="mt-2 divide-y divide-slate-200 dark:divide-slate-700" data-testid="run-list">
+                  {(starredOnly ? reports.filter((r) => r.starred) : reports).map((r) => (
+                    <li key={r.run_id}>
+                      {/* The row and its annotation actions sit side by side,
+                          not nested — a button cannot live inside the anchor
+                          the row is. */}
+                      <div className="flex items-start gap-1">
+                        <Link
+                          to={`/reports/${r.run_id}`}
+                          className="flex min-h-[44px] min-w-0 flex-1 flex-col gap-2 rounded p-4 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sky-500 dark:hover:bg-slate-700/50 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="flex flex-wrap items-center gap-3">
+                            <OutcomeBadge outcome={r.outcome} />
+                            <span className="text-body-sm font-medium text-slate-900 dark:text-white">Run #{r.run_id}</span>
+                            <span className="text-caption text-slate-500 dark:text-slate-400">scenario {r.scenario_id}</span>
+                            {r.engine && <EngineBadge engine={r.engine} />}
+                            {r.cluster && <ClusterBadge cluster={r.cluster} />}
+                            {/* The note preview rides under the run id (a
+                                full-width child of the wrapping row) while
+                                the row's own edit is closed. */}
+                            {editingNote !== r.run_id && r.note && (
+                              <span
+                                data-testid={`note-preview-${r.run_id}`}
+                                className="text-caption w-full text-slate-500 dark:text-slate-400"
+                              >
+                                📝 {truncateNote(r.note)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-caption text-slate-500 dark:text-slate-400">
+                            {formatTime(r.started_at)} · {r.achieved.samples ?? 0} samples ·{' '}
+                            {(r.error_rate * 100).toFixed(1)}% errors
+                          </div>
+                        </Link>
+                        <div className="flex flex-col items-center gap-1 py-3 pr-3">
+                          <button
+                            type="button"
+                            data-testid={`star-run-${r.run_id}`}
+                            aria-pressed={r.starred ?? false}
+                            aria-label={`star run ${r.run_id}`}
+                            title={r.starred ? 'Unstar this run' : 'Star this run (RunCompare baseline candidate)'}
+                            onClick={() => toggleStar(r)}
+                            className="min-h-[32px] min-w-[32px] rounded-md text-lg leading-none transition-colors hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:hover:bg-slate-800"
+                          >
+                            <span aria-hidden="true">{r.starred ? '★' : '☆'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`note-edit-${r.run_id}`}
+                            aria-label={`Edit note for run ${r.run_id}`}
+                            title="Edit this run's note"
+                            onClick={() => (editingNote === r.run_id ? setEditingNote(null) : startNoteEdit(r))}
+                            className="min-h-[32px] min-w-[32px] rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                          >
+                            <span aria-hidden="true">✎</span>
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-caption text-slate-500 dark:text-slate-400">
-                        {formatTime(r.started_at)} · {r.achieved.samples ?? 0} samples ·{' '}
-                        {(r.error_rate * 100).toFixed(1)}% errors
-                      </div>
-                    </Link>
-                    {/* Phases 99/103: the leak findings ride under their
-                        run's row, inside the li so the two read as one unit.
-                        The per-label banner shows even when the aggregate
-                        stayed quiet -- a leak in one label is diluted by its
-                        healthy siblings, and the row must still say so. */}
-                    {r.soak_trend &&
-                      (r.soak_trend.leak_suspected ||
-                        r.soak_trend.labels?.some((l) => l.leak_suspected)) && (
-                        <div className="space-y-2 px-4 pb-4">
-                          {r.soak_trend.leak_suspected && <SoakTrendBanner trend={r.soak_trend} />}
-                          <PerLabelSoakBanner trend={r.soak_trend} />
+                      {/* The inline note edit: Enter/blur saves, Escape
+                          cancels. Lives under the row, inside the li, so it
+                          reads as the row's own. */}
+                      {editingNote === r.run_id && (
+                        <div className="px-4 pb-4">
+                          <input
+                            data-testid={`note-input-${r.run_id}`}
+                            type="text"
+                            value={noteDraft}
+                            aria-label={`Note for run ${r.run_id}`}
+                            onChange={(e) => setNoteDraft(e.target.value)}
+                            onBlur={() => saveNote(r.run_id)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                saveNote(r.run_id);
+                              } else if (e.key === 'Escape') {
+                                setEditingNote(null);
+                              }
+                            }}
+                            placeholder="Why does this run matter?"
+                            className="block w-full min-h-[36px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 focus:border-sky-500 focus:ring-2 focus:ring-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                          />
+                          <p className="text-caption mt-1 text-slate-400 dark:text-slate-500">
+                            Enter saves · Escape cancels
+                          </p>
                         </div>
                       )}
-                  </li>
-                ))}
-              </ul>
+                      {/* Phases 99/103: the leak findings ride under their
+                          run's row, inside the li so the two read as one unit.
+                          The per-label banner shows even when the aggregate
+                          stayed quiet -- a leak in one label is diluted by its
+                          healthy siblings, and the row must still say so. */}
+                      {r.soak_trend &&
+                        (r.soak_trend.leak_suspected ||
+                          r.soak_trend.labels?.some((l) => l.leak_suspected)) && (
+                          <div className="space-y-2 px-4 pb-4">
+                            {r.soak_trend.leak_suspected && <SoakTrendBanner trend={r.soak_trend} />}
+                            <PerLabelSoakBanner trend={r.soak_trend} />
+                          </div>
+                        )}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {annotationError && (
+              <p className="text-caption border-t border-slate-100 px-4 py-3 text-red-600 dark:border-slate-800 dark:text-red-400" role="alert" data-testid="annotation-error">
+                {annotationError}
+              </p>
             )}
           </Card>
 

@@ -336,6 +336,10 @@ var routes = []Route{
 	{"GET", "/api/runs/{run_id}/export", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runExport })},
 	{"GET", "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/log", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runShardLog })},
 	{"GET", "/api/runs/{run_id}/scenarios/{scenario_id}/shards/{shard}/config", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runShardConfig })},
+	// Phase 107: run annotations -- star (RunCompare baseline candidates)
+	// and free-text note, both post-hoc writes on the stored report.
+	{"PUT", "/api/runs/{run_id}/star", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runStar })},
+	{"PUT", "/api/runs/{run_id}/note", "reports", hf(func(h *handlers) http.HandlerFunc { return h.runNote })},
 
 	// Phase 34: token-gated public run reports. Issue/list/revoke sit under
 	// the reports permission; the fetch is public (publicAPIPath).

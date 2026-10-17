@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +20,11 @@ import (
 	"github.com/heridotlife/honryu/internal/app/lifecycleapp"
 	"github.com/heridotlife/honryu/internal/app/projectapp"
 	"github.com/heridotlife/honryu/internal/app/thresholdapp"
+	"github.com/heridotlife/honryu/internal/domain/account"
 	"github.com/heridotlife/honryu/internal/domain/capacityprofile"
 	"github.com/heridotlife/honryu/internal/domain/execution"
 	"github.com/heridotlife/honryu/internal/domain/metrics"
+	"github.com/heridotlife/honryu/internal/domain/rbac"
 	"github.com/heridotlife/honryu/internal/domain/report"
 	"github.com/heridotlife/honryu/internal/domain/scenario"
 	"github.com/heridotlife/honryu/internal/domain/taurus"
@@ -1611,5 +1616,244 @@ func TestRunRecommendations_CapacityUnknownIsNotAnError(t *testing.T) {
 	}
 	if ids := recsIDs(t, got.Body.String()); len(ids) != 1 || ids[0] != "capacity-unverified/info" {
 		t.Errorf("ids = %v, want exactly capacity-unverified/info when the execution cannot be read", ids)
+	}
+}
+
+// --- Run annotations (phase 107) ---------------------------------------------
+
+// seedAnnotatedRun stores run 42's report -- the row every annotation test
+// writes against.
+func seedAnnotatedRun(t *testing.T, reports *fake.ReportStore) {
+	t.Helper()
+	if err := reports.SaveReport(context.Background(), sampleReport(1, 42)); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+}
+
+// A star write lands, echoes what was set, and rides every report read --
+// the single-run report, the execution's list, and the compare payload all
+// carry it through the Report JSON untouched.
+func TestReportHTTP_StarRoundTrips(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	seedAnnotatedRun(t, reports)
+
+	rec := doBody(t, h, http.MethodPut, "/api/runs/42/star", `{"starred":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT star = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var echoed struct {
+		RunID   int64 `json:"run_id"`
+		Starred bool  `json:"starred"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &echoed); err != nil {
+		t.Fatalf("decode star response: %v", err)
+	}
+	if echoed.RunID != 42 || !echoed.Starred {
+		t.Errorf("star response = %+v, want run 42 starred", echoed)
+	}
+
+	for _, path := range []string{
+		"/api/runs/42/report",
+		"/api/executions/1/reports",
+		// A single-id compare is a faithful N-of-1; the point is the field
+		// survives the wire shape.
+		"/api/runs/compare?run_ids[]=42",
+	} {
+		got := do(t, h, http.MethodGet, path)
+		if got.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d (%s)", path, got.Code, got.Body.String())
+		}
+		if !strings.Contains(got.Body.String(), `"starred":true`) {
+			t.Errorf("GET %s body lacks the star: %s", path, got.Body.String())
+		}
+	}
+
+	// Unstarring is the same write in the other direction.
+	rec = doBody(t, h, http.MethodPut, "/api/runs/42/star", `{"starred":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT unstar = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if rec2 := got.Body.String(); strings.Contains(rec2, `"starred":true`) {
+		t.Errorf("report still starred after unstar: %s", rec2)
+	}
+}
+
+// A note write lands, echoes verbatim, overwrites (last write wins), and
+// rides the report read exactly like the star does.
+func TestReportHTTP_NoteRoundTrips(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	seedAnnotatedRun(t, reports)
+
+	rec := doBody(t, h, http.MethodPut, "/api/runs/42/note", `{"note":"regression hunt after deploy 4211"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT note = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var echoed struct {
+		RunID int64  `json:"run_id"`
+		Note  string `json:"note"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &echoed); err != nil {
+		t.Fatalf("decode note response: %v", err)
+	}
+	if echoed.RunID != 42 || echoed.Note != "regression hunt after deploy 4211" {
+		t.Errorf("note response = %+v", echoed)
+	}
+
+	got := do(t, h, http.MethodGet, "/api/runs/42/report")
+	if !strings.Contains(got.Body.String(), `"note":"regression hunt after deploy 4211"`) {
+		t.Errorf("report lacks the note: %s", got.Body.String())
+	}
+
+	// Last write wins, no history.
+	rec = doBody(t, h, http.MethodPut, "/api/runs/42/note", `{"note":"second take"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT note (overwrite) = %d (%s)", rec.Code, rec.Body.String())
+	}
+	got = do(t, h, http.MethodGet, "/api/runs/42/report")
+	if !strings.Contains(got.Body.String(), `"note":"second take"`) {
+		t.Errorf("report lacks the overwritten note: %s", got.Body.String())
+	}
+}
+
+// An unknown run is unknown to both writes: the store's ErrNotFound maps to
+// the report route's own 404.
+func TestReportHTTP_AnnotationsUnknownRun(t *testing.T) {
+	t.Parallel()
+	h, _, _ := newReportEnv(t)
+
+	for path, body := range map[string]string{
+		"/api/runs/999/star": `{"starred":true}`,
+		"/api/runs/999/note": `{"note":"x"}`,
+	} {
+		rec := doBody(t, h, http.MethodPut, path, body)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("PUT %s = %d (%s), want 404", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// The bodies are strict single-purpose contracts: a misspelled key is a 400,
+// not a silently ignored annotation.
+func TestReportHTTP_AnnotationBodiesAreStrict(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	seedAnnotatedRun(t, reports)
+
+	bad := []struct{ path, body string }{
+		{"/api/runs/42/star", "not json at all"},
+		{"/api/runs/42/star", `{"starred":"yes"}`},
+		{"/api/runs/42/star", `{"starred":true,"why":"typo"}`},
+		{"/api/runs/42/star", `{}`},
+		{"/api/runs/42/note", "["},
+		{"/api/runs/42/note", `{"note":42}`},
+		{"/api/runs/42/note", `{"note":"x","label":"typo"}`},
+		{"/api/runs/42/note", `{}`},
+	}
+	for _, tc := range bad {
+		rec := doBody(t, h, http.MethodPut, tc.path, tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s with %s = %d (%s), want 400", tc.path, tc.body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// A note over 2000 runes is the caller's mistake, said plainly -- counted in
+// runes, so a multi-byte note is judged by its character count, not bytes.
+func TestReportHTTP_NoteTooLong(t *testing.T) {
+	t.Parallel()
+	h, reports, _ := newReportEnv(t)
+	seedAnnotatedRun(t, reports)
+
+	long := strings.Repeat("é", 2001) // 4002 bytes, 2001 runes
+	body, err := json.Marshal(map[string]string{"note": long})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := doBody(t, h, http.MethodPut, "/api/runs/42/note", string(body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT long note = %d (%s), want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "note too long") {
+		t.Errorf("long-note error = %s, want \"note too long\"", rec.Body.String())
+	}
+
+	// Exactly 2000 runes is the boundary, and it is legal.
+	ok, err := json.Marshal(map[string]string{"note": strings.Repeat("é", 2000)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if rec = doBody(t, h, http.MethodPut, "/api/runs/42/note", string(ok)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT boundary note = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+}
+
+// The annotation writes mirror the reports group's weakest existing write
+// path (share issue/revoke): report:read against the owning execution's
+// tenant. A tenant viewer -- read only, no mutation grant anywhere -- may
+// star and annotate, exactly as they may mint a share link; a caller with
+// no relationship to the tenant is stopped at 403 before the write.
+func TestReportHTTP_AnnotationsFollowReportReadAuth(t *testing.T) {
+	t.Parallel()
+	f := newRBACFixture(t)
+
+	acme := createTenant(t, f, "acme-annot", "Acme")
+	f.prov.Register("carol-tok", account.Account{Subject: "carol"})
+	assignRole(t, f, acme, "carol", rbac.RoleTenantViewer)
+	f.prov.Register("outsider-tok", account.Account{Subject: "outsider"})
+
+	projectID := createProjectInTenantReturningID(t, f, "annot-web", "team-a", acme)
+	executionID := decodeID(t, f.req(t, http.MethodPost, "/api/executions", "admin-tok",
+		url.Values{"name": {"annotated"}, "project_id": {strconv.FormatInt(projectID, 10)}}))
+	ctx := context.Background()
+	runID, err := f.store.StartRun(ctx, executionID, "trace-annot")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := f.reports.SaveReport(ctx, report.Report{
+		ExecutionID: executionID, RunID: runID, ScenarioID: 1,
+		Outcome: taurus.OutcomePassed, StartedAt: now, EndedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	putJSON := func(tok, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		rec := httptest.NewRecorder()
+		f.router.ServeHTTP(rec, req)
+		return rec
+	}
+	star := "/api/runs/" + strconv.FormatInt(runID, 10) + "/star"
+	note := "/api/runs/" + strconv.FormatInt(runID, 10) + "/note"
+
+	for _, tok := range []string{"outsider-tok"} {
+		if rec := putJSON(tok, star, `{"starred":true}`); rec.Code != http.StatusForbidden {
+			t.Errorf("PUT star by %q = %d (%s), want 403", tok, rec.Code, rec.Body.String())
+		}
+		if rec := putJSON(tok, note, `{"note":"x"}`); rec.Code != http.StatusForbidden {
+			t.Errorf("PUT note by %q = %d (%s), want 403", tok, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := putJSON("carol-tok", star, `{"starred":true}`); rec.Code != http.StatusOK {
+		t.Errorf("viewer PUT star = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	if rec := putJSON("carol-tok", note, `{"note":"why this run matters"}`); rec.Code != http.StatusOK {
+		t.Errorf("viewer PUT note = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	// The writes landed.
+	got, err := f.reports.GetReport(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if !got.Starred || got.Note != "why this run matters" {
+		t.Errorf("report after writes = starred:%v note:%q", got.Starred, got.Note)
 	}
 }

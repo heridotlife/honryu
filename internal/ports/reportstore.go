@@ -45,4 +45,14 @@ type ReportStore interface {
 	// appeared in. Ordered dominant-first (total count descending), matching
 	// how a single run's own signatures are ordered.
 	ErrorSignatureHistory(ctx context.Context, executionID int64) ([]report.SignatureHistoryRow, error)
+	// SetStarred stars or unstars a stored run (phase 107): a starred run is
+	// a RunCompare baseline candidate. Post-hoc annotation -- SaveReport
+	// always stores a run unstarred, so this is the only writer of the flag.
+	// Returns ErrNotFound for a run with no stored report.
+	SetStarred(ctx context.Context, runID int64, starred bool) error
+	// SetNote writes a run's free-text note (phase 107): why a run matters,
+	// in place -- last write wins, no history. The handler layer bounds the
+	// length (2000 runes); the store persists whatever it is given. Returns
+	// ErrNotFound for a run with no stored report.
+	SetNote(ctx context.Context, runID int64, note string) error
 }

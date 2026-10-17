@@ -33,6 +33,10 @@ var _ ports.ReportStore = (*ReportStore)(nil)
 // that survives -- saving again for the same run is a no-op, not a
 // replacement, so two concurrent finalisations racing for the same run cannot
 // let the second overwrite the first's verdict.
+//
+// The annotations (phase 107) are zeroed on save, mirroring the mysql
+// adapter: starring and notes are post-hoc, SetStarred/SetNote are their
+// only writers.
 func (s *ReportStore) SaveReport(_ context.Context, r report.Report) error {
 	if s.SaveErr != nil {
 		return s.SaveErr
@@ -40,6 +44,8 @@ func (s *ReportStore) SaveReport(_ context.Context, r report.Report) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+	r.Starred = false
+	r.Note = ""
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.reports[r.RunID]; exists {
@@ -87,6 +93,33 @@ func (s *ReportStore) ReportsSince(_ context.Context, since time.Time, limit int
 		}
 	}
 	return trim(out, limit), nil
+}
+
+// SetStarred stars or unstars a stored run; unknown run -> ErrNotFound.
+func (s *ReportStore) SetStarred(_ context.Context, runID int64, starred bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reports[runID]
+	if !ok {
+		return ports.ErrNotFound
+	}
+	r.Starred = starred
+	s.reports[runID] = r
+	return nil
+}
+
+// SetNote writes a run's note in place (last write wins); unknown run ->
+// ErrNotFound.
+func (s *ReportStore) SetNote(_ context.Context, runID int64, note string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reports[runID]
+	if !ok {
+		return ports.ErrNotFound
+	}
+	r.Note = note
+	s.reports[runID] = r
+	return nil
 }
 
 // ErrorSignatureHistory aggregates every error signature across
