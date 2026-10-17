@@ -30,6 +30,8 @@ import StartCountdown from '../components/StartCountdown';
 import CountdownSettings, { CountdownChip } from '../components/CountdownSettings';
 import { useStartFlow } from '../hooks/useStartFlow';
 import CalibrateScenarioModal from '../components/CalibrateScenarioModal';
+// Phase 108: the schedule drawer (one-shot / cron recurring fire times)
+import ScheduleModal from '../components/ScheduleModal';
 import CardTable, { type CardTableColumn } from '../components/CardTable';
 import type { ClusterResult } from '../api/reports';
 
@@ -697,6 +699,8 @@ export default function Execution() {
   // (null = none). The dialog mints a NEW calibrate_engine execution -- the
   // only UI path that ever creates one.
   const [calibrateFor, setCalibrateFor] = useState<number | null>(null);
+  // Phase 108: whether the schedule drawer is open on this hub.
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   // The live stream (SSE subscribe, event window, per-second recompute)
   // lives in the hook; this page keeps only the rolling numbers it feeds.
   const { series, connected, stats } = useLiveSeries(executionId, validId);
@@ -1018,6 +1022,21 @@ export default function Execution() {
                     {busyAction === 'stop' ? 'Working…' : 'Stop'}
                   </Button>
                 )}
+                {/* Phase 108: Schedule — orthogonal to the lifecycle verbs
+                    (a schedule fires an idle execution later; it is not a
+                    Start variant), so it is offered in every phase, gated
+                    only by the session's execution schedule permission
+                    surface: read-only roles see nothing. */}
+                {can('execution', 'create') && (
+                  <Button
+                    data-testid="schedule-button"
+                    variant="outline"
+                    className="active:scale-95"
+                    onClick={() => setScheduleOpen(true)}
+                  >
+                    Schedule
+                  </Button>
+                )}
                 {controls.length === 0 && (
                   <p className="text-sm text-slate-500 dark:text-slate-400">
                     Your role is read-only here: no lifecycle controls.
@@ -1291,6 +1310,19 @@ export default function Execution() {
           engine={info.engine}
           onClose={() => setCalibrateFor(null)}
           onCreated={executionId => navigate(`/executions/${executionId}`)}
+        />
+      )}
+      {/* Phase 108: the schedule drawer for this execution. */}
+      {scheduleOpen && info && (
+        <ScheduleModal
+          executionId={executionId}
+          executionName={`#${executionId}`}
+          projectId={info.project_id}
+          onClose={() => setScheduleOpen(false)}
+          onMutated={() => {
+            /* Deliberately nothing: schedules change no execution row —
+               the hub's info/status snapshots stay valid. */
+          }}
         />
       )}
     </div>
