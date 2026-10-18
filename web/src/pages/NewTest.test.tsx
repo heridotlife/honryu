@@ -744,6 +744,31 @@ describe('NewTest fan-out targets (phase 88, mounted)', () => {
     expect(container!.querySelector('[data-testid="fanout-target-eu-1"]')).toBeNull();
   });
 
+  // Phase 109: geo/zone are display-only labels, shown as a muted suffix on
+  // each picker label so a user picking fan-out targets can reason about
+  // WHERE each target runs -- only the parts present, and nothing at all
+  // for unlabeled (legacy) clusters.
+  it('labels picker targets with · geo/zone when the cluster carries them', async () => {
+    await renderNewTestWithClusters([
+      byoc('eu-1'),
+      { ...byoc('us-1'), geo: 'us', zone: 'us-east-1' },
+      { ...byoc('ap-1'), geo: 'ap' },
+      { ...byoc('sa-1'), zone: 'sa-east-1' },
+    ]);
+
+    // Both parts: the full · geo/zone suffix.
+    expect(container!.querySelector('[data-testid="fanout-target-geozone-us-1"]')!.textContent).toBe(
+      '· us/us-east-1'
+    );
+    // Only the parts present: geo alone, then zone alone.
+    expect(container!.querySelector('[data-testid="fanout-target-geozone-ap-1"]')!.textContent).toBe('· ap');
+    expect(container!.querySelector('[data-testid="fanout-target-geozone-sa-1"]')!.textContent).toBe(
+      '· sa-east-1'
+    );
+    // Unlabeled cluster: no suffix at all.
+    expect(container!.querySelector('[data-testid="fanout-target-geozone-eu-1"]')).toBeNull();
+  });
+
   it('degrades to the default-cluster note when the registry read fails, never a broken form', async () => {
     await renderNewTestWithClusters(null);
     const fieldset = container!.querySelector('[data-testid="fanout-targets"]')!;
