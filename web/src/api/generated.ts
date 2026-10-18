@@ -14,8 +14,6 @@ export interface Cluster {
   namespace: string;
   secret_ref: string;
   origin: "operator" | "byoc";
-  /** Phase 109: display-only geographic/zone labels (empty = unlabeled,
-   * the pre-phase-109 state of every row; never scheduling inputs). */
   geo?: string;
   zone?: string;
   created_by?: string;
