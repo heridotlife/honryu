@@ -173,8 +173,8 @@ config:
   # Split with an escaped line break (not a folded scalar, which would join
   # with a space and corrupt the comma-separated value HONRYU_ENGINE_IMAGES
   # parses). Verified the parsed string is byte-identical to the one-liner.
-  engineImages: "jmeter=registry.pve.heri.life/honryu/engine-jmeter:5.6.3-3,\
-    k6=registry.pve.heri.life/honryu/engine-k6:0.57.0-3"
+  engineImages: "jmeter=registry.pve.heri.life/honryu/engine-jmeter:5.6.3-4,\
+    k6=registry.pve.heri.life/honryu/engine-k6:0.57.0-4"
   deployContext: homelab
   engineIdleTTL: 3h
   # Phase47: pods absent (never deployed / reaped) answer after this
