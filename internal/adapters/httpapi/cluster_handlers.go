@@ -20,7 +20,7 @@ type ClusterService interface {
 	RotateIngestToken(ctx context.Context, name string) (string, error)
 	Get(ctx context.Context, name string) (clusterregistry.Cluster, error)
 	List(ctx context.Context) ([]clusterregistry.Cluster, error)
-	Update(ctx context.Context, name, ingestURL, sidecarImage, namespace string) (clusterregistry.Cluster, error)
+	Update(ctx context.Context, name, ingestURL, sidecarImage, namespace, geo, zone string) (clusterregistry.Cluster, error)
 	Delete(ctx context.Context, name string) error
 }
 
@@ -28,15 +28,19 @@ type ClusterService interface {
 // credential (Secret contents / encrypted kubeconfig) is never surfaced --
 // secret_ref names it, that is all.
 type clusterResponse struct {
-	Name         string    `json:"name"`
-	APIURL       string    `json:"api_url"`
-	IngestURL    string    `json:"ingest_url"`
-	SidecarImage string    `json:"sidecar_image"`
-	Namespace    string    `json:"namespace"`
-	SecretRef    string    `json:"secret_ref"`
-	Origin       string    `json:"origin"`
-	CreatedBy    string    `json:"created_by,omitempty"`
-	CreatedTime  time.Time `json:"created_time"`
+	Name         string `json:"name"`
+	APIURL       string `json:"api_url"`
+	IngestURL    string `json:"ingest_url"`
+	SidecarImage string `json:"sidecar_image"`
+	Namespace    string `json:"namespace"`
+	SecretRef    string `json:"secret_ref"`
+	Origin       string `json:"origin"`
+	// Geo and Zone are display-only labels (phase 109); omitempty keeps the
+	// wire quiet for legacy rows and any cluster registered without them.
+	Geo         string    `json:"geo,omitempty"`
+	Zone        string    `json:"zone,omitempty"`
+	CreatedBy   string    `json:"created_by,omitempty"`
+	CreatedTime time.Time `json:"created_time"`
 	// Aggregate engine capacity from the quota ledger (phase 25). Pointers +
 	// omitempty: a deployment without the quota dep (or a failed read) omits
 	// them entirely -- wire shape stays backward compatible, and the frontend
@@ -65,6 +69,8 @@ func toClusterResponse(c clusterregistry.Cluster) clusterResponse {
 		Namespace:    c.Namespace,
 		SecretRef:    c.SecretRef,
 		Origin:       string(c.Origin),
+		Geo:          c.Geo,
+		Zone:         c.Zone,
 		CreatedBy:    c.CreatedBy,
 		CreatedTime:  c.CreatedTime,
 	}
@@ -105,6 +111,8 @@ func (h *handlers) createCluster(w http.ResponseWriter, r *http.Request) {
 		IngestURL:    r.PostForm.Get("ingest_url"),
 		SidecarImage: r.PostForm.Get("sidecar_image"),
 		Namespace:    r.PostForm.Get("namespace"),
+		Geo:          r.PostForm.Get("geo"),
+		Zone:         r.PostForm.Get("zone"),
 		CreatedBy:    accountFrom(r.Context()).Subject,
 		CreatedTime:  time.Now().UTC(),
 	}
@@ -252,7 +260,8 @@ func (h *handlers) updateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := h.deps.Clusters.Update(r.Context(), r.PathValue("name"),
-		r.PostForm.Get("ingest_url"), r.PostForm.Get("sidecar_image"), r.PostForm.Get("namespace"))
+		r.PostForm.Get("ingest_url"), r.PostForm.Get("sidecar_image"), r.PostForm.Get("namespace"),
+		r.PostForm.Get("geo"), r.PostForm.Get("zone"))
 	if err != nil {
 		respondError(w, err)
 		return
