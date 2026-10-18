@@ -237,10 +237,11 @@ func (s *Service) Resolve(ctx context.Context, ref ports.ClusterRef) (clusterreg
 }
 
 // Update replaces the mutable, non-credential fields (ingest url, sidecar
-// image, namespace) of an existing entry, or returns ports.ErrNotFound. The
-// credential/origin are not re-negotiated here -- a credential change is a
-// re-registration.
-func (s *Service) Update(ctx context.Context, name, ingestURL, sidecarImage, namespace string) (clusterregistry.Cluster, error) {
+// image, namespace, and the display-only geo/zone labels) of an existing
+// entry, or returns ports.ErrNotFound. The credential/origin are not
+// re-negotiated here -- a credential change is a re-registration. geo/zone
+// are full-replace: an empty string clears the label, PUT semantics.
+func (s *Service) Update(ctx context.Context, name, ingestURL, sidecarImage, namespace, geo, zone string) (clusterregistry.Cluster, error) {
 	existing, err := s.deps.Registry.GetCluster(ctx, name)
 	if err != nil {
 		return clusterregistry.Cluster{}, err
@@ -248,6 +249,8 @@ func (s *Service) Update(ctx context.Context, name, ingestURL, sidecarImage, nam
 	existing.IngestURL = strings.TrimSpace(ingestURL)
 	existing.SidecarImage = strings.TrimSpace(sidecarImage)
 	existing.Namespace = strings.TrimSpace(namespace)
+	existing.Geo = strings.TrimSpace(geo)
+	existing.Zone = strings.TrimSpace(zone)
 	if err := existing.Validate(); err != nil {
 		return clusterregistry.Cluster{}, err
 	}

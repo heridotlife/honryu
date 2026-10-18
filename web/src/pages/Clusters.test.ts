@@ -402,7 +402,9 @@ describe('Clusters fan-out in progress (phase 88, mounted)', () => {
 
     for (const name of ['honryu', 'idle']) {
       const row = Array.from(container!.querySelectorAll('tbody tr')).find((tr) => tr.textContent!.includes(name))!;
-      const cell = row.querySelector('[data-testid^="fanout-running-"], td:nth-child(4)')!;
+      // geozone (phase 109) sits between origin and fanout_running: the
+      // honest-dash fallback cell moved from the 4th to the 5th column.
+      const cell = row.querySelector('[data-testid^="fanout-running-"], td:nth-child(5)')!;
       expect(cell.textContent!.trim()).toBe('—');
     }
   });
@@ -427,6 +429,7 @@ describe('Clusters card mode (phase 86)', () => {
     expect(card.textContent).toContain('honryu');
     expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).toEqual([
       'Origin',
+      'Location',
       'Capacity',
       'Fan-out in progress',
       'Engine namespace',
@@ -476,5 +479,24 @@ describe('Clusters card mode (phase 86)', () => {
     expect(card.textContent).toContain('4543.9');
     expect(card.textContent).toContain(new Date('2026-09-12T08:30:00Z').toLocaleDateString());
     expect(card.textContent).not.toContain('2026-09-12T08:30:00Z');
+  });
+});
+
+// Phase 109: geo/zone are display-only labels on registered clusters; the
+// registry table shows them as a Location chip (GeoZoneBadge) so the page
+// reads back WHERE each fan-out target runs. Unlabeled rows render no
+// chip -- legacy entries stay quiet.
+describe('Clusters geo/zone labels (phase 109, mounted)', () => {
+  it('renders a geo · zone chip on a labeled row and none on an unlabeled one', async () => {
+    await mountClusters([
+      { ...registered, name: 'prod-eu', origin: 'byoc', geo: 'eu', zone: 'eu-central-1' },
+      { ...registered, name: 'prod-legacy', origin: 'byoc' },
+    ]);
+
+    const badges = container!.querySelectorAll('[data-testid="geolocation-badge"]');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].textContent).toBe('eu · eu-central-1');
+    // The unlabeled row's cells carry no Location chip at all.
+    expect(container!.textContent).not.toContain('Location: —');
   });
 });

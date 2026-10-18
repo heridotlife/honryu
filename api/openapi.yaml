@@ -224,6 +224,19 @@ components:
         namespace: { type: string }
         secret_ref: { type: string }
         origin: { type: string, enum: [operator, byoc] }
+        geo:
+          type: string
+          maxLength: 64
+          description: >-
+            Display-only geographic label (e.g. "eu"), shown wherever fan-out
+            targets are picked. Never a scheduling input; absent = unlabeled
+            (the pre-phase-109 state of every row).
+        zone:
+          type: string
+          maxLength: 64
+          description: >-
+            Display-only zone label (e.g. "eu-central-1"), Geo's finer half.
+            Same contract as geo: display-only, absent = unlabeled.
         created_by: { type: string }
         created_time: { type: string, format: date-time }
         engines_used:
@@ -4117,6 +4130,8 @@ paths:
                 namespace: { type: string }
                 secret_ref: { type: string, description: Operator registration; existing home-cluster Secret }
                 kubeconfig: { type: string, description: BYOC registration; a self-contained kubeconfig }
+                geo: { type: string, maxLength: 64, description: Optional display-only geographic label; empty = unlabeled }
+                zone: { type: string, maxLength: 64, description: Optional display-only zone label; empty = unlabeled }
       responses:
         '201':
           description: Created
@@ -4167,6 +4182,9 @@ paths:
     put:
       tags: [clusters]
       summary: Update a cluster's deploy settings
+      description: >-
+        Full-replace on every mutable field: an omitted geo/zone clears the
+        labels (PUT semantics, phase 109).
       parameters: [{ $ref: '#/components/parameters/ClusterName' }]
       requestBody:
         required: true
@@ -4178,6 +4196,8 @@ paths:
                 ingest_url: { type: string }
                 sidecar_image: { type: string }
                 namespace: { type: string }
+                geo: { type: string, maxLength: 64, description: Display-only geographic label; empty clears }
+                zone: { type: string, maxLength: 64, description: Display-only zone label; empty clears }
       responses:
         '200':
           description: Cluster

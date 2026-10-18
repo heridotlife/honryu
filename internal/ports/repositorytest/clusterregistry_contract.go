@@ -23,8 +23,11 @@ func testCluster(name string, origin clusterregistry.Origin) clusterregistry.Clu
 		Namespace:    "honryu",
 		SecretRef:    "cluster-" + name + "-creds",
 		Origin:       origin,
-		CreatedBy:    "admin@example.com",
-		CreatedTime:  at(100),
+		// Phase 109 display labels; every cluster round-trips them.
+		Geo:         "eu",
+		Zone:        "eu-central-1",
+		CreatedBy:   "admin@example.com",
+		CreatedTime: at(100),
 	}
 }
 

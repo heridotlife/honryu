@@ -14,6 +14,8 @@ export interface Cluster {
   namespace: string;
   secret_ref: string;
   origin: "operator" | "byoc";
+  geo?: string;
+  zone?: string;
   created_by?: string;
   created_time: string;
   engines_used?: number;
@@ -1316,7 +1318,7 @@ export function getClusters(): Promise<Cluster[]> {
 }
 
 /** Register a cluster (operator secret_ref, or BYOC kubeconfig) */
-export function postClusters(body: { name: string; ingest_url: string; sidecar_image: string; namespace: string; secret_ref?: string; kubeconfig?: string }): Promise<Cluster> {
+export function postClusters(body: { name: string; ingest_url: string; sidecar_image: string; namespace: string; secret_ref?: string; kubeconfig?: string; geo?: string; zone?: string }): Promise<Cluster> {
   return apiClient.post<Cluster>(paths.postClusters(), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
 }
 
@@ -1331,7 +1333,7 @@ export function getClustersByName(name: number | string): Promise<Cluster> {
 }
 
 /** Update a cluster's deploy settings */
-export function putClustersByName(name: number | string, body: { ingest_url?: string; sidecar_image?: string; namespace?: string }): Promise<Cluster> {
+export function putClustersByName(name: number | string, body: { ingest_url?: string; sidecar_image?: string; namespace?: string; geo?: string; zone?: string }): Promise<Cluster> {
   return apiClient.post<Cluster>(paths.putClustersByName(name), new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])));
 }
 

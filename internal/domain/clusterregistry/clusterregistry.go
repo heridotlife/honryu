@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Origin records where a registered cluster's credentials come from, which
@@ -50,6 +51,10 @@ var (
 	ErrNamespaceRequired    = errors.New("clusterregistry: namespace is required")
 	ErrIngestURLRequired    = errors.New("clusterregistry: ingest url is required")
 	ErrSidecarImageRequired = errors.New("clusterregistry: sidecar image is required")
+	// ErrLabelTooLong / ErrLabelControl bound the optional Geo/Zone display
+	// labels: longer than the column, or carrying control characters.
+	ErrLabelTooLong = errors.New("clusterregistry: geo/zone label exceeds 64 characters")
+	ErrLabelControl = errors.New("clusterregistry: geo/zone label must not contain control characters")
 )
 
 // Cluster is a registered Kubernetes cluster Honryu can deploy engines into.
@@ -84,6 +89,16 @@ type Cluster struct {
 	IngestTokenHash string
 	// Origin records who owns the credential's source of truth.
 	Origin Origin
+	// Geo and Zone are optional display-only labels (e.g. "eu",
+	// "eu-central-1") for surfaces that fan out across clusters: the
+	// NewTest picker and the registry page show them so a user can reason
+	// about latency and geographic spread. They are never scheduling or
+	// routing inputs -- placement stays name-driven -- and the empty string
+	// means unlabeled (the pre-phase-109 state of every row).
+	Geo string
+	// Zone is Geo's finer half: same display-only contract, same
+	// name-driven scheduling.
+	Zone string
 	// CreatedBy and CreatedTime are audit metadata assigned at registration.
 	CreatedBy   string
 	CreatedTime time.Time
@@ -124,6 +139,34 @@ func (c Cluster) Validate() error {
 	}
 	if strings.TrimSpace(c.SidecarImage) == "" {
 		return ErrSidecarImageRequired
+	}
+	// Geo/Zone are optional (empty = unlabeled), but whatever is set must
+	// fit its column and carry no control characters -- these strings reach
+	// the UI verbatim.
+	if err := validateLabel("geo", c.Geo); err != nil {
+		return err
+	}
+	if err := validateLabel("zone", c.Zone); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MaxLabelLen bounds Geo/Zone, matching the VARCHAR(64) columns: they are
+// labels for humans, not identifiers.
+const MaxLabelLen = 64
+
+// validateLabel checks one optional display label: empty is fine
+// (unlabeled), but a label longer than the column or carrying control
+// characters is not.
+func validateLabel(field, label string) error {
+	if len(label) > MaxLabelLen {
+		return fmt.Errorf("%w: %s is %d characters", ErrLabelTooLong, field, len(label))
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s", ErrLabelControl, field)
+		}
 	}
 	return nil
 }

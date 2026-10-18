@@ -17,13 +17,13 @@ var _ ports.ClusterRegistry = (*Repository)(nil)
 // methods, never round-tripped as part of the domain Cluster. ingest_token_hash
 // is excluded for the same reason -- derived credential data, accessed only
 // through the token-hash methods.
-const clusterColumns = "name, api_url, ca_cert, ingest_url, sidecar_image, namespace, secret_ref, origin, created_by, created_time"
+const clusterColumns = "name, api_url, ca_cert, ingest_url, sidecar_image, namespace, secret_ref, origin, geo, zone, created_by, created_time"
 
 // CreateCluster stores c, or ports.ErrClusterExists if the name is taken.
 func (r *Repository) CreateCluster(ctx context.Context, c clusterregistry.Cluster) error {
 	_, err := r.db.ExecContext(ctx,
-		"INSERT INTO cluster_registry ("+clusterColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		c.Name, c.APIURL, c.CACert, c.IngestURL, c.SidecarImage, c.Namespace, c.SecretRef, string(c.Origin), c.CreatedBy, c.CreatedTime)
+		"INSERT INTO cluster_registry ("+clusterColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		c.Name, c.APIURL, c.CACert, c.IngestURL, c.SidecarImage, c.Namespace, c.SecretRef, string(c.Origin), c.Geo, c.Zone, c.CreatedBy, c.CreatedTime)
 	if isDuplicateKey(err) {
 		return ports.ErrClusterExists
 	}
@@ -73,11 +73,12 @@ func (r *Repository) ListClusters(ctx context.Context) ([]clusterregistry.Cluste
 // UpdateCluster replaces the entry named c.Name's mutable fields, or returns
 // ports.ErrNotFound. created_by, created_time and byoc_credential are omitted
 // -- created metadata is immutable after registration, and the credential is
-// managed through its own methods.
+// managed through its own methods. geo/zone are full-replace: whatever c
+// carries (including empty, i.e. unlabeled) is what the row will say.
 func (r *Repository) UpdateCluster(ctx context.Context, c clusterregistry.Cluster) error {
 	res, err := r.db.ExecContext(ctx,
-		"UPDATE cluster_registry SET api_url = ?, ca_cert = ?, ingest_url = ?, sidecar_image = ?, namespace = ?, secret_ref = ?, origin = ? WHERE name = ?",
-		c.APIURL, c.CACert, c.IngestURL, c.SidecarImage, c.Namespace, c.SecretRef, string(c.Origin), c.Name)
+		"UPDATE cluster_registry SET api_url = ?, ca_cert = ?, ingest_url = ?, sidecar_image = ?, namespace = ?, secret_ref = ?, origin = ?, geo = ?, zone = ? WHERE name = ?",
+		c.APIURL, c.CACert, c.IngestURL, c.SidecarImage, c.Namespace, c.SecretRef, string(c.Origin), c.Geo, c.Zone, c.Name)
 	if err != nil {
 		return fmt.Errorf("mysql: update cluster: %w", err)
 	}
@@ -194,7 +195,7 @@ func scanCluster(s rowScanner) (clusterregistry.Cluster, error) {
 		origin string
 	)
 	if err := s.Scan(&c.Name, &c.APIURL, &c.CACert, &c.IngestURL, &c.SidecarImage,
-		&c.Namespace, &c.SecretRef, &origin, &c.CreatedBy, &c.CreatedTime); err != nil {
+		&c.Namespace, &c.SecretRef, &origin, &c.Geo, &c.Zone, &c.CreatedBy, &c.CreatedTime); err != nil {
 		return clusterregistry.Cluster{}, err
 	}
 	c.Origin = clusterregistry.Origin(origin)

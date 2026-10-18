@@ -26,7 +26,7 @@ type stubClusterService struct {
 	rotateIngestToken func(string) (string, error)
 	get               func(string) (clusterregistry.Cluster, error)
 	list              func() ([]clusterregistry.Cluster, error)
-	update            func(name, ingest, sidecar, ns string) (clusterregistry.Cluster, error)
+	update            func(name, ingest, sidecar, ns, geo, zone string) (clusterregistry.Cluster, error)
 	del               func(string) error
 }
 
@@ -45,8 +45,8 @@ func (s *stubClusterService) Get(_ context.Context, name string) (clusterregistr
 func (s *stubClusterService) List(_ context.Context) ([]clusterregistry.Cluster, error) {
 	return s.list()
 }
-func (s *stubClusterService) Update(_ context.Context, name, ingest, sidecar, ns string) (clusterregistry.Cluster, error) {
-	return s.update(name, ingest, sidecar, ns)
+func (s *stubClusterService) Update(_ context.Context, name, ingest, sidecar, ns, geo, zone string) (clusterregistry.Cluster, error) {
+	return s.update(name, ingest, sidecar, ns, geo, zone)
 }
 func (s *stubClusterService) Delete(_ context.Context, name string) error { return s.del(name) }
 
@@ -157,6 +157,41 @@ func TestCreateCluster_Operator_UsesSecretRef(t *testing.T) {
 	if gotSecretRef != "existing-secret" {
 		t.Fatalf("secret_ref not forwarded: %q", gotSecretRef)
 	}
+	// Phase 109: a registration without geo/zone stays quiet on the wire.
+	if strings.Contains(rec.Body.String(), `"geo"`) || strings.Contains(rec.Body.String(), `"zone"`) {
+		t.Fatalf("unlabeled cluster must omit geo/zone: %s", rec.Body.String())
+	}
+}
+
+// Phase 109: geo/zone are optional display labels. Registration forwards
+// them onto the entry and echoes them back in the response; the BYOC path
+// inherits the same wiring (the entry is built before the branch).
+func TestCreateCluster_Labels(t *testing.T) {
+	t.Parallel()
+	var gotEntry clusterregistry.Cluster
+	svc := &stubClusterService{
+		registerOperator: func(e clusterregistry.Cluster) (clusterregistry.Cluster, error) {
+			gotEntry = e
+			e.Origin = clusterregistry.OriginOperator
+			return e, nil
+		},
+	}
+	h := newClusterRouter(svc)
+
+	rec := doForm(t, h, http.MethodPost, "/api/clusters", url.Values{
+		"name": {"prod-eu"}, "ingest_url": {"http://ingest"}, "sidecar_image": {"img"},
+		"namespace": {"honryu"}, "secret_ref": {"existing-secret"},
+		"geo": {"eu"}, "zone": {"eu-central-1"},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201 (%s)", rec.Code, rec.Body.String())
+	}
+	if gotEntry.Geo != "eu" || gotEntry.Zone != "eu-central-1" {
+		t.Fatalf("entry labels = %q/%q, want eu/eu-central-1", gotEntry.Geo, gotEntry.Zone)
+	}
+	if !strings.Contains(rec.Body.String(), `"geo":"eu"`) || !strings.Contains(rec.Body.String(), `"zone":"eu-central-1"`) {
+		t.Fatalf("response missing labels: %s", rec.Body.String())
+	}
 }
 
 func TestCreateCluster_ErrorMapping(t *testing.T) {
@@ -249,12 +284,14 @@ func TestClusters_NotConfiguredReturns404(t *testing.T) {
 }
 
 // updateCluster replaces a cluster's mutable deploy settings and answers with
-// the ordinary cluster shape (openapi PUT /api/clusters/{name}).
+// the ordinary cluster shape (openapi PUT /api/clusters/{name}). Phase 109:
+// geo/zone ride the same PUT with full-replace semantics -- present values
+// relabel, absent values clear.
 func TestUpdateCluster_HappyPath(t *testing.T) {
 	t.Parallel()
-	var gotName, gotIngest, gotSidecar, gotNS string
-	svc := &stubClusterService{update: func(name, ingest, sidecar, ns string) (clusterregistry.Cluster, error) {
-		gotName, gotIngest, gotSidecar, gotNS = name, ingest, sidecar, ns
+	var gotName, gotIngest, gotSidecar, gotNS, gotGeo, gotZone string
+	svc := &stubClusterService{update: func(name, ingest, sidecar, ns, geo, zone string) (clusterregistry.Cluster, error) {
+		gotName, gotIngest, gotSidecar, gotNS, gotGeo, gotZone = name, ingest, sidecar, ns, geo, zone
 		return clusterregistry.Cluster{
 			Name:         name,
 			APIURL:       "https://api:6443",
@@ -263,6 +300,8 @@ func TestUpdateCluster_HappyPath(t *testing.T) {
 			Namespace:    ns,
 			SecretRef:    "prod-eu-secret",
 			Origin:       clusterregistry.OriginOperator,
+			Geo:          geo,
+			Zone:         zone,
 			CreatedTime:  time.Unix(1700000000, 0).UTC(),
 		}, nil
 	}}
@@ -270,12 +309,15 @@ func TestUpdateCluster_HappyPath(t *testing.T) {
 
 	rec := doForm(t, h, http.MethodPut, "/api/clusters/prod-eu", url.Values{
 		"ingest_url": {"http://ingest2"}, "sidecar_image": {"img:2"}, "namespace": {"honryu-system"},
+		"geo": {"eu"}, "zone": {"eu-central-1"},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
-	if gotName != "prod-eu" || gotIngest != "http://ingest2" || gotSidecar != "img:2" || gotNS != "honryu-system" {
-		t.Fatalf("update args = %q/%q/%q/%q, want prod-eu/http://ingest2/img:2/honryu-system", gotName, gotIngest, gotSidecar, gotNS)
+	if gotName != "prod-eu" || gotIngest != "http://ingest2" || gotSidecar != "img:2" || gotNS != "honryu-system" ||
+		gotGeo != "eu" || gotZone != "eu-central-1" {
+		t.Fatalf("update args = %q/%q/%q/%q/%q/%q, want prod-eu/http://ingest2/img:2/honryu-system/eu/eu-central-1",
+			gotName, gotIngest, gotSidecar, gotNS, gotGeo, gotZone)
 	}
 	var body struct {
 		Name         string    `json:"name"`
@@ -285,6 +327,8 @@ func TestUpdateCluster_HappyPath(t *testing.T) {
 		Namespace    string    `json:"namespace"`
 		SecretRef    string    `json:"secret_ref"`
 		Origin       string    `json:"origin"`
+		Geo          string    `json:"geo"`
+		Zone         string    `json:"zone"`
 		CreatedTime  time.Time `json:"created_time"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -294,6 +338,34 @@ func TestUpdateCluster_HappyPath(t *testing.T) {
 		body.SidecarImage != "img:2" || body.Namespace != "honryu-system" ||
 		body.SecretRef != "prod-eu-secret" || body.Origin != "operator" || body.CreatedTime.IsZero() {
 		t.Fatalf("update response = %+v, want the full cluster shape", body)
+	}
+	if body.Geo != "eu" || body.Zone != "eu-central-1" {
+		t.Fatalf("update response labels = %q/%q, want eu/eu-central-1", body.Geo, body.Zone)
+	}
+}
+
+// A PUT that omits geo/zone clears them: full-replace semantics, the same
+// rule the handler applies to every other mutable field.
+func TestUpdateCluster_PutClearsLabels(t *testing.T) {
+	t.Parallel()
+	var gotGeo, gotZone string
+	svc := &stubClusterService{update: func(_, _, _, _, geo, zone string) (clusterregistry.Cluster, error) {
+		gotGeo, gotZone = geo, zone
+		return clusterregistry.Cluster{Name: "prod-eu", Origin: clusterregistry.OriginOperator, CreatedTime: time.Unix(1700000000, 0).UTC()}, nil
+	}}
+	h := newClusterRouter(svc)
+
+	rec := doForm(t, h, http.MethodPut, "/api/clusters/prod-eu", url.Values{
+		"ingest_url": {"http://ingest2"}, "sidecar_image": {"img:2"}, "namespace": {"honryu-system"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if gotGeo != "" || gotZone != "" {
+		t.Fatalf("update args labels = %q/%q, want empty (PUT clears)", gotGeo, gotZone)
+	}
+	if strings.Contains(rec.Body.String(), `"geo"`) || strings.Contains(rec.Body.String(), `"zone"`) {
+		t.Fatalf("cleared labels must be omitted from the wire: %s", rec.Body.String())
 	}
 }
 
@@ -306,13 +378,14 @@ func TestUpdateCluster_ErrorMapping(t *testing.T) {
 	}{
 		{"missing cluster", ports.ErrNotFound, http.StatusNotFound},
 		{"validation", clusterregistry.ErrIngestURLRequired, http.StatusBadRequest},
+		{"label too long", clusterregistry.ErrLabelTooLong, http.StatusBadRequest},
 		{"in use", clusterapp.ErrClusterInUse, http.StatusConflict},
 		{"internal", errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			svc := &stubClusterService{update: func(string, string, string, string) (clusterregistry.Cluster, error) {
+			svc := &stubClusterService{update: func(string, string, string, string, string, string) (clusterregistry.Cluster, error) {
 				return clusterregistry.Cluster{}, tc.err
 			}}
 			h := newClusterRouter(svc)
@@ -326,7 +399,7 @@ func TestUpdateCluster_ErrorMapping(t *testing.T) {
 
 func TestUpdateCluster_MalformedForm(t *testing.T) {
 	t.Parallel()
-	svc := &stubClusterService{update: func(string, string, string, string) (clusterregistry.Cluster, error) {
+	svc := &stubClusterService{update: func(string, string, string, string, string, string) (clusterregistry.Cluster, error) {
 		t.Fatal("update must not run for an unparseable form")
 		return clusterregistry.Cluster{}, nil
 	}}
