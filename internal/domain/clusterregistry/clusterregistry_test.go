@@ -2,6 +2,7 @@ package clusterregistry_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/heridotlife/honryu/internal/domain/clusterregistry"
@@ -35,6 +36,15 @@ func TestValidate_Valid(t *testing.T) {
 	if err := byoc.Validate(); err != nil {
 		t.Fatalf("Validate(byoc) = %v, want nil", err)
 	}
+
+	// Phase 109: geo/zone are optional display labels -- a cluster may carry
+	// both, one, or neither; exactly 64 characters is the boundary that fits.
+	labeled := valid()
+	labeled.Geo = "eu"
+	labeled.Zone = strings.Repeat("z", clusterregistry.MaxLabelLen)
+	if err := labeled.Validate(); err != nil {
+		t.Fatalf("Validate(labeled) = %v, want nil", err)
+	}
 }
 
 func TestValidate_Errors(t *testing.T) {
@@ -65,6 +75,18 @@ func TestValidate_Errors(t *testing.T) {
 		{"missing namespace", func(c *clusterregistry.Cluster) { c.Namespace = "" }, clusterregistry.ErrNamespaceRequired},
 		{"missing ingest url", func(c *clusterregistry.Cluster) { c.IngestURL = " " }, clusterregistry.ErrIngestURLRequired},
 		{"missing sidecar image", func(c *clusterregistry.Cluster) { c.SidecarImage = "" }, clusterregistry.ErrSidecarImageRequired},
+		{"geo label too long", func(c *clusterregistry.Cluster) { c.Geo = strings.Repeat("e", 65) }, clusterregistry.ErrLabelTooLong},
+		{"zone label too long", func(c *clusterregistry.Cluster) { c.Zone = strings.Repeat("z", 65) }, clusterregistry.ErrLabelTooLong},
+		{
+			"geo label control characters",
+			func(c *clusterregistry.Cluster) { c.Geo = "eu\twest" },
+			clusterregistry.ErrLabelControl,
+		},
+		{
+			"zone label control characters",
+			func(c *clusterregistry.Cluster) { c.Zone = "eu-west-1\n" },
+			clusterregistry.ErrLabelControl,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
