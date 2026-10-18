@@ -52,7 +52,7 @@ func (s *stubListClusters) Get(_ context.Context, _ string) (clusterregistry.Clu
 func (s *stubListClusters) List(_ context.Context) ([]clusterregistry.Cluster, error) {
 	return s.rows, nil
 }
-func (s *stubListClusters) Update(_ context.Context, _ string, _, _, _ string) (clusterregistry.Cluster, error) {
+func (s *stubListClusters) Update(_ context.Context, _ string, _, _, _, _, _ string) (clusterregistry.Cluster, error) {
 	return s.rows[0], nil
 }
 func (s *stubListClusters) Delete(_ context.Context, _ string) error { return nil }

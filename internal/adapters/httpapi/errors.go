@@ -104,6 +104,9 @@ var badRequestErrors = []error{
 	clusterregistry.ErrNameRequired, clusterregistry.ErrOriginUnknown,
 	clusterregistry.ErrSecretRefRequired, clusterregistry.ErrNamespaceRequired,
 	clusterregistry.ErrIngestURLRequired, clusterregistry.ErrSidecarImageRequired,
+	// Over-long or control-character geo/zone labels are the caller's input
+	// too (phase 109): they are labels for humans, bounded by the column.
+	clusterregistry.ErrLabelTooLong, clusterregistry.ErrLabelControl,
 	clusterapp.ErrKubeconfigInvalid,
 	// Webhook registration input (phase 40): a non-https, over-long, or
 	// secret-over-long registration is the caller's endpoint to fix.

@@ -15,6 +15,7 @@ import type { Cluster, ClusterOrigin } from '../api/clusters';
 import { listCapacityProfiles } from '../api/calibration';
 import type { CapacityProfileSummary } from '../api/calibration';
 import CapacityMeter from '../components/CapacityMeter';
+import GeoZoneBadge from '../components/ui/GeoZoneBadge';
 
 const originClasses: Record<ClusterOrigin, string> = {
   operator: 'bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-300',
@@ -118,6 +119,17 @@ const registryColumns: CardTableColumn<Cluster>[] = [
     thClassName: 'px-3 py-2 font-medium',
     tdClassName: 'px-3 py-2',
     render: (c) => <OriginBadge origin={c.origin} />,
+  },
+  {
+    // Phase 109: the display-only geo/zone labels -- a Location chip beside
+    // the origin, so the registry reads back WHERE each fan-out target
+    // runs. Unlabeled rows render nothing (GeoZoneBadge's null branch),
+    // keeping legacy entries quiet.
+    key: 'geozone',
+    header: 'Location',
+    thClassName: 'px-3 py-2 font-medium',
+    tdClassName: 'px-3 py-2 whitespace-nowrap',
+    render: (c) => <GeoZoneBadge geo={c.geo} zone={c.zone} />,
   },
   {
     key: 'capacity',

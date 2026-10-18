@@ -547,6 +547,14 @@ export default function NewTest() {
                         onChange={() => toggleFanOut(c.name)}
                       />
                       {c.name}
+                      {(c.geo || c.zone) && (
+                        <span
+                          className="text-caption text-slate-400 dark:text-slate-500"
+                          data-testid={`fanout-target-geozone-${c.name}`}
+                        >
+                          · {[c.geo, c.zone].filter(Boolean).join('/')}
+                        </span>
+                      )}
                     </label>
                   ))}
                 </div>

@@ -488,14 +488,26 @@ func TestUpdate_ReplacesMutableFields(t *testing.T) {
 	if _, err := h.svc.RegisterBYOC(ctx, byocEntry(), []byte("kc")); err != nil {
 		t.Fatalf("RegisterBYOC: %v", err)
 	}
-	got, err := h.svc.Update(ctx, "prod-eu", "http://new-ingest", "img:2", "honryu2")
+	got, err := h.svc.Update(ctx, "prod-eu", "http://new-ingest", "img:2", "honryu2", "eu", "eu-central-1")
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if got.IngestURL != "http://new-ingest" || got.SidecarImage != "img:2" || got.Namespace != "honryu2" {
 		t.Fatalf("Update result = %+v", got)
 	}
-	if _, err := h.svc.Update(ctx, "ghost", "a", "b", "c"); !errors.Is(err, ports.ErrNotFound) {
+	// Phase 109: the display labels ride the same full-replace update, and
+	// an empty pair clears them.
+	if got.Geo != "eu" || got.Zone != "eu-central-1" {
+		t.Fatalf("Update labels = %q/%q, want eu/eu-central-1", got.Geo, got.Zone)
+	}
+	cleared, err := h.svc.Update(ctx, "prod-eu", "http://new-ingest", "img:2", "honryu2", "", "")
+	if err != nil {
+		t.Fatalf("Update (clear labels): %v", err)
+	}
+	if cleared.Geo != "" || cleared.Zone != "" {
+		t.Fatalf("Update (clear labels) = %q/%q, want empty", cleared.Geo, cleared.Zone)
+	}
+	if _, err := h.svc.Update(ctx, "ghost", "a", "b", "c", "", ""); !errors.Is(err, ports.ErrNotFound) {
 		t.Fatalf("Update(ghost) = %v, want ErrNotFound", err)
 	}
 }
